@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RuCordRealtimeEvents",
+  "type": "object",
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": [
+        "presence.snapshot",
+        "presence.updated",
+        "message.created",
+        "signal.offer",
+        "signal.answer",
+        "signal.ice-candidate"
+      ]
+    },
+    "channelId": {
+      "type": "string"
+    },
+    "workspaceId": {
+      "type": "string"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "event",
+    "payload"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@rucord/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "tsc --project tsconfig.json",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@rucord/shared-ts": "file:../../libs/shared-ts"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3"
+  }
+}

@@ -1,0 +1,19 @@
+:443 {
+  tls internal
+
+  handle_path /healthz {
+    reverse_proxy 127.0.0.1:8080
+  }
+
+  handle_path /readyz {
+    reverse_proxy 127.0.0.1:8080
+  }
+
+  handle /ws* {
+    reverse_proxy 127.0.0.1:8090
+  }
+
+  handle {
+    reverse_proxy 127.0.0.1:8080
+  }
+}

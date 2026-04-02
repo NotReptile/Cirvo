@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.vite/
+.DS_Store
+Thumbs.db
+coverage/
+*.log
+*.tmp
+*.out
+bin/
+vendor/
+.env
+.env.local
+.env.*.local
+apps/desktop/src-tauri/target/
+services/**/bin/

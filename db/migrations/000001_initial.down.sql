@@ -1,0 +1,9 @@
+drop table if exists audit_log;
+drop table if exists upload_sessions;
+drop table if exists workspace_invites;
+drop table if exists messages;
+drop table if exists channels;
+drop table if exists workspace_members;
+drop table if exists workspaces;
+drop table if exists user_sessions;
+drop table if exists users;
