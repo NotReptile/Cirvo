@@ -2,6 +2,7 @@ package channel
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -11,17 +12,19 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
 type Module struct {
-	db *postgres.Pool
+	db     *postgres.Pool
+	logger *slog.Logger
 }
 
-func NewModule(db *postgres.Pool) *Module {
-	return &Module{db: db}
+func NewModule(db *postgres.Pool, logger *slog.Logger) *Module {
+	return &Module{db: db, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -182,6 +185,14 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     userID,
+		WorkspaceID: workspaceID,
+		Action:      auditlog.ActionChannelCreated,
+		TargetType:  "channel",
+		TargetID:    channelID.String(),
+	})
+
 	sharedhttp.WriteJSON(w, http.StatusCreated, channelView{
 		ID:          channelID.String(),
 		WorkspaceID: workspaceID.String(),
@@ -314,6 +325,13 @@ func (m *Module) handleAddMember(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not add member")
 		return
 	}
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     actorID,
+		WorkspaceID: scope.WorkspaceID,
+		Action:      auditlog.ActionChannelMemberAdded,
+		TargetType:  "channel_member",
+		TargetID:    channelID.String() + ":" + targetID.String(),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -349,6 +367,13 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not remove member")
 		return
 	}
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     actorID,
+		WorkspaceID: scope.WorkspaceID,
+		Action:      auditlog.ActionChannelMemberRemoved,
+		TargetType:  "channel_member",
+		TargetID:    channelID.String() + ":" + targetID.String(),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

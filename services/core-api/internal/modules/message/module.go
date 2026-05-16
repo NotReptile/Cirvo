@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
+	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
@@ -32,10 +34,11 @@ const (
 type Module struct {
 	db        *postgres.Pool
 	publisher *realtimebus.Publisher
+	logger    *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher) *Module {
-	return &Module{db: db, publisher: publisher}
+func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, logger *slog.Logger) *Module {
+	return &Module{db: db, publisher: publisher, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -375,6 +378,13 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		"id":        messageID.String(),
 		"channelId": channelID.String(),
 		"deletedAt": now,
+	})
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     userID,
+		WorkspaceID: scope.WorkspaceID,
+		Action:      auditlog.ActionMessageDeleted,
+		TargetType:  "message",
+		TargetID:    messageID.String(),
 	})
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
@@ -27,11 +29,12 @@ const (
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 type Module struct {
-	db *postgres.Pool
+	db     *postgres.Pool
+	logger *slog.Logger
 }
 
-func NewModule(db *postgres.Pool) *Module {
-	return &Module{db: db}
+func NewModule(db *postgres.Pool, logger *slog.Logger) *Module {
+	return &Module{db: db, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -151,6 +154,14 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
 	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     userID,
+		WorkspaceID: workspaceID,
+		Action:      auditlog.ActionWorkspaceCreated,
+		TargetType:  "workspace",
+		TargetID:    workspaceID.String(),
+	})
 
 	sharedhttp.WriteJSON(w, http.StatusCreated, workspaceView{
 		ID:        workspaceID.String(),

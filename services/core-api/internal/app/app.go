@@ -5,9 +5,12 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/audit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/auth"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/invite"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/profile"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/system"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
@@ -41,9 +44,12 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 	server.registerBaseRoutes()
 	server.registerModules(
 		auth.NewModule(container.DB, container.JWT),
-		workspace.NewModule(container.DB),
-		channel.NewModule(container.DB),
-		message.NewModule(container.DB, container.Publisher),
+		profile.NewModule(container.DB, container.Logger),
+		workspace.NewModule(container.DB, container.Logger),
+		channel.NewModule(container.DB, container.Logger),
+		message.NewModule(container.DB, container.Publisher, container.Logger),
+		invite.NewModule(container.DB, container.Logger),
+		audit.NewModule(container.DB),
 		system.NewModule(),
 	)
 
