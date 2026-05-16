@@ -1,50 +1,49 @@
 package app
 
 import (
-	"log/slog"
 	"net/http"
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/attachment"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/audit"
+	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/auth"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/profile"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/system"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
+	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
+
+type Module interface {
+	RegisterRoutes(router routing.Router)
+}
 
 type Server struct {
 	serviceName string
 	version     string
-	logger      *slog.Logger
+	deps        deps.Container
 	mux         *http.ServeMux
+	router      *Router
 }
 
-type Module interface {
-	RegisterRoutes(mux *http.ServeMux)
-}
+func NewServer(serviceName, version string, container deps.Container) *Server {
+	mux := http.NewServeMux()
+	authenticator := NewAuthenticator(container.DB, container.JWT)
+	router := NewRouter(mux, authenticator)
 
-func NewServer(serviceName string, version string, logger *slog.Logger) *Server {
 	server := &Server{
 		serviceName: serviceName,
 		version:     version,
-		logger:      logger,
-		mux:         http.NewServeMux(),
+		deps:        container,
+		mux:         mux,
+		router:      router,
 	}
 
 	server.registerBaseRoutes()
 	server.registerModules(
-		auth.NewModule(),
-		profile.NewModule(),
-		workspace.NewModule(),
-		permission.NewModule(),
-		channel.NewModule(),
-		message.NewModule(),
-		attachment.NewModule(),
-		audit.NewModule(),
+		auth.NewModule(container.DB, container.JWT),
+		workspace.NewModule(container.DB),
+		channel.NewModule(container.DB),
+		message.NewModule(container.DB, container.Publisher),
 		system.NewModule(),
 	)
 
@@ -52,7 +51,10 @@ func NewServer(serviceName string, version string, logger *slog.Logger) *Server 
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	h := sharedhttp.WithRequestID(s.mux)
+	h = sharedhttp.AccessLog(s.deps.Logger, h)
+	h = sharedhttp.Recover(s.deps.Logger, h)
+	return h
 }
 
 func (s *Server) registerBaseRoutes() {
@@ -61,6 +63,6 @@ func (s *Server) registerBaseRoutes() {
 
 func (s *Server) registerModules(modules ...Module) {
 	for _, module := range modules {
-		module.RegisterRoutes(s.mux)
+		module.RegisterRoutes(s.router)
 	}
 }

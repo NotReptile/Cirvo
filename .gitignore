@@ -14,3 +14,5 @@ vendor/
 .env.*.local
 apps/desktop/src-tauri/target/
 services/**/bin/
+*.exe
+*.test

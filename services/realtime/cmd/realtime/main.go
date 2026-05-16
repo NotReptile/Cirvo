@@ -1,12 +1,26 @@
 package main
 
 import (
-	"log"
+	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/google/uuid"
 
 	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
+	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/observability"
+	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
+	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+
 	"github.com/NotReptile/RuCord/services/realtime/internal/app"
+	"github.com/NotReptile/RuCord/services/realtime/internal/deps"
+	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
 )
 
 const version = "0.1.0"
@@ -14,11 +28,91 @@ const version = "0.1.0"
 func main() {
 	cfg := sharedconfig.Load("realtime", ":8090")
 	logger := observability.NewLogger(cfg.ServiceName)
-	server := app.NewServer(cfg.ServiceName, version)
+
+	rootCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	db, err := postgres.ConnectFromEnv(rootCtx)
+	if err != nil {
+		logger.Error("postgres connect failed", "error", err)
+		return
+	}
+	defer db.Close()
+
+	redisClient, err := redisstore.ConnectFromEnv(rootCtx)
+	if err != nil {
+		logger.Error("redis connect failed", "error", err)
+		return
+	}
+	defer redisClient.Close()
+
+	jwtIssuer, err := jwtauth.NewIssuerFromEnv(cfg.ServiceName)
+	if err != nil {
+		logger.Error("jwt issuer init failed", "error", err)
+		return
+	}
+
+	h := hub.New(logger)
+	subscriber := realtimebus.NewSubscriber(redisClient)
+
+	container := deps.Container{
+		Logger:     logger,
+		DB:         db,
+		Redis:      redisClient,
+		JWT:        jwtIssuer,
+		Subscriber: subscriber,
+		Hub:        h,
+	}
+
+	server := app.NewServer(cfg.ServiceName, version, container)
+	httpServer := &http.Server{
+		Addr:              cfg.HTTPAddress,
+		Handler:           server.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go runSubscriber(rootCtx, subscriber, h)
 
 	logger.Info("starting realtime server", "address", cfg.HTTPAddress, "environment", cfg.Environment)
 
-	if err := http.ListenAndServe(cfg.HTTPAddress, server.Handler()); err != nil {
-		log.Fatal(err)
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case <-rootCtx.Done():
+		logger.Info("shutdown signal received")
+	case err := <-serverErr:
+		logger.Error("http server error", "error", err)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("http server shutdown error", "error", err)
+	}
+}
+
+func runSubscriber(ctx context.Context, subscriber *realtimebus.Subscriber, h *hub.Hub) {
+	for {
+		err := subscriber.Listen(ctx, func(event realtimebus.Event) {
+			payload, err := json.Marshal(event)
+			if err != nil {
+				return
+			}
+			if event.WorkspaceID != "" {
+				if wsID, err := uuid.Parse(event.WorkspaceID); err == nil {
+					h.BroadcastWorkspace(wsID, payload)
+				}
+			}
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			time.Sleep(time.Second)
+			continue
+		}
+		return
 	}
 }

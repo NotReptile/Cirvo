@@ -1,29 +1,408 @@
 package auth
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"net/http"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
+	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
+	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
+	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
-type Module struct{}
+const (
+	refreshTokenBytes = 32
+	refreshTTL        = 30 * 24 * time.Hour
+)
 
-func NewModule() Module {
-	return Module{}
+var usernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
+
+type Module struct {
+	db  *postgres.Pool
+	jwt *jwtauth.Issuer
 }
 
-func (Module) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/v1/auth/register", func(w http.ResponseWriter, _ *http.Request) {
-		sharedhttp.WriteJSON(w, http.StatusAccepted, map[string]string{
-			"module": "auth",
-			"status": "registered-route",
-		})
-	})
+func NewModule(db *postgres.Pool, jwt *jwtauth.Issuer) *Module {
+	return &Module{db: db, jwt: jwt}
+}
 
-	mux.HandleFunc("POST /api/v1/auth/login", func(w http.ResponseWriter, _ *http.Request) {
-		sharedhttp.WriteJSON(w, http.StatusAccepted, map[string]string{
-			"module": "auth",
-			"status": "login-route",
-		})
+func (m *Module) RegisterRoutes(router routing.Router) {
+	router.Public("POST /api/v1/auth/register", m.handleRegister)
+	router.Public("POST /api/v1/auth/login", m.handleLogin)
+	router.Public("POST /api/v1/auth/refresh", m.handleRefresh)
+	router.Protected("POST /api/v1/auth/logout", m.handleLogout)
+	router.Protected("GET /api/v1/users/me", m.handleMe)
+}
+
+type registerRequest struct {
+	Email       string `json:"email"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	DisplayName string `json:"displayName"`
+	DeviceLabel string `json:"deviceLabel"`
+}
+
+type loginRequest struct {
+	Login       string `json:"login"`
+	Password    string `json:"password"`
+	DeviceLabel string `json:"deviceLabel"`
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refreshToken"`
+}
+
+type authResponse struct {
+	User            userView  `json:"user"`
+	AccessToken     string    `json:"accessToken"`
+	AccessExpiresAt time.Time `json:"accessExpiresAt"`
+	RefreshToken    string    `json:"refreshToken"`
+	SessionID       string    `json:"sessionId"`
+}
+
+type userView struct {
+	ID          string `json:"id"`
+	Email       string `json:"email"`
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req registerRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	req.Username = strings.ToLower(strings.TrimSpace(req.Username))
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
+
+	if !strings.Contains(req.Email, "@") {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid email")
+		return
+	}
+	if !usernamePattern.MatchString(req.Username) {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "username must be 3-32 chars of [a-z0-9_]")
+		return
+	}
+	if len(req.Password) < 8 {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "password must be at least 8 characters")
+		return
+	}
+
+	passwordHash, err := passwords.Hash(req.Password)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "password hashing failed")
+		return
+	}
+
+	userID := uuid.New()
+	now := time.Now().UTC()
+
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	_, err = tx.Exec(r.Context(),
+		`insert into users (id, email, username, display_name, password_hash, created_at, updated_at)
+		 values ($1, $2, $3, nullif($4, ''), $5, $6, $6)`,
+		userID, req.Email, req.Username, req.DisplayName, passwordHash, now,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			sharedhttp.WriteError(w, r, http.StatusConflict, sharedhttp.CodeConflict, "email or username already taken")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not create user")
+		return
+	}
+
+	resp, err := m.createSession(r.Context(), tx, userID, req.DeviceLabel, r.UserAgent())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not create session")
+		return
+	}
+	resp.User = userView{
+		ID:          userID.String(),
+		Email:       req.Email,
+		Username:    req.Username,
+		DisplayName: req.DisplayName,
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
+		return
+	}
+
+	sharedhttp.WriteJSON(w, http.StatusCreated, resp)
+}
+
+func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	req.Login = strings.ToLower(strings.TrimSpace(req.Login))
+	if req.Login == "" || req.Password == "" {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "login and password are required")
+		return
+	}
+
+	var (
+		userID       uuid.UUID
+		passwordHash string
+		email        string
+		username     string
+		displayName  *string
+	)
+	err := m.db.QueryRow(r.Context(),
+		`select id, email, username, display_name, password_hash
+		 from users where email = $1 or username = $1`,
+		req.Login,
+	).Scan(&userID, &email, &username, &displayName, &passwordHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+
+	if err := passwords.Verify(passwordHash, req.Password); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
+		return
+	}
+
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	resp, err := m.createSession(r.Context(), tx, userID, req.DeviceLabel, r.UserAgent())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not create session")
+		return
+	}
+	resp.User = userView{
+		ID:       userID.String(),
+		Email:    email,
+		Username: username,
+	}
+	if displayName != nil {
+		resp.User.DisplayName = *displayName
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
+		return
+	}
+
+	sharedhttp.WriteJSON(w, http.StatusOK, resp)
+}
+
+func (m *Module) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	var req refreshRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	if req.RefreshToken == "" {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "refreshToken is required")
+		return
+	}
+
+	hash := hashRefreshToken(req.RefreshToken)
+
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	var (
+		sessionID uuid.UUID
+		userID    uuid.UUID
+		revoked   *time.Time
+		expires   time.Time
+	)
+	err = tx.QueryRow(r.Context(),
+		`select id, user_id, revoked_at, refresh_expires_at
+		 from user_sessions where refresh_token_hash = $1
+		 for update`,
+		hash,
+	).Scan(&sessionID, &userID, &revoked, &expires)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid refresh token")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if revoked != nil {
+		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session revoked")
+		return
+	}
+	if time.Now().After(expires) {
+		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "refresh token expired")
+		return
+	}
+
+	newRaw, newHash, err := generateRefreshToken()
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "token generation failed")
+		return
+	}
+	newExpires := time.Now().UTC().Add(refreshTTL)
+
+	_, err = tx.Exec(r.Context(),
+		`update user_sessions set refresh_token_hash = $1, refresh_expires_at = $2, last_seen_at = now() where id = $3`,
+		newHash, newExpires, sessionID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "session update failed")
+		return
+	}
+
+	access, accessExp, err := m.jwt.IssueAccess(userID, sessionID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "token signing failed")
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
+		return
+	}
+
+	sharedhttp.WriteJSON(w, http.StatusOK, authResponse{
+		AccessToken:     access,
+		AccessExpiresAt: accessExp,
+		RefreshToken:    newRaw,
+		SessionID:       sessionID.String(),
 	})
+}
+
+func (m *Module) handleLogout(w http.ResponseWriter, r *http.Request) {
+	sessionID, ok := authctx.SessionID(r.Context())
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "no session in context")
+		return
+	}
+	_, err := m.db.Exec(r.Context(),
+		`update user_sessions set revoked_at = now() where id = $1 and revoked_at is null`,
+		sessionID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not revoke session")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	var (
+		email       string
+		username    string
+		displayName *string
+	)
+	err := m.db.QueryRow(r.Context(),
+		`select email, username, display_name from users where id = $1`,
+		userID,
+	).Scan(&email, &username, &displayName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	view := userView{ID: userID.String(), Email: email, Username: username}
+	if displayName != nil {
+		view.DisplayName = *displayName
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+func (m *Module) createSession(ctx context.Context, tx pgx.Tx, userID uuid.UUID, deviceLabel string, userAgent string) (authResponse, error) {
+	rawRefresh, hashRefresh, err := generateRefreshToken()
+	if err != nil {
+		return authResponse{}, err
+	}
+	sessionID := uuid.New()
+	now := time.Now().UTC()
+	expires := now.Add(refreshTTL)
+
+	if deviceLabel == "" {
+		deviceLabel = "unknown"
+	}
+
+	_, err = tx.Exec(ctx,
+		`insert into user_sessions (id, user_id, refresh_token_hash, device_label, user_agent, created_at, last_seen_at, refresh_expires_at)
+		 values ($1, $2, $3, $4, $5, $6, $6, $7)`,
+		sessionID, userID, hashRefresh, deviceLabel, nullableString(userAgent), now, expires,
+	)
+	if err != nil {
+		return authResponse{}, err
+	}
+
+	access, accessExp, err := m.jwt.IssueAccess(userID, sessionID)
+	if err != nil {
+		return authResponse{}, err
+	}
+
+	return authResponse{
+		AccessToken:     access,
+		AccessExpiresAt: accessExp,
+		RefreshToken:    rawRefresh,
+		SessionID:       sessionID.String(),
+	}, nil
+}
+
+func generateRefreshToken() (raw, hash string, err error) {
+	buf := make([]byte, refreshTokenBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", err
+	}
+	raw = hex.EncodeToString(buf)
+	hash = hashRefreshToken(raw)
+	return raw, hash, nil
+}
+
+func hashRefreshToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func isUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "SQLSTATE 23505")
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	"github.com/NotReptile/RuCord/services/realtime/internal/deps"
 	"github.com/NotReptile/RuCord/services/realtime/internal/modules/presence"
 	"github.com/NotReptile/RuCord/services/realtime/internal/modules/signaling"
 	"github.com/NotReptile/RuCord/services/realtime/internal/modules/transport"
@@ -16,28 +17,33 @@ type Module interface {
 type Server struct {
 	serviceName string
 	version     string
+	deps        deps.Container
 	mux         *http.ServeMux
 }
 
-func NewServer(serviceName string, version string) *Server {
+func NewServer(serviceName, version string, container deps.Container) *Server {
+	mux := http.NewServeMux()
 	server := &Server{
 		serviceName: serviceName,
 		version:     version,
-		mux:         http.NewServeMux(),
+		deps:        container,
+		mux:         mux,
 	}
 
-	server.mux.Handle("/healthz", sharedhttp.HealthHandler(serviceName, version))
+	mux.Handle("/healthz", sharedhttp.HealthHandler(serviceName, version))
 	server.registerModules(
-		transport.NewModule(),
-		presence.NewModule(),
+		transport.NewModule(container.Logger, container.DB, container.JWT, container.Hub),
+		presence.NewModule(container.Hub),
 		signaling.NewModule(),
 	)
-
 	return server
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	h := sharedhttp.WithRequestID(s.mux)
+	h = sharedhttp.AccessLog(s.deps.Logger, h)
+	h = sharedhttp.Recover(s.deps.Logger, h)
+	return h
 }
 
 func (s *Server) registerModules(modules ...Module) {
