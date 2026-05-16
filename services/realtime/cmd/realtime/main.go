@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
 	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
+	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/observability"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
@@ -62,6 +65,7 @@ func main() {
 		JWT:        jwtIssuer,
 		Subscriber: subscriber,
 		Hub:        h,
+		CORS:       sharedhttp.CORS(parseCORSOrigins(os.Getenv("RUCORD_CORS_ORIGINS"))),
 	}
 
 	server := app.NewServer(cfg.ServiceName, version, container)
@@ -94,6 +98,24 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("http server shutdown error", "error", err)
 	}
+}
+
+func parseCORSOrigins(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return []string{
+			"http://127.0.0.1:1420",
+			"http://localhost:1420",
+			"tauri://localhost",
+		}
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func runSubscriber(ctx context.Context, subscriber *realtimebus.Subscriber, h *hub.Hub) {

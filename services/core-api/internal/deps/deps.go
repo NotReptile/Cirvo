@@ -2,6 +2,7 @@ package deps
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
@@ -15,4 +16,5 @@ type Container struct {
 	Redis     *redisstore.Client
 	JWT       *jwtauth.Issuer
 	Publisher *realtimebus.Publisher
+	CORS      func(http.Handler) http.Handler
 }

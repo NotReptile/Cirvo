@@ -60,6 +60,9 @@ func (s *Server) Handler() http.Handler {
 	h := sharedhttp.WithRequestID(s.mux)
 	h = sharedhttp.AccessLog(s.deps.Logger, h)
 	h = sharedhttp.Recover(s.deps.Logger, h)
+	if cors := s.deps.CORS; cors != nil {
+		h = cors(h)
+	}
 	return h
 }
 

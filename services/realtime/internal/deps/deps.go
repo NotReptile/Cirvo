@@ -2,6 +2,7 @@ package deps
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
@@ -17,4 +18,5 @@ type Container struct {
 	JWT        *jwtauth.Issuer
 	Subscriber *realtimebus.Subscriber
 	Hub        *hub.Hub
+	CORS       func(http.Handler) http.Handler
 }
