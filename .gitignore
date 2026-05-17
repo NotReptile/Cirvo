@@ -16,3 +16,4 @@ apps/desktop/src-tauri/target/
 services/**/bin/
 *.exe
 *.test
+TASKS.md
