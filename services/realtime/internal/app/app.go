@@ -31,10 +31,11 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 	}
 
 	mux.Handle("/healthz", sharedhttp.HealthHandler(serviceName, version))
+	signalingModule := signaling.NewModule(container.Logger, container.DB, container.Hub)
 	server.registerModules(
-		transport.NewModule(container.Logger, container.DB, container.JWT, container.Hub),
+		transport.NewModule(container.Logger, container.DB, container.JWT, container.Hub, signalingModule),
 		presence.NewModule(container.Hub),
-		signaling.NewModule(),
+		signalingModule,
 	)
 	return server
 }

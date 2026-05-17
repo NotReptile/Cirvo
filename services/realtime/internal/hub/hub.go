@@ -122,6 +122,16 @@ func (h *Hub) BroadcastWorkspace(workspaceID uuid.UUID, payload []byte) {
 	}
 }
 
+func (h *Hub) BroadcastSession(sessionID uuid.UUID, payload []byte) {
+	h.mu.RLock()
+	conn := h.bySession[sessionID]
+	h.mu.RUnlock()
+	if conn == nil {
+		return
+	}
+	h.deliver(conn, payload)
+}
+
 func (h *Hub) BroadcastUser(userID uuid.UUID, payload []byte) {
 	h.mu.RLock()
 	bucket := h.userMembers[userID]

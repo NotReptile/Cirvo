@@ -26,15 +26,23 @@ const (
 	closeReasonAuth = "unauthorized"
 )
 
-type Module struct {
-	logger *slog.Logger
-	db     *postgres.Pool
-	jwt    *jwtauth.Issuer
-	hub    *hub.Hub
+// Dispatcher routes a single inbound client→server frame. Implementations must
+// not block (offload to goroutine if needed).
+type Dispatcher interface {
+	Handles(event string) bool
+	Relay(ctx context.Context, event string, fromUser, fromSession uuid.UUID, rawPayload []byte)
 }
 
-func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, h *hub.Hub) *Module {
-	return &Module{logger: logger, db: db, jwt: jwt, hub: h}
+type Module struct {
+	logger      *slog.Logger
+	db          *postgres.Pool
+	jwt         *jwtauth.Issuer
+	hub         *hub.Hub
+	dispatchers []Dispatcher
+}
+
+func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, h *hub.Hub, dispatchers ...Dispatcher) *Module {
+	return &Module{logger: logger, db: db, jwt: jwt, hub: h, dispatchers: dispatchers}
 }
 
 func (m *Module) RegisterRoutes(mux *http.ServeMux) {
@@ -117,13 +125,30 @@ func (m *Module) readLoop(ctx context.Context, cancel context.CancelFunc, wsConn
 		default:
 		}
 		readCtx, readCancel := context.WithTimeout(ctx, readDeadline)
-		_, _, err := wsConn.Read(readCtx)
+		msgType, data, err := wsConn.Read(readCtx)
 		readCancel()
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				m.logger.Debug("read loop ended", "error", err)
 			}
 			return
+		}
+		if msgType != websocket.MessageText || len(data) == 0 {
+			continue
+		}
+		var env envelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			m.logger.Debug("inbound envelope rejected", "error", err)
+			continue
+		}
+		if env.Event == "" {
+			continue
+		}
+		for _, d := range m.dispatchers {
+			if d.Handles(env.Event) {
+				d.Relay(ctx, env.Event, conn.UserID, conn.SessionID, env.Payload)
+				break
+			}
 		}
 	}
 }

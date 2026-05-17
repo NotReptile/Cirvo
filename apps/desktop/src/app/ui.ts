@@ -1190,6 +1190,7 @@ function attachShellHandlers(): void {
       try {
         await httpClient.patch(`/api/v1/messages/${id}`, { body });
         state.editingMessageId = null;
+        render();
       } catch (err) {
         state.status = describeError(err);
         render();
