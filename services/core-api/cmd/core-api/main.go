@@ -13,6 +13,7 @@ import (
 	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
+	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
 	"github.com/NotReptile/RuCord/libs/shared-go/observability"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
@@ -53,13 +54,20 @@ func main() {
 
 	publisher := realtimebus.NewPublisher(redisClient)
 
+	objectStore, err := objectstore.ConnectFromEnv(rootCtx)
+	if err != nil {
+		logger.Warn("object storage init failed, file uploads disabled", "error", err)
+		objectStore = nil
+	}
+
 	container := deps.Container{
 		Logger:    logger,
 		DB:        db,
 		Redis:     redisClient,
 		JWT:       jwtIssuer,
-		Publisher: publisher,
-		CORS:      sharedhttp.CORS(parseCORSOrigins(os.Getenv("RUCORD_CORS_ORIGINS"))),
+		Publisher:   publisher,
+		ObjectStore: objectStore,
+		CORS:        sharedhttp.CORS(parseCORSOrigins(os.Getenv("RUCORD_CORS_ORIGINS"))),
 	}
 
 	server := app.NewServer(cfg.ServiceName, version, container)

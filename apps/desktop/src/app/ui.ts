@@ -33,6 +33,22 @@ interface ReactionAgg {
   mine: boolean;
 }
 
+interface Attachment {
+  id: string;
+  contentType: string;
+  sizeBytes: number;
+  filename?: string;
+  url: string;
+}
+
+interface PendingUpload {
+  id: string;
+  contentType: string;
+  sizeBytes: number;
+  filename?: string;
+  url: string;
+}
+
 interface Message {
   id: string;
   channelId: string;
@@ -43,6 +59,7 @@ interface Message {
   deletedAt?: string;
   clientMessageId?: string;
   reactions?: Record<string, ReactionAgg>;
+  attachments?: Attachment[];
 }
 
 interface Invite {
@@ -96,6 +113,8 @@ interface AppState {
   pickerForMessageId: string | null;
   auditEntries: AuditEntry[];
   auditLoading: boolean;
+  pendingUploads: PendingUpload[];
+  uploadInFlight: boolean;
 }
 
 const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
@@ -118,8 +137,12 @@ const state: AppState = {
   membersLoading: false,
   pickerForMessageId: null,
   auditEntries: [],
-  auditLoading: false
+  auditLoading: false,
+  pendingUploads: [],
+  uploadInFlight: false
 };
+
+const mediaBlobCache = new Map<string, string>();
 
 let rootEl: HTMLElement;
 let httpClient: HttpClient;
@@ -580,6 +603,7 @@ function renderInvitesBlock(): string {
 }
 
 function renderChannelView(channel: Channel): string {
+  const canSend = channel.kind === "text";
   return `
     <header class="channel-header">
       <div>
@@ -590,16 +614,65 @@ function renderChannelView(channel: Channel): string {
     <div id="message-list" class="message-list">
       ${state.messages.map((m) => renderMessage(m)).join("")}
     </div>
+    ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     <form id="send-form" class="send-form">
+      <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файл">
+        📎
+        <input type="file" id="attach-input" hidden ${canSend ? "" : "disabled"} />
+      </label>
       <input
         name="body"
         autocomplete="off"
-        placeholder="${channel.kind === "text" ? `Сообщение в #${channel.name}` : "Этот канал не принимает сообщения"}"
-        ${channel.kind === "text" ? "" : "disabled"}
+        placeholder="${canSend ? `Сообщение в #${channel.name}` : "Этот канал не принимает сообщения"}"
+        ${canSend ? "" : "disabled"}
       />
-      <button type="submit" ${channel.kind === "text" ? "" : "disabled"}>↑</button>
+      <button type="submit" ${canSend ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
+}
+
+function renderPendingUploads(): string {
+  return `
+    <div class="pending-uploads">
+      ${state.pendingUploads
+        .map(
+          (a) => `
+        <div class="pending-chip" data-pending="${a.id}">
+          <span>${isImage(a.contentType) ? "🖼" : "📄"} ${escapeHtml(a.filename || "файл")} · ${formatBytes(a.sizeBytes)}</span>
+          <button class="ghost pending-remove" data-id="${a.id}" title="Убрать">✕</button>
+        </div>
+      `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderAttachment(a: Attachment): string {
+  if (isImage(a.contentType)) {
+    return `<div class="attach-image" data-media-url="${escapeHtml(a.url)}">
+              <div class="attach-image-loader">Загрузка изображения…</div>
+            </div>`;
+  }
+  return `
+    <a class="attach-file" data-media-url="${escapeHtml(a.url)}" data-filename="${escapeHtml(a.filename || "file")}" href="#">
+      <span class="attach-icon">📄</span>
+      <div>
+        <div class="attach-name">${escapeHtml(a.filename || "файл")}</div>
+        <div class="attach-meta">${escapeHtml(a.contentType)} · ${formatBytes(a.sizeBytes)}</div>
+      </div>
+    </a>
+  `;
+}
+
+function isImage(contentType: string): boolean {
+  return contentType.startsWith("image/");
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function renderMessage(m: Message): string {
@@ -638,7 +711,12 @@ function renderMessage(m: Message): string {
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">🗑</button>` : ""}
         </span>
       </div>
-      <div class="message-body">${escapeHtml(m.body)}</div>
+      ${m.body ? `<div class="message-body">${escapeHtml(m.body)}</div>` : ""}
+      ${
+        m.attachments && m.attachments.length > 0
+          ? `<div class="attachments">${m.attachments.map((a) => renderAttachment(a)).join("")}</div>`
+          : ""
+      }
       ${
         reactions.length > 0
           ? `<div class="reaction-row">
@@ -1119,26 +1197,102 @@ function attachShellHandlers(): void {
     });
   });
 
+  rootEl.querySelector<HTMLInputElement>("#attach-input")?.addEventListener("change", async (e) => {
+    const target = e.currentTarget as HTMLInputElement;
+    const file = target.files && target.files[0];
+    target.value = "";
+    if (!file) return;
+    state.uploadInFlight = true;
+    render();
+    try {
+      const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
+      state.pendingUploads = [...state.pendingUploads, uploaded];
+    } catch (err) {
+      state.status = describeError(err);
+    } finally {
+      state.uploadInFlight = false;
+      render();
+    }
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>(".pending-remove").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.id;
+      state.pendingUploads = state.pendingUploads.filter((p) => p.id !== id);
+      render();
+    });
+  });
+
+  rootEl.querySelectorAll<HTMLAnchorElement>(".attach-file").forEach((link) => {
+    link.addEventListener("click", async (e) => {
+      e.preventDefault();
+      const url = link.dataset.mediaUrl;
+      const filename = link.dataset.filename || "file";
+      if (!url) return;
+      try {
+        const blob = await httpClient.getBlob(url);
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
+  });
+
+  rootEl.querySelectorAll<HTMLDivElement>(".attach-image").forEach((slot) => {
+    const url = slot.dataset.mediaUrl;
+    if (!url) return;
+    const cached = mediaBlobCache.get(url);
+    if (cached) {
+      slot.innerHTML = `<img src="${cached}" alt="" />`;
+      return;
+    }
+    void (async () => {
+      try {
+        const blob = await httpClient.getBlob(url);
+        const blobUrl = URL.createObjectURL(blob);
+        mediaBlobCache.set(url, blobUrl);
+        slot.innerHTML = `<img src="${blobUrl}" alt="" />`;
+      } catch {
+        slot.innerHTML = `<div class="attach-image-loader">Не удалось загрузить</div>`;
+      }
+    })();
+  });
+
   rootEl.querySelector<HTMLFormElement>("#send-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const input = form.querySelector<HTMLInputElement>('input[name="body"]');
     if (!input || !state.selectedChannelId) return;
     const body = input.value.trim();
-    if (!body) return;
+    const attachmentIds = state.pendingUploads.map((p) => p.id);
+    if (!body && attachmentIds.length === 0) return;
     input.value = "";
+    const pendingSnapshot = state.pendingUploads;
+    state.pendingUploads = [];
+    render();
     try {
       const created = await httpClient.post<Message>(`/api/v1/channels/${state.selectedChannelId}/messages`, {
         body,
-        clientMessageId: crypto.randomUUID()
+        clientMessageId: crypto.randomUUID(),
+        attachmentIds
       });
       if (created && created.id && !state.messages.some((m) => m.id === created.id)) {
-        state.messages = [...state.messages, { ...created, reactions: created.reactions ?? {} }];
+        state.messages = [
+          ...state.messages,
+          { ...created, reactions: created.reactions ?? {}, attachments: created.attachments ?? [] }
+        ];
         render();
       }
     } catch (err) {
       state.status = describeError(err);
       input.value = body;
+      state.pendingUploads = pendingSnapshot;
       render();
     }
   });

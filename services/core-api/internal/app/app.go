@@ -5,6 +5,7 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/attachment"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/audit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/auth"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
@@ -48,6 +49,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		workspace.NewModule(container.DB, container.Logger),
 		channel.NewModule(container.DB, container.Logger),
 		message.NewModule(container.DB, container.Publisher, container.Logger),
+		attachment.NewModule(container.DB, container.ObjectStore, container.Logger),
 		invite.NewModule(container.DB, container.Logger),
 		audit.NewModule(container.DB),
 		system.NewModule(),

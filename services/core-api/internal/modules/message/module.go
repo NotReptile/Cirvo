@@ -57,21 +57,31 @@ type reactionAgg struct {
 	Mine  bool `json:"mine"`
 }
 
+type attachmentView struct {
+	ID          string `json:"id"`
+	ContentType string `json:"contentType"`
+	SizeBytes   int64  `json:"sizeBytes"`
+	Filename    string `json:"filename,omitempty"`
+	URL         string `json:"url"`
+}
+
 type messageView struct {
-	ID              string                  `json:"id"`
-	ChannelID       string                  `json:"channelId"`
-	AuthorID        string                  `json:"authorId"`
-	Body            string                  `json:"body"`
-	ClientMessageID string                  `json:"clientMessageId,omitempty"`
-	CreatedAt       time.Time               `json:"createdAt"`
-	EditedAt        *time.Time              `json:"editedAt,omitempty"`
-	DeletedAt       *time.Time              `json:"deletedAt,omitempty"`
-	Reactions       map[string]reactionAgg  `json:"reactions"`
+	ID              string                 `json:"id"`
+	ChannelID       string                 `json:"channelId"`
+	AuthorID        string                 `json:"authorId"`
+	Body            string                 `json:"body"`
+	ClientMessageID string                 `json:"clientMessageId,omitempty"`
+	CreatedAt       time.Time              `json:"createdAt"`
+	EditedAt        *time.Time             `json:"editedAt,omitempty"`
+	DeletedAt       *time.Time             `json:"deletedAt,omitempty"`
+	Reactions       map[string]reactionAgg `json:"reactions"`
+	Attachments     []attachmentView       `json:"attachments"`
 }
 
 type createRequest struct {
-	Body            string `json:"body"`
-	ClientMessageID string `json:"clientMessageId"`
+	Body            string   `json:"body"`
+	ClientMessageID string   `json:"clientMessageId"`
+	AttachmentIDs   []string `json:"attachmentIds"`
 }
 
 type editRequest struct {
@@ -139,7 +149,20 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		             group by emoji
 		           ) r),
 		          '{}'::jsonb
-		        ) as reactions
+		        ) as reactions,
+		        coalesce(
+		          (select jsonb_agg(jsonb_build_object(
+		             'id', mo.id,
+		             'contentType', mo.content_type,
+		             'sizeBytes', mo.size_bytes,
+		             'filename', coalesce(mo.original_filename, ''),
+		             'url', '/api/v1/media/' || mo.id::text
+		           ) order by ma.position, mo.created_at)
+		           from message_attachments ma
+		           join media_objects mo on mo.id = ma.media_id
+		           where ma.message_id = m.id),
+		          '[]'::jsonb
+		        ) as attachments
 		 from messages m
 		 where m.channel_id = $1 and m.deleted_at is null and m.created_at < $2
 		 order by m.created_at desc
@@ -195,8 +218,13 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Body = strings.TrimSpace(req.Body)
-	if req.Body == "" {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "body must not be empty")
+	attachmentUUIDs, err := parseAttachmentIDs(req.AttachmentIDs)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, err.Error())
+		return
+	}
+	if req.Body == "" && len(attachmentUUIDs) == 0 {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "body or attachments are required")
 		return
 	}
 	if len(req.Body) > maxBodyChars {
@@ -205,40 +233,34 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.ClientMessageID != "" {
-		var (
-			existingID uuid.UUID
-			body       string
-			created    time.Time
-			edited     *time.Time
-			cmid       string
-		)
+		var existingID uuid.UUID
 		err := m.db.QueryRow(r.Context(),
-			`select id, body, created_at, edited_at, coalesce(client_message_id, '')
-			 from messages
+			`select id from messages
 			 where channel_id = $1 and author_user_id = $2 and client_message_id = $3`,
 			channelID, userID, req.ClientMessageID,
-		).Scan(&existingID, &body, &created, &edited, &cmid)
+		).Scan(&existingID)
 		if err == nil {
-			sharedhttp.WriteJSON(w, http.StatusOK, messageView{
-				ID:              existingID.String(),
-				ChannelID:       channelID.String(),
-				AuthorID:        userID.String(),
-				Body:            body,
-				ClientMessageID: cmid,
-				CreatedAt:       created,
-				EditedAt:        edited,
-			})
-			return
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+			existing, loadErr := m.loadMessageView(r.Context(), existingID, userID)
+			if loadErr == nil {
+				sharedhttp.WriteJSON(w, http.StatusOK, existing)
+				return
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 			return
 		}
 	}
 
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
 	messageID := uuid.New()
 	now := time.Now().UTC()
-	_, err := m.db.Exec(r.Context(),
+	_, err = tx.Exec(r.Context(),
 		`insert into messages (id, channel_id, author_user_id, body, client_message_id, created_at)
 		 values ($1, $2, $3, $4, nullif($5, ''), $6)`,
 		messageID, channelID, userID, req.Body, req.ClientMessageID, now,
@@ -252,16 +274,63 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	view := messageView{
-		ID:              messageID.String(),
-		ChannelID:       channelID.String(),
-		AuthorID:        userID.String(),
-		Body:            req.Body,
-		ClientMessageID: req.ClientMessageID,
-		CreatedAt:       now,
+	for i, mediaID := range attachmentUUIDs {
+		var ownerID uuid.UUID
+		if err := tx.QueryRow(r.Context(),
+			`select coalesce(uploaded_by_user_id, '00000000-0000-0000-0000-000000000000'::uuid)
+			 from media_objects where id = $1`,
+			mediaID,
+		).Scan(&ownerID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "unknown attachment")
+				return
+			}
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "attachment lookup failed")
+			return
+		}
+		if ownerID != userID {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "attachment does not belong to user")
+			return
+		}
+		if _, err := tx.Exec(r.Context(),
+			`insert into message_attachments (message_id, media_id, position) values ($1, $2, $3)`,
+			messageID, mediaID, i,
+		); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not link attachment")
+			return
+		}
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
+		return
+	}
+
+	view, err := m.loadMessageView(r.Context(), messageID, userID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload message")
+		return
 	}
 	m.publish("message.created", scope.WorkspaceID, channelID, view)
 	sharedhttp.WriteJSON(w, http.StatusCreated, view)
+}
+
+func parseAttachmentIDs(raw []string) ([]uuid.UUID, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > 10 {
+		return nil, errors.New("too many attachments (max 10)")
+	}
+	out := make([]uuid.UUID, 0, len(raw))
+	for _, s := range raw {
+		id, err := uuid.Parse(strings.TrimSpace(s))
+		if err != nil {
+			return nil, errors.New("invalid attachment id")
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // ---- edit / delete ----------------------------------------------------------
@@ -604,6 +673,67 @@ func (m *Module) resolveMessageScope(ctx context.Context, w http.ResponseWriter,
 	return channelID, scope, true
 }
 
+func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (messageView, error) {
+	row := m.db.QueryRow(ctx,
+		`select m.id, m.channel_id, m.author_user_id, m.body,
+		        coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
+		        coalesce(
+		          (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine))
+		           from (
+		             select emoji, count(*) as cnt, bool_or(user_id = $2) as mine
+		             from message_reactions where message_id = m.id
+		             group by emoji
+		           ) r),
+		          '{}'::jsonb
+		        ) as reactions,
+		        coalesce(
+		          (select jsonb_agg(jsonb_build_object(
+		             'id', mo.id,
+		             'contentType', mo.content_type,
+		             'sizeBytes', mo.size_bytes,
+		             'filename', coalesce(mo.original_filename, ''),
+		             'url', '/api/v1/media/' || mo.id::text
+		           ) order by ma.position, mo.created_at)
+		           from message_attachments ma
+		           join media_objects mo on mo.id = ma.media_id
+		           where ma.message_id = m.id),
+		          '[]'::jsonb
+		        ) as attachments
+		 from messages m where m.id = $1`,
+		id, viewerID,
+	)
+	var (
+		mid, chID, authID uuid.UUID
+		body, cmid        string
+		created           time.Time
+		edited            *time.Time
+		reactionsJSON     []byte
+		attachmentsJSON   []byte
+	)
+	if err := row.Scan(&mid, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON); err != nil {
+		return messageView{}, err
+	}
+	reactions := map[string]reactionAgg{}
+	if len(reactionsJSON) > 0 {
+		_ = json.Unmarshal(reactionsJSON, &reactions)
+	}
+	attachments := []attachmentView{}
+	if len(attachmentsJSON) > 0 {
+		_ = json.Unmarshal(attachmentsJSON, &attachments)
+	}
+	return messageView{
+		ID:              mid.String(),
+		ChannelID:       chID.String(),
+		AuthorID:        authID.String(),
+		Body:            body,
+		ClientMessageID: cmid,
+		CreatedAt:       created,
+		EditedAt:        edited,
+		Reactions:       reactions,
+		Attachments:     attachments,
+	}, nil
+}
+
 func (m *Module) loadMessage(ctx context.Context, id uuid.UUID) (messageView, error) {
 	var (
 		chID, authID uuid.UUID
@@ -655,13 +785,18 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		created          time.Time
 		edited           *time.Time
 		reactionsJSON    []byte
+		attachmentsJSON  []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
 	if len(reactionsJSON) > 0 {
 		_ = json.Unmarshal(reactionsJSON, &reactions)
+	}
+	attachments := []attachmentView{}
+	if len(attachmentsJSON) > 0 {
+		_ = json.Unmarshal(attachmentsJSON, &attachments)
 	}
 	return messageView{
 		ID:              id.String(),
@@ -672,6 +807,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		CreatedAt:       created,
 		EditedAt:        edited,
 		Reactions:       reactions,
+		Attachments:     attachments,
 	}, nil
 }
 

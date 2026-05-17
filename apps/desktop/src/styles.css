@@ -434,6 +434,84 @@ input:focus { outline: none; border-color: var(--accent); }
 .audit-time { color: var(--text-mute); white-space: nowrap; }
 .audit-actor { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
 .audit-target { color: var(--text-mute); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.attach-btn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  border-radius: 6px;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.attach-btn:hover { border-color: var(--accent); }
+.attach-btn.disabled { opacity: 0.5; cursor: not-allowed; }
+
+.pending-uploads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 20px;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+}
+.pending-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.pending-remove { padding: 0 6px; font-size: 12px; }
+
+.attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.attach-image {
+  max-width: 360px;
+  max-height: 280px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+}
+.attach-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 280px;
+  width: auto;
+  height: auto;
+}
+.attach-image-loader {
+  padding: 12px;
+  color: var(--text-mute);
+  font-size: 12px;
+}
+.attach-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text);
+  max-width: 360px;
+}
+.attach-file:hover { border-color: var(--accent); }
+.attach-icon { font-size: 20px; }
+.attach-name { font-weight: 600; font-size: 13px; }
+.attach-meta { color: var(--text-mute); font-size: 11px; }
+
 .audit-table code {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   background: var(--bg-elev-2);

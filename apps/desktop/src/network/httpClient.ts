@@ -60,6 +60,54 @@ export class HttpClient {
     }
   }
 
+  async uploadFile<T>(path: string, file: File): Promise<T> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    if (this.tokens && this.isAccessExpired()) {
+      await this.refresh();
+    }
+    let response = await this.doUpload(path, form);
+    if (response.status === 401 && this.tokens) {
+      try {
+        await this.refresh();
+      } catch {
+        this.setTokens(null);
+        throw await toApiError(response);
+      }
+      response = await this.doUpload(path, form);
+    }
+    if (!response.ok) {
+      throw await toApiError(response);
+    }
+    return parseBody<T>(response);
+  }
+
+  async getBlob(path: string): Promise<Blob> {
+    if (this.tokens && this.isAccessExpired()) {
+      await this.refresh();
+    }
+    let response = await this.doFetch("GET", path, undefined, true);
+    if (response.status === 401 && this.tokens) {
+      try {
+        await this.refresh();
+      } catch {
+        this.setTokens(null);
+        throw await toApiError(response);
+      }
+      response = await this.doFetch("GET", path, undefined, true);
+    }
+    if (!response.ok) {
+      throw await toApiError(response);
+    }
+    return response.blob();
+  }
+
+  private async doUpload(path: string, form: FormData): Promise<Response> {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (this.tokens) headers["Authorization"] = `Bearer ${this.tokens.accessToken}`;
+    return fetch(`${this.baseUrl}${path}`, { method: "POST", headers, body: form });
+  }
+
   async request<T>(method: string, path: string, body?: unknown, init?: { auth?: boolean }): Promise<T> {
     const needsAuth = init?.auth !== false;
     if (needsAuth && this.tokens && this.isAccessExpired()) {
