@@ -42,6 +42,8 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("POST /api/v1/workspaces", m.handleCreate)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}", m.handleGet)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/members", m.handleListMembers)
+	router.Protected("PATCH /api/v1/workspaces/{workspaceId}/members/{userId}", m.handleUpdateMember)
+	router.Protected("DELETE /api/v1/workspaces/{workspaceId}/members/{userId}", m.handleRemoveMember)
 }
 
 type workspaceView struct {
@@ -257,6 +259,136 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		items = append(items, view)
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+type updateMemberRequest struct {
+	Role string `json:"role"`
+}
+
+var assignableRoles = map[string]struct{}{
+	RoleAdmin:     {},
+	RoleModerator: {},
+	RoleMember:    {},
+}
+
+func (m *Module) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
+	actorID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUIDParam(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	targetID, ok := parseUUIDParam(r, "userId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid user id")
+		return
+	}
+
+	actorRole, ok := RoleOf(r.Context(), m.db, workspaceID, actorID)
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+	if actorRole != RoleOwner && actorRole != RoleAdmin {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only owner or admin can change roles")
+		return
+	}
+
+	var req updateMemberRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	req.Role = strings.ToLower(strings.TrimSpace(req.Role))
+	if _, allowed := assignableRoles[req.Role]; !allowed {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "role must be admin, moderator or member")
+		return
+	}
+
+	var targetRole string
+	err := m.db.QueryRow(r.Context(),
+		`select role_code from workspace_members where workspace_id = $1 and user_id = $2`,
+		workspaceID, targetID,
+	).Scan(&targetRole)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "member not found")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if targetRole == RoleOwner {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "owner role cannot be changed")
+		return
+	}
+	if targetID == actorID {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "cannot change your own role")
+		return
+	}
+
+	_, err = m.db.Exec(r.Context(),
+		`update workspace_members set role_code = $1 where workspace_id = $2 and user_id = $3`,
+		req.Role, workspaceID, targetID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update role")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
+	actorID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUIDParam(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	targetID, ok := parseUUIDParam(r, "userId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid user id")
+		return
+	}
+
+	actorRole, ok := RoleOf(r.Context(), m.db, workspaceID, actorID)
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+
+	if actorID != targetID && !CanModerate(actorRole) {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
+		return
+	}
+
+	var targetRole string
+	err := m.db.QueryRow(r.Context(),
+		`select role_code from workspace_members where workspace_id = $1 and user_id = $2`,
+		workspaceID, targetID,
+	).Scan(&targetRole)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if targetRole == RoleOwner {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "owner cannot be removed")
+		return
+	}
+
+	_, err = m.db.Exec(r.Context(),
+		`delete from workspace_members where workspace_id = $1 and user_id = $2`,
+		workspaceID, targetID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not remove member")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // IsMember reports whether the user is a member of the workspace.

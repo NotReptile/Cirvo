@@ -52,15 +52,21 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/channels/{channelId}/read", m.handleGetRead)
 }
 
+type reactionAgg struct {
+	Count int  `json:"count"`
+	Mine  bool `json:"mine"`
+}
+
 type messageView struct {
-	ID              string     `json:"id"`
-	ChannelID       string     `json:"channelId"`
-	AuthorID        string     `json:"authorId"`
-	Body            string     `json:"body"`
-	ClientMessageID string     `json:"clientMessageId,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	EditedAt        *time.Time `json:"editedAt,omitempty"`
-	DeletedAt       *time.Time `json:"deletedAt,omitempty"`
+	ID              string                  `json:"id"`
+	ChannelID       string                  `json:"channelId"`
+	AuthorID        string                  `json:"authorId"`
+	Body            string                  `json:"body"`
+	ClientMessageID string                  `json:"clientMessageId,omitempty"`
+	CreatedAt       time.Time               `json:"createdAt"`
+	EditedAt        *time.Time              `json:"editedAt,omitempty"`
+	DeletedAt       *time.Time              `json:"deletedAt,omitempty"`
+	Reactions       map[string]reactionAgg  `json:"reactions"`
 }
 
 type createRequest struct {
@@ -123,12 +129,22 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := m.db.Query(r.Context(),
-		`select id, channel_id, author_user_id, body, coalesce(client_message_id, ''), created_at, edited_at
-		 from messages
-		 where channel_id = $1 and deleted_at is null and created_at < $2
-		 order by created_at desc
+		`select m.id, m.channel_id, m.author_user_id, m.body,
+		        coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
+		        coalesce(
+		          (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine))
+		           from (
+		             select emoji, count(*) as cnt, bool_or(user_id = $4) as mine
+		             from message_reactions where message_id = m.id
+		             group by emoji
+		           ) r),
+		          '{}'::jsonb
+		        ) as reactions
+		 from messages m
+		 where m.channel_id = $1 and m.deleted_at is null and m.created_at < $2
+		 order by m.created_at desc
 		 limit $3`,
-		channelID, before, limit,
+		channelID, before, limit, userID,
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
@@ -138,7 +154,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]messageView, 0)
 	for rows.Next() {
-		v, err := scanMessage(rows)
+		v, err := scanMessageWithReactions(rows)
 		if err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
@@ -632,15 +648,20 @@ func (m *Module) publish(eventName string, workspaceID, channelID uuid.UUID, pay
 	})
 }
 
-func scanMessage(rows pgx.Rows) (messageView, error) {
+func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 	var (
 		id, chID, authID uuid.UUID
 		body, cmid       string
 		created          time.Time
 		edited           *time.Time
+		reactionsJSON    []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON); err != nil {
 		return messageView{}, err
+	}
+	reactions := map[string]reactionAgg{}
+	if len(reactionsJSON) > 0 {
+		_ = json.Unmarshal(reactionsJSON, &reactions)
 	}
 	return messageView{
 		ID:              id.String(),
@@ -650,6 +671,7 @@ func scanMessage(rows pgx.Rows) (messageView, error) {
 		ClientMessageID: cmid,
 		CreatedAt:       created,
 		EditedAt:        edited,
+		Reactions:       reactions,
 	}, nil
 }
 

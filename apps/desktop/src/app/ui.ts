@@ -28,6 +28,11 @@ interface Channel {
   createdAt: string;
 }
 
+interface ReactionAgg {
+  count: number;
+  mine: boolean;
+}
+
 interface Message {
   id: string;
   channelId: string;
@@ -37,6 +42,7 @@ interface Message {
   editedAt?: string;
   deletedAt?: string;
   clientMessageId?: string;
+  reactions?: Record<string, ReactionAgg>;
 }
 
 interface Invite {
@@ -51,6 +57,16 @@ interface Invite {
   createdBy?: string;
 }
 
+interface Member {
+  userId: string;
+  username: string;
+  displayName?: string;
+  role: string;
+  joinedAt: string;
+}
+
+type ModalKind = "profile" | "members" | null;
+
 interface AppState {
   me: Me | null;
   workspaces: Workspace[];
@@ -64,7 +80,13 @@ interface AppState {
   invitesOpen: boolean;
   invites: Invite[];
   invitesLoading: boolean;
+  modal: ModalKind;
+  members: Member[];
+  membersLoading: boolean;
+  pickerForMessageId: string | null;
 }
+
+const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
 
 const state: AppState = {
   me: null,
@@ -78,17 +100,19 @@ const state: AppState = {
   editingMessageId: null,
   invitesOpen: false,
   invites: [],
-  invitesLoading: false
+  invitesLoading: false,
+  modal: null,
+  members: [],
+  membersLoading: false,
+  pickerForMessageId: null
 };
 
 let rootEl: HTMLElement;
 let httpClient: HttpClient;
-let realtimeClient: RealtimeClient;
 
 export function renderApp(container: HTMLElement, http: HttpClient, realtime: RealtimeClient): void {
   rootEl = container;
   httpClient = http;
-  realtimeClient = realtime;
 
   realtime.subscribe(handleRealtimeEvent);
   http.onTokensChanged((tokens) => {
@@ -102,7 +126,10 @@ export function renderApp(container: HTMLElement, http: HttpClient, realtime: Re
         messages: [],
         editingMessageId: null,
         invitesOpen: false,
-        invites: []
+        invites: [],
+        modal: null,
+        members: [],
+        pickerForMessageId: null
       });
       render();
     }
@@ -163,6 +190,7 @@ async function selectChannel(id: string): Promise<void> {
   state.selectedChannelId = id;
   state.messages = [];
   state.editingMessageId = null;
+  state.pickerForMessageId = null;
   render();
   const data = await httpClient.get<{ items: Message[] }>(`/api/v1/channels/${id}/messages?limit=50`);
   state.messages = (data.items ?? []).slice().reverse();
@@ -184,13 +212,29 @@ async function loadInvites(): Promise<void> {
   }
 }
 
+async function loadMembers(): Promise<void> {
+  if (!state.selectedWorkspaceId) return;
+  state.membersLoading = true;
+  state.members = [];
+  render();
+  try {
+    const data = await httpClient.get<{ items: Member[] }>(`/api/v1/workspaces/${state.selectedWorkspaceId}/members`);
+    state.members = data.items ?? [];
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    state.membersLoading = false;
+    render();
+  }
+}
+
 function handleRealtimeEvent(event: RealtimeEvent): void {
   if (event.channelId !== state.selectedChannelId) return;
   switch (event.event) {
     case "message.created": {
       const msg = event.payload as Message;
       if (state.messages.some((m) => m.id === msg.id)) return;
-      state.messages = [...state.messages, msg];
+      state.messages = [...state.messages, { ...msg, reactions: msg.reactions ?? {} }];
       render();
       break;
     }
@@ -202,10 +246,59 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     }
     case "message.updated": {
       const msg = event.payload as Message;
-      state.messages = state.messages.map((m) => (m.id === msg.id ? msg : m));
+      state.messages = state.messages.map((m) =>
+        m.id === msg.id ? { ...msg, reactions: msg.reactions ?? m.reactions ?? {} } : m
+      );
       render();
       break;
     }
+    case "message.reaction.added": {
+      const p = event.payload as { messageId: string; userId: string; emoji: string };
+      applyReactionDelta(p.messageId, p.emoji, +1, p.userId);
+      break;
+    }
+    case "message.reaction.removed": {
+      const p = event.payload as { messageId: string; userId: string; emoji: string };
+      applyReactionDelta(p.messageId, p.emoji, -1, p.userId);
+      break;
+    }
+  }
+}
+
+function applyReactionDelta(messageId: string, emoji: string, delta: number, userId: string): void {
+  const idx = state.messages.findIndex((m) => m.id === messageId);
+  if (idx < 0) return;
+  const msg = state.messages[idx];
+  const reactions = { ...(msg.reactions ?? {}) };
+  const current = reactions[emoji] ?? { count: 0, mine: false };
+  const isMe = userId === state.me?.id;
+  const nextCount = current.count + delta;
+  if (nextCount <= 0) {
+    delete reactions[emoji];
+  } else {
+    reactions[emoji] = {
+      count: nextCount,
+      mine: isMe ? delta > 0 : current.mine
+    };
+  }
+  state.messages = state.messages.map((m, i) => (i === idx ? { ...m, reactions } : m));
+  render();
+}
+
+async function toggleReaction(messageId: string, emoji: string): Promise<void> {
+  const msg = state.messages.find((m) => m.id === messageId);
+  if (!msg) return;
+  const isMine = msg.reactions?.[emoji]?.mine ?? false;
+  const path = `/api/v1/messages/${messageId}/reactions/${encodeURIComponent(emoji)}`;
+  try {
+    if (isMine) {
+      await httpClient.del(path);
+    } else {
+      await httpClient.put(path);
+    }
+  } catch (err) {
+    state.status = describeError(err);
+    render();
   }
 }
 
@@ -303,19 +396,19 @@ function renderShell(): void {
   const me = state.me;
   const selectedChannel = state.channels.find((c) => c.id === state.selectedChannelId);
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
-  const canModerate = selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
+  const canModerate = !!selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
 
   rootEl.innerHTML = `
     <div class="shell">
       <aside class="sidebar">
         <div class="sidebar-header">
-          <div class="user">
+          <button id="open-profile" class="user user-btn" title="Профиль">
             <div class="avatar">${(me?.displayName || me?.username || "?").charAt(0).toUpperCase()}</div>
             <div>
               <div class="user-name">${escapeHtml(me?.displayName || me?.username || "—")}</div>
               <div class="user-sub">@${escapeHtml(me?.username || "")}</div>
             </div>
-          </div>
+          </button>
           <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
         </div>
         <div class="section-title">Воркспейсы</div>
@@ -340,13 +433,15 @@ function renderShell(): void {
           <input name="code" placeholder="Код инвайта" required />
           <button type="submit" title="Принять">↵</button>
         </form>
-        ${state.selectedWorkspaceId ? renderChannelsBlock(Boolean(canModerate)) : ""}
+        ${state.selectedWorkspaceId ? renderChannelsBlock() : ""}
+        ${state.selectedWorkspaceId ? renderMembersButton() : ""}
         ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}
       </aside>
       <main class="content">
         ${selectedChannel ? renderChannelView(selectedChannel) : renderEmpty()}
       </main>
       ${state.status ? `<div class="status-bar">${escapeHtml(state.status)}</div>` : ""}
+      ${renderModal()}
     </div>
   `;
   attachShellHandlers();
@@ -364,7 +459,7 @@ function renderEmpty(): string {
   return `<div class="empty"><p>Выберите канал</p></div>`;
 }
 
-function renderChannelsBlock(_canModerate: boolean): string {
+function renderChannelsBlock(): string {
   return `
     <div class="section-title">Каналы</div>
     <ul class="channel-list">
@@ -384,6 +479,10 @@ function renderChannelsBlock(_canModerate: boolean): string {
       <button type="submit">+</button>
     </form>
   `;
+}
+
+function renderMembersButton(): string {
+  return `<button id="open-members" class="ghost wide-btn">Участники</button>`;
 }
 
 function renderInvitesBlock(): string {
@@ -450,9 +549,11 @@ function renderChannelView(channel: Channel): string {
 function renderMessage(m: Message): string {
   const isMine = state.me?.id === m.authorId;
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
-  const canModerate = selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
+  const canModerate = !!selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
   const canDelete = isMine || canModerate;
   const isEditing = state.editingMessageId === m.id;
+  const reactions = Object.entries(m.reactions ?? {});
+  const pickerOpen = state.pickerForMessageId === m.id;
 
   if (isEditing) {
     return `
@@ -476,18 +577,217 @@ function renderMessage(m: Message): string {
         <span class="author">${shortId(m.authorId)}${isMine ? " · вы" : ""}</span>
         <span class="timestamp">${formatTime(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
+          <button class="ghost action-react" data-id="${m.id}" title="Реакция">😊</button>
           ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">✎</button>` : ""}
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">🗑</button>` : ""}
         </span>
       </div>
       <div class="message-body">${escapeHtml(m.body)}</div>
+      ${
+        reactions.length > 0
+          ? `<div class="reaction-row">
+              ${reactions
+                .map(
+                  ([emoji, agg]) => `
+                <button class="reaction-chip${agg.mine ? " mine" : ""}" data-react-toggle="${m.id}" data-emoji="${escapeHtml(emoji)}">
+                  <span>${escapeHtml(emoji)}</span>
+                  <span class="count">${agg.count}</span>
+                </button>
+              `
+                )
+                .join("")}
+            </div>`
+          : ""
+      }
+      ${
+        pickerOpen
+          ? `<div class="emoji-picker">
+              ${QUICK_EMOJIS.map(
+                (e) =>
+                  `<button class="ghost picker-emoji" data-react-toggle="${m.id}" data-emoji="${escapeHtml(e)}">${e}</button>`
+              ).join("")}
+              <input class="picker-custom" data-msg-id="${m.id}" placeholder="свой… ⏎" maxlength="16" />
+            </div>`
+          : ""
+      }
     </div>
+  `;
+}
+
+function renderModal(): string {
+  if (!state.modal) return "";
+  if (state.modal === "profile") return renderProfileModal();
+  if (state.modal === "members") return renderMembersModal();
+  return "";
+}
+
+function renderProfileModal(): string {
+  const me = state.me;
+  if (!me) return "";
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal" role="dialog">
+        <div class="modal-header">
+          <h3>Профиль</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <form id="profile-form" class="modal-body">
+          <label>Email
+            <input value="${escapeHtml(me.email)}" disabled />
+          </label>
+          <label>Имя пользователя
+            <input value="${escapeHtml(me.username)}" disabled />
+          </label>
+          <label>Отображаемое имя
+            <input name="displayName" value="${escapeHtml(me.displayName ?? "")}" maxlength="64" />
+          </label>
+          <button type="submit" class="primary">Сохранить</button>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderMembersModal(): string {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  if (!ws) return "";
+  const canManageRole = ws.role === "owner" || ws.role === "admin";
+  const canKick = ["owner", "admin", "moderator"].includes(ws.role ?? "");
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide" role="dialog">
+        <div class="modal-header">
+          <h3>Участники · ${escapeHtml(ws.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body">
+          ${
+            state.membersLoading
+              ? `<div class="invites-empty">Загрузка…</div>`
+              : `<table class="members-table">
+                  <thead><tr><th>Пользователь</th><th>Роль</th><th></th></tr></thead>
+                  <tbody>
+                    ${state.members
+                      .map((m) => renderMemberRow(m, ws.ownerId, canManageRole, canKick))
+                      .join("")}
+                  </tbody>
+                </table>`
+          }
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, canKick: boolean): string {
+  const isOwner = m.userId === ownerId;
+  const isSelf = m.userId === state.me?.id;
+  const roleOptions = ["admin", "moderator", "member"];
+  const showRoleSelect = canManageRole && !isOwner && !isSelf;
+  const showKick = canKick && !isOwner && !isSelf;
+  return `
+    <tr data-member="${m.userId}">
+      <td>
+        <div class="member-name">${escapeHtml(m.displayName || m.username)}</div>
+        <div class="member-sub">@${escapeHtml(m.username)}</div>
+      </td>
+      <td>
+        ${
+          showRoleSelect
+            ? `<select class="member-role" data-user-id="${m.userId}">
+                ${roleOptions
+                  .map(
+                    (r) => `<option value="${r}"${r === m.role ? " selected" : ""}>${escapeHtml(r)}</option>`
+                  )
+                  .join("")}
+              </select>`
+            : `<span class="role-badge role-${escapeHtml(m.role)}">${escapeHtml(m.role)}</span>`
+        }
+      </td>
+      <td>
+        ${showKick ? `<button class="ghost member-kick" data-user-id="${m.userId}" title="Удалить">🗑</button>` : ""}
+      </td>
+    </tr>
   `;
 }
 
 function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#logout-btn")?.addEventListener("click", () => {
     void httpClient.logout();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#open-profile")?.addEventListener("click", () => {
+    state.modal = "profile";
+    render();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#open-members")?.addEventListener("click", async () => {
+    state.modal = "members";
+    render();
+    await loadMembers();
+  });
+
+  rootEl.querySelectorAll<HTMLElement>("[data-modal-close]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      if (e.target !== el && e.currentTarget !== e.target) return;
+      state.modal = null;
+      render();
+    });
+  });
+
+  rootEl.querySelector<HTMLFormElement>("#profile-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    const displayName = String(data.get("displayName") ?? "").trim();
+    try {
+      const updated = await httpClient.put<Me & { updatedAt: string }>("/api/v1/users/me", {
+        displayName
+      });
+      state.me = { id: updated.id, email: updated.email, username: updated.username, displayName: updated.displayName };
+      state.modal = null;
+      state.status = "Профиль обновлён";
+      render();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
+
+  rootEl.querySelectorAll<HTMLSelectElement>(".member-role").forEach((sel) => {
+    sel.addEventListener("change", async () => {
+      if (!state.selectedWorkspaceId) return;
+      const userId = sel.dataset.userId;
+      if (!userId) return;
+      try {
+        await httpClient.patch(`/api/v1/workspaces/${state.selectedWorkspaceId}/members/${userId}`, {
+          role: sel.value
+        });
+        const idx = state.members.findIndex((m) => m.userId === userId);
+        if (idx >= 0) state.members[idx] = { ...state.members[idx], role: sel.value };
+        render();
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>(".member-kick").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!state.selectedWorkspaceId) return;
+      const userId = btn.dataset.userId;
+      if (!userId) return;
+      if (!confirm("Удалить участника из воркспейса?")) return;
+      try {
+        await httpClient.del(`/api/v1/workspaces/${state.selectedWorkspaceId}/members/${userId}`);
+        state.members = state.members.filter((m) => m.userId !== userId);
+        render();
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
   });
 
   rootEl.querySelectorAll<HTMLLIElement>("[data-ws]").forEach((li) => {
@@ -621,6 +921,7 @@ function attachShellHandlers(): void {
   rootEl.querySelectorAll<HTMLButtonElement>(".action-edit").forEach((btn) => {
     btn.addEventListener("click", () => {
       state.editingMessageId = btn.dataset.id ?? null;
+      state.pickerForMessageId = null;
       render();
     });
   });
@@ -636,6 +937,36 @@ function attachShellHandlers(): void {
         state.status = describeError(err);
         render();
       }
+    });
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>(".action-react").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.id ?? null;
+      state.pickerForMessageId = state.pickerForMessageId === id ? null : id;
+      render();
+    });
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-react-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const messageId = btn.dataset.reactToggle;
+      const emoji = btn.dataset.emoji;
+      if (!messageId || !emoji) return;
+      state.pickerForMessageId = null;
+      void toggleReaction(messageId, emoji);
+    });
+  });
+
+  rootEl.querySelectorAll<HTMLInputElement>(".picker-custom").forEach((input) => {
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const messageId = input.dataset.msgId;
+      const emoji = input.value.trim();
+      if (!messageId || !emoji) return;
+      state.pickerForMessageId = null;
+      void toggleReaction(messageId, emoji);
     });
   });
 
