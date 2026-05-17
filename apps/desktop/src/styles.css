@@ -418,6 +418,29 @@ input:focus { outline: none; border-color: var(--accent); }
 .role-moderator { background: rgba(46, 204, 113, 0.25); color: #5fd49a; }
 .member-kick { padding: 2px 8px; }
 
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.audit-table th,
+.audit-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.audit-table th { color: var(--text-mute); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+.audit-time { color: var(--text-mute); white-space: nowrap; }
+.audit-actor { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.audit-target { color: var(--text-mute); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.audit-table code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--bg-elev-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
 .status-bar {
   position: fixed;
   bottom: 12px;

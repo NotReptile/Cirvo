@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "core-api",
+      "type": "shell",
+      "command": "Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/core-api/cmd/core-api",
+      "isBackground": true,
+      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "realtime",
+      "type": "shell",
+      "command": "Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/realtime/cmd/realtime",
+      "isBackground": true,
+      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "worker",
+      "type": "shell",
+      "command": "Get-Content deploy/.env | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/worker/cmd/worker",
+      "isBackground": true,
+      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "frontend",
+      "type": "shell",
+      "command": "Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"freed port 1420 (pid $_)\" } catch {} }; Set-Location apps/desktop; npm run dev",
+      "isBackground": true,
+      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Stop All",
+      "type": "shell",
+      "command": "Get-NetTCPConnection -LocalPort 1420,8080,8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"killed pid $_\" } catch {} }",
+      "presentation": { "group": "rucord", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run All",
+      "dependsOn": ["core-api", "realtime", "worker", "frontend"],
+      "dependsOrder": "parallel"
+    }
+  ]
+}

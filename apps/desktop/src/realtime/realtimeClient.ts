@@ -67,6 +67,26 @@ export class RealtimeClient {
     };
   }
 
+  reconnect(): void {
+    if (!this.accessToken) return;
+    this.manualClose = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.socket) {
+      const sock = this.socket;
+      this.socket = null;
+      try {
+        sock.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.reconnectAttempts = 0;
+    this.connect();
+  }
+
   disconnect(): void {
     this.manualClose = true;
     if (this.reconnectTimer) {

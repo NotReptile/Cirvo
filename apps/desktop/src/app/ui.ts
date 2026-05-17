@@ -65,7 +65,17 @@ interface Member {
   joinedAt: string;
 }
 
-type ModalKind = "profile" | "members" | null;
+interface AuditEntry {
+  id: string;
+  actorId?: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  workspaceId?: string;
+  createdAt: string;
+}
+
+type ModalKind = "profile" | "members" | "audit" | null;
 
 interface AppState {
   me: Me | null;
@@ -84,6 +94,8 @@ interface AppState {
   members: Member[];
   membersLoading: boolean;
   pickerForMessageId: string | null;
+  auditEntries: AuditEntry[];
+  auditLoading: boolean;
 }
 
 const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
@@ -104,15 +116,19 @@ const state: AppState = {
   modal: null,
   members: [],
   membersLoading: false,
-  pickerForMessageId: null
+  pickerForMessageId: null,
+  auditEntries: [],
+  auditLoading: false
 };
 
 let rootEl: HTMLElement;
 let httpClient: HttpClient;
+let realtimeClient: RealtimeClient;
 
 export function renderApp(container: HTMLElement, http: HttpClient, realtime: RealtimeClient): void {
   rootEl = container;
   httpClient = http;
+  realtimeClient = realtime;
 
   realtime.subscribe(handleRealtimeEvent);
   http.onTokensChanged((tokens) => {
@@ -210,6 +226,34 @@ async function loadInvites(): Promise<void> {
     state.invitesLoading = false;
     render();
   }
+}
+
+async function loadAudit(): Promise<void> {
+  if (!state.selectedWorkspaceId) return;
+  state.auditLoading = true;
+  state.auditEntries = [];
+  render();
+  try {
+    const data = await httpClient.get<{ items: AuditEntry[] }>(
+      `/api/v1/workspaces/${state.selectedWorkspaceId}/audit?limit=100`
+    );
+    state.auditEntries = data.items ?? [];
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    state.auditLoading = false;
+    render();
+  }
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
 }
 
 async function loadMembers(): Promise<void> {
@@ -327,7 +371,7 @@ function renderAuth(): void {
             <input name="email" type="email" autocomplete="email" />
           </label>
           <label data-only="register">Имя пользователя
-            <input name="username" pattern="[a-z0-9_]{3,32}" />
+            <input name="username" minlength="3" maxlength="32" title="строчные a-z, 0-9, нижнее подчёркивание; 3-32 символа" placeholder="username" />
           </label>
           <label data-only="register">Отображаемое имя
             <input name="displayName" />
@@ -360,9 +404,16 @@ function renderAuth(): void {
     state.authError = null;
     try {
       if (mode === "register") {
+        const rawUsername = String(data.get("username") ?? "").trim().toLowerCase();
+        const username = rawUsername.replace(/[^a-z0-9_]/g, "_");
+        if (!/^[a-z0-9_]{3,32}$/.test(username)) {
+          state.authError = "Имя пользователя: 3–32 символа, только a–z, 0–9, _";
+          render();
+          return;
+        }
         await httpClient.register({
           email: String(data.get("email") ?? "").trim(),
-          username: String(data.get("username") ?? "").trim(),
+          username,
           password: String(data.get("password") ?? ""),
           displayName: String(data.get("displayName") ?? "").trim() || undefined
         });
@@ -424,10 +475,10 @@ function renderShell(): void {
             )
             .join("")}
         </ul>
-        <form id="create-workspace" class="inline-form">
+        <form id="create-workspace" class="inline-form" data-slug-touched="false">
           <input name="name" placeholder="Имя нового воркспейса" required />
-          <input name="slug" placeholder="slug" pattern="[a-z0-9][a-z0-9-]{1,62}[a-z0-9]" required />
-          <button type="submit">+</button>
+          <input name="slug" placeholder="slug (a-z, 0-9, -)" title="3–64 символа, строчные a-z, 0-9, -, не может начинаться/заканчиваться дефисом" required />
+          <button type="submit" title="Создать">+</button>
         </form>
         <form id="accept-invite" class="inline-form">
           <input name="code" placeholder="Код инвайта" required />
@@ -435,6 +486,7 @@ function renderShell(): void {
         </form>
         ${state.selectedWorkspaceId ? renderChannelsBlock() : ""}
         ${state.selectedWorkspaceId ? renderMembersButton() : ""}
+        ${state.selectedWorkspaceId && canModerate ? renderAuditButton() : ""}
         ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}
       </aside>
       <main class="content">
@@ -483,6 +535,10 @@ function renderChannelsBlock(): string {
 
 function renderMembersButton(): string {
   return `<button id="open-members" class="ghost wide-btn">Участники</button>`;
+}
+
+function renderAuditButton(): string {
+  return `<button id="open-audit" class="ghost wide-btn">Журнал событий</button>`;
 }
 
 function renderInvitesBlock(): string {
@@ -618,7 +674,48 @@ function renderModal(): string {
   if (!state.modal) return "";
   if (state.modal === "profile") return renderProfileModal();
   if (state.modal === "members") return renderMembersModal();
+  if (state.modal === "audit") return renderAuditModal();
   return "";
+}
+
+function renderAuditModal(): string {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  if (!ws) return "";
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide" role="dialog">
+        <div class="modal-header">
+          <h3>Журнал событий · ${escapeHtml(ws.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body">
+          ${
+            state.auditLoading
+              ? `<div class="invites-empty">Загрузка…</div>`
+              : state.auditEntries.length === 0
+                ? `<div class="invites-empty">Событий пока нет</div>`
+                : `<table class="audit-table">
+                    <thead><tr><th>Когда</th><th>Кто</th><th>Что</th><th>Цель</th></tr></thead>
+                    <tbody>
+                      ${state.auditEntries
+                        .map(
+                          (e) => `
+                        <tr>
+                          <td class="audit-time">${formatTime(e.createdAt)}</td>
+                          <td class="audit-actor">${e.actorId ? shortId(e.actorId) : "система"}</td>
+                          <td><code>${escapeHtml(e.action)}</code></td>
+                          <td class="audit-target">${escapeHtml(e.targetType)} · ${shortId(e.targetId)}</td>
+                        </tr>
+                      `
+                        )
+                        .join("")}
+                    </tbody>
+                  </table>`
+          }
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderProfileModal(): string {
@@ -727,6 +824,12 @@ function attachShellHandlers(): void {
     await loadMembers();
   });
 
+  rootEl.querySelector<HTMLButtonElement>("#open-audit")?.addEventListener("click", async () => {
+    state.modal = "audit";
+    render();
+    await loadAudit();
+  });
+
   rootEl.querySelectorAll<HTMLElement>("[data-modal-close]").forEach((el) => {
     el.addEventListener("click", (e) => {
       if (e.target !== el && e.currentTarget !== e.target) return;
@@ -804,22 +907,42 @@ function attachShellHandlers(): void {
     });
   });
 
-  rootEl.querySelector<HTMLFormElement>("#create-workspace")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.currentTarget as HTMLFormElement;
-    const data = new FormData(form);
-    try {
-      const ws = await httpClient.post<Workspace>("/api/v1/workspaces", {
-        name: String(data.get("name") ?? "").trim(),
-        slug: String(data.get("slug") ?? "").trim()
+  const wsForm = rootEl.querySelector<HTMLFormElement>("#create-workspace");
+  if (wsForm) {
+    const nameInput = wsForm.querySelector<HTMLInputElement>('input[name="name"]');
+    const slugInput = wsForm.querySelector<HTMLInputElement>('input[name="slug"]');
+    if (nameInput && slugInput) {
+      nameInput.addEventListener("input", () => {
+        if (wsForm.dataset.slugTouched !== "true") {
+          slugInput.value = slugify(nameInput.value);
+        }
       });
-      state.workspaces = [...state.workspaces, ws];
-      await selectWorkspace(ws.id);
-    } catch (err) {
-      state.status = describeError(err);
-      render();
+      slugInput.addEventListener("input", () => {
+        wsForm.dataset.slugTouched = slugInput.value === "" ? "false" : "true";
+      });
     }
-  });
+    wsForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const data = new FormData(wsForm);
+      const name = String(data.get("name") ?? "").trim();
+      let slug = String(data.get("slug") ?? "").trim().toLowerCase();
+      slug = slug.replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "");
+      if (slug.length < 3) {
+        state.status = "Slug должен быть от 3 символов: a-z, 0-9, -";
+        render();
+        return;
+      }
+      try {
+        const ws = await httpClient.post<Workspace>("/api/v1/workspaces", { name, slug });
+        state.workspaces = [...state.workspaces, ws];
+        realtimeClient.reconnect();
+        await selectWorkspace(ws.id);
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
+  }
 
   rootEl.querySelector<HTMLFormElement>("#accept-invite")?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -833,6 +956,7 @@ function attachShellHandlers(): void {
       );
       form.reset();
       await loadWorkspaces();
+      realtimeClient.reconnect();
       await selectWorkspace(res.workspaceId);
       state.status = "Вы вступили в воркспейс";
     } catch (err) {
@@ -1004,10 +1128,14 @@ function attachShellHandlers(): void {
     if (!body) return;
     input.value = "";
     try {
-      await httpClient.post(`/api/v1/channels/${state.selectedChannelId}/messages`, {
+      const created = await httpClient.post<Message>(`/api/v1/channels/${state.selectedChannelId}/messages`, {
         body,
         clientMessageId: crypto.randomUUID()
       });
+      if (created && created.id && !state.messages.some((m) => m.id === created.id)) {
+        state.messages = [...state.messages, { ...created, reactions: created.reactions ?? {} }];
+        render();
+      }
     } catch (err) {
       state.status = describeError(err);
       input.value = body;
