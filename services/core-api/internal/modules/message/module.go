@@ -170,6 +170,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		channelID, before, limit, userID,
 	)
 	if err != nil {
+		m.logger.Error("list messages query failed", "error", err, "channelId", channelID)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
@@ -179,6 +180,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		v, err := scanMessageWithReactions(rows)
 		if err != nil {
+			m.logger.Error("list messages scan failed", "error", err, "channelId", channelID)
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
