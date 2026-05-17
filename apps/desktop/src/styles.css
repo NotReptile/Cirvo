@@ -198,6 +198,77 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .send-form input { flex: 1; }
 
+.invites-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.invites-title button { padding: 0 6px; }
+
+.invites-empty {
+  color: var(--text-mute);
+  font-size: 12px;
+  padding: 6px 4px;
+}
+
+.invite-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.invite-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--bg-elev-2);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.invite-code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.invite-meta { color: var(--text-mute); font-size: 11px; }
+.invite-list button {
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+.message {
+  position: relative;
+}
+.message-actions {
+  display: none;
+  gap: 4px;
+  margin-left: auto;
+}
+.message:hover .message-actions {
+  display: inline-flex;
+}
+.message-actions button {
+  padding: 2px 6px;
+  font-size: 11px;
+  background: transparent;
+}
+
+.edit-form {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.edit-form input { flex: 1; }
+.edit-form button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 .status-bar {
   position: fixed;
   bottom: 12px;
