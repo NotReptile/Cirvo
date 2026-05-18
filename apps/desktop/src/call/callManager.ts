@@ -17,6 +17,7 @@ export interface CallSnapshot {
   channelId: string | null;
   muted: boolean;
   cameraOn: boolean;
+  screenSharing: boolean;
   startedAt: number | null;
   endedReason: string | null;
 }
@@ -47,6 +48,7 @@ const IDLE_SNAPSHOT: CallSnapshot = {
   channelId: null,
   muted: false,
   cameraOn: false,
+  screenSharing: false,
   startedAt: null,
   endedReason: null
 };
@@ -57,6 +59,7 @@ export class CallManager {
   private pc: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
+  private screenTrack: MediaStreamTrack | null = null;
   private remoteStream: MediaStream | null = null;
   private remoteAudio: HTMLAudioElement | null = null;
   private iceServers: RTCIceServer[] | null = null;
@@ -181,6 +184,8 @@ export class CallManager {
     if (!this.pc || !this.localStream || this.snapshot.state !== "active") {
       return this.snapshot.cameraOn;
     }
+    // Камера и screen-share делят один video sender — нельзя одновременно.
+    if (this.screenTrack) return false;
     if (!this.cameraTrack) {
       let videoStream: MediaStream;
       try {
@@ -216,6 +221,75 @@ export class CallManager {
     }
     await this.renegotiate();
     this.update({ cameraOn: false });
+    return false;
+  }
+
+  // Демо экрана 1-к-1. См. VoiceChannelManager.toggleScreenShare —
+  // та же стратегия: screen замещает камеру, обратно не возвращаемся.
+  async toggleScreenShare(): Promise<boolean> {
+    if (!this.pc || !this.localStream || this.snapshot.state !== "active") {
+      return this.snapshot.screenSharing;
+    }
+    if (!this.screenTrack) {
+      let displayStream: MediaStream;
+      try {
+        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      } catch {
+        return false;
+      }
+      const track = displayStream.getVideoTracks()[0];
+      if (!track) return false;
+      this.screenTrack = track;
+      track.onended = () => {
+        if (this.screenTrack === track) {
+          void this.toggleScreenShare();
+        }
+      };
+      let hadCamera = false;
+      if (this.cameraTrack) {
+        hadCamera = true;
+        const cam = this.cameraTrack;
+        this.cameraTrack = null;
+        this.localStream.removeTrack(cam);
+        cam.stop();
+      }
+      this.localStream.addTrack(track);
+      if (hadCamera) {
+        const sender = this.pc.getSenders().find((s) => s.track?.kind === "video");
+        if (sender) {
+          try {
+            await sender.replaceTrack(track);
+          } catch {
+            /* ignore */
+          }
+        }
+      } else {
+        try {
+          this.pc.addTrack(track, this.localStream);
+        } catch {
+          /* ignore */
+        }
+        await this.renegotiate();
+      }
+      this.update({ screenSharing: true, cameraOn: false });
+      return true;
+    }
+    const track = this.screenTrack;
+    this.screenTrack = null;
+    track.onended = null;
+    this.localStream.removeTrack(track);
+    track.stop();
+    for (const sender of this.pc.getSenders()) {
+      if (sender.track && sender.track.kind === "video") {
+        try {
+          this.pc.removeTrack(sender);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    await this.renegotiate();
+    this.update({ screenSharing: false });
     return false;
   }
 
@@ -452,7 +526,9 @@ export class CallManager {
       }
       this.localStream = null;
     }
+    if (this.screenTrack) this.screenTrack.onended = null;
     this.cameraTrack = null;
+    this.screenTrack = null;
     if (this.remoteAudio) {
       this.remoteAudio.srcObject = null;
       this.remoteAudio.remove();

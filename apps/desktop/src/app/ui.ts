@@ -631,6 +631,7 @@ function renderCallOverlay(): string {
       break;
     case "active": {
       const cameraLabel = snap.cameraOn ? "📷 Выключить камеру" : "📹 Включить камеру";
+      const screenLabel = snap.screenSharing ? "🛑 Прекратить демо" : "🖥 Поделиться экраном";
       body = `
         <div class="call-status">В разговоре с <b>${escapeHtml(peerName)}</b></div>
         <div class="call-timer" id="call-timer">${escapeHtml(durationLabel)}</div>
@@ -645,7 +646,8 @@ function renderCallOverlay(): string {
       `;
       footer = `
         <button class="ghost" id="call-mute">${muteLabel}</button>
-        <button class="ghost" id="call-camera">${cameraLabel}</button>
+        <button class="ghost" id="call-camera" ${snap.screenSharing ? "disabled title='Сначала прекрати демо экрана'" : ""}>${cameraLabel}</button>
+        <button class="ghost" id="call-screen">${screenLabel}</button>
         <button class="call-reject" id="call-hangup">Завершить</button>
       `;
       break;
@@ -838,6 +840,7 @@ function renderVoiceChannelView(channel: Channel): string {
   const leaving = voice?.state === "leaving";
   const muted = joined && voice!.muted;
   const cameraOn = joined && voice!.cameraOn;
+  const screenOn = joined && voice!.screenSharing;
   const error = voice?.error ?? null;
 
   // tiles: один на каждого участника. Для своих — local stream через
@@ -863,7 +866,8 @@ function renderVoiceChannelView(channel: Channel): string {
   const actions = joined
     ? `
       <button id="voice-mute" class="ghost">${muted ? "🔇 Включить микро" : "🎙 Заглушить"}</button>
-      <button id="voice-camera" class="ghost">${cameraOn ? "📷 Выключить камеру" : "📹 Включить камеру"}</button>
+      <button id="voice-camera" class="ghost" ${screenOn ? "disabled title='Сначала прекрати демо экрана'" : ""}>${cameraOn ? "📷 Выключить камеру" : "📹 Включить камеру"}</button>
+      <button id="voice-screen" class="ghost">${screenOn ? "🛑 Прекратить демо" : "🖥 Поделиться экраном"}</button>
       <button id="voice-leave" ${leaving ? "disabled" : ""}>${leaving ? "Выхожу…" : "Выйти"}</button>
     `
     : `
@@ -1296,6 +1300,14 @@ function attachShellHandlers(): void {
       render();
     }
   });
+  rootEl.querySelector<HTMLButtonElement>("#call-screen")?.addEventListener("click", async () => {
+    try {
+      await callMgr.toggleScreenShare();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
 
   rootEl.querySelector<HTMLButtonElement>("#voice-join")?.addEventListener("click", async (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
@@ -1317,6 +1329,14 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#voice-camera")?.addEventListener("click", async () => {
     try {
       await voiceMgr.toggleCamera();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
+  rootEl.querySelector<HTMLButtonElement>("#voice-screen")?.addEventListener("click", async () => {
+    try {
+      await voiceMgr.toggleScreenShare();
     } catch (err) {
       state.status = describeError(err);
       render();

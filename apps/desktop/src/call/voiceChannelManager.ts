@@ -29,6 +29,7 @@ export interface VoiceSnapshot {
   selfSessionId: string | null;
   muted: boolean;
   cameraOn: boolean;
+  screenSharing: boolean;
   state: VoiceState;
   error: string | null;
 }
@@ -90,6 +91,7 @@ const IDLE: VoiceSnapshot = {
   selfSessionId: null,
   muted: false,
   cameraOn: false,
+  screenSharing: false,
   state: "idle",
   error: null
 };
@@ -99,6 +101,7 @@ export class VoiceChannelManager {
   private listeners = new Set<Listener>();
   private localStream: MediaStream | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
+  private screenTrack: MediaStreamTrack | null = null;
   private iceServers: RTCIceServer[] | null = null;
   private peers = new Map<string, PeerEntry>(); // key = peer sessionId
   private unsubscribe: (() => void) | null = null;
@@ -218,6 +221,10 @@ export class VoiceChannelManager {
   // тоже renegotiation. Возвращает новое состояние.
   async toggleCamera(): Promise<boolean> {
     if (this.snapshot.state !== "active") return false;
+    // Камера и screen-share делят один video sender per peer — нельзя
+    // одновременно. UI обычно блокирует кнопку «камера», но защита
+    // дублируется здесь на случай гонки.
+    if (this.screenTrack) return false;
     if (!this.cameraTrack) {
       let videoStream: MediaStream;
       try {
@@ -252,6 +259,97 @@ export class VoiceChannelManager {
       this.localStream.removeTrack(track);
     }
     track.stop();
+    // Если параллельно идёт screen-share — он держит свой video sender,
+    // его не трогаем. Иначе убираем video sender'ы.
+    if (!this.screenTrack) {
+      for (const peer of this.peers.values()) {
+        for (const sender of peer.pc.getSenders()) {
+          if (sender.track && sender.track.kind === "video") {
+            try {
+              peer.pc.removeTrack(sender);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+    } else {
+      // Если camera была replaced screen'ом — sender держит screen'овский
+      // трек, ничего делать не надо. cameraOn=false уже корректно.
+    }
+    this.update({ cameraOn: false });
+    return false;
+  }
+
+  // Демо экрана. Замещает камеру (один video sender per peer): если
+  // камера была — выключаем её и кладём screen track вместо. Когда
+  // screenshare останавливается — video sender убирается полностью;
+  // камеру можно включить заново отдельной кнопкой. Слушаем
+  // track.onended, чтобы авто-выключиться когда юзер нажал «Stop
+  // sharing» в системной панели браузера.
+  async toggleScreenShare(): Promise<boolean> {
+    if (this.snapshot.state !== "active") return false;
+    if (!this.screenTrack) {
+      let displayStream: MediaStream;
+      try {
+        // navigator.mediaDevices.getDisplayMedia — стандартный API; на
+        // Tauri desktop нужны OS-разрешения (на macOS — Screen
+        // Recording; на Wayland — portal-prompt).
+        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "screen share denied";
+        this.update({ error: message });
+        return false;
+      }
+      const track = displayStream.getVideoTracks()[0];
+      if (!track) return false;
+      this.screenTrack = track;
+      track.onended = () => {
+        // юзер нажал «Stop sharing» в браузере — выключаемся.
+        if (this.screenTrack === track) {
+          void this.toggleScreenShare();
+        }
+      };
+      // Если камера была включена — гасим её, screen занимает её
+      // место. Иначе — добавляем как новый track.
+      let hadCamera = false;
+      if (this.cameraTrack) {
+        hadCamera = true;
+        const cam = this.cameraTrack;
+        this.cameraTrack = null;
+        if (this.localStream) this.localStream.removeTrack(cam);
+        cam.stop();
+      }
+      if (this.localStream) {
+        this.localStream.addTrack(track);
+      }
+      for (const peer of this.peers.values()) {
+        if (hadCamera) {
+          const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
+          if (sender) {
+            try {
+              await sender.replaceTrack(track);
+            } catch {
+              /* ignore */
+            }
+            continue;
+          }
+        }
+        try {
+          peer.pc.addTrack(track, this.localStream!);
+        } catch {
+          /* ignore */
+        }
+      }
+      this.update({ screenSharing: true, cameraOn: false, error: null });
+      return true;
+    }
+    // off
+    const track = this.screenTrack;
+    this.screenTrack = null;
+    track.onended = null;
+    if (this.localStream) this.localStream.removeTrack(track);
+    track.stop();
     for (const peer of this.peers.values()) {
       for (const sender of peer.pc.getSenders()) {
         if (sender.track && sender.track.kind === "video") {
@@ -263,7 +361,7 @@ export class VoiceChannelManager {
         }
       }
     }
-    this.update({ cameraOn: false });
+    this.update({ screenSharing: false });
     return false;
   }
 
@@ -372,7 +470,11 @@ export class VoiceChannelManager {
       for (const t of this.localStream.getTracks()) t.stop();
       this.localStream = null;
     }
+    if (this.screenTrack) {
+      this.screenTrack.onended = null;
+    }
     this.cameraTrack = null;
+    this.screenTrack = null;
   }
 
   private async ensureIceServers(): Promise<void> {
