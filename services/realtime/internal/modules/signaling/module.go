@@ -21,11 +21,18 @@ const (
 )
 
 var relayEvents = map[string]struct{}{
+	// 1-к-1 звонки (CallManager на клиенте).
 	"call.invite": {},
 	"call.offer":  {},
 	"call.answer": {},
 	"call.ice":    {},
 	"call.hangup": {},
+	// Voice-каналы mesh (VoiceChannelManager). Отдельный namespace,
+	// чтобы CallManager не подхватывал mesh-offer как входящий звонок.
+	"voice.offer":  {},
+	"voice.answer": {},
+	"voice.ice":    {},
+	"voice.hangup": {},
 }
 
 type Module struct {

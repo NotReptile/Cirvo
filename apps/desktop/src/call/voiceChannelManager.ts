@@ -1,14 +1,17 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 
-// Voice-канал. Multi-peer mesh поверх существующего call.* сигналинга:
-// каждый участник держит свою RTCPeerConnection с каждым другим.
-// При входе: POST /voice/join, для каждого из текущих участников шлём
-// call.invite + call.offer (мы — caller для них). Когда новый человек
-// заходит — он шлёт нам offer, мы отвечаем answer. На выходе закрываем
-// все PC + шлём call.hangup каждому.
+// Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
+// (не `call.*` — иначе 1-к-1 CallManager подхватывает mesh-offer как
+// входящий звонок и показывает уведомление с UUID). Каждый участник
+// держит свою RTCPeerConnection с каждым другим.
 //
-// Предел ~5 (констанит сервер). Выше уйдём на SFU (F.2).
+// При входе: POST /voice/join, для каждого из текущих участников шлём
+// voice.offer (мы — caller для них). Когда новый человек заходит —
+// он шлёт нам offer, мы отвечаем answer. На выходе закрываем все PC
+// + шлём voice.hangup каждому.
+//
+// Предел ~5 (константа сервера). Выше уйдём на SFU (F.2).
 
 export interface VoiceParticipant {
   userId: string;
@@ -153,7 +156,7 @@ export class VoiceChannelManager {
     this.update({ state: "leaving" });
     for (const [sid, peer] of this.peers) {
       try {
-        this.realtime.send("call.hangup", {
+        this.realtime.send("voice.hangup", {
           call_id: peer.callId,
           target_session_id: sid,
           reason: "voice_leave"
@@ -194,16 +197,13 @@ export class VoiceChannelManager {
     const offer = await peer.pc.createOffer({ offerToReceiveAudio: true });
     await peer.pc.setLocalDescription(offer);
 
-    this.realtime.send("call.invite", {
+    // Намеренно НЕ шлём call.invite — voice-каналы не делают UI
+    // приглашений, участники уже видят воркшоп через voice.joined.
+    this.realtime.send("voice.offer", {
       call_id: callId,
       target_session_id: other.sessionId,
       target_user_id: other.userId,
-      channel_id: this.snapshot.channelId ?? ""
-    });
-    this.realtime.send("call.offer", {
-      call_id: callId,
-      target_session_id: other.sessionId,
-      target_user_id: other.userId,
+      channel_id: this.snapshot.channelId ?? "",
       sdp: offer
     });
   }
@@ -227,7 +227,7 @@ export class VoiceChannelManager {
     };
     pc.onicecandidate = (evt) => {
       if (!evt.candidate) return;
-      this.realtime.send("call.ice", {
+      this.realtime.send("voice.ice", {
         call_id: callId,
         target_session_id: peerSessionId,
         candidate: evt.candidate.toJSON()
@@ -297,26 +297,25 @@ export class VoiceChannelManager {
       this.handleVoiceLeft(event.payload as VoiceEventPayload | undefined);
       return;
     }
-    if (!event.event.startsWith("call.")) return;
+    if (!event.event.startsWith("voice.")) return;
     if (this.snapshot.state !== "active") return;
     const p = event.payload as RelayPayload | undefined;
     if (!p || !p.call_id || !p.from_session_id) return;
-    // Принимаем только трафик от участников этого же voice-канала, чтобы
-    // не пересечься с 1-to-1 звонком (его обрабатывает CallManager).
+    // Принимаем только трафик от участников этого же voice-канала.
     const known = this.snapshot.participants.some((x) => x.sessionId === p.from_session_id);
     if (!known) return;
 
     switch (event.event) {
-      case "call.offer":
+      case "voice.offer":
         await this.handleOffer(p);
         break;
-      case "call.answer":
+      case "voice.answer":
         await this.handleAnswer(p);
         break;
-      case "call.ice":
+      case "voice.ice":
         await this.handleIce(p);
         break;
-      case "call.hangup":
+      case "voice.hangup":
         this.destroyPeer(p.from_session_id);
         break;
     }
@@ -356,7 +355,7 @@ export class VoiceChannelManager {
     await this.drainPending(peer);
     const answer = await peer.pc.createAnswer();
     await peer.pc.setLocalDescription(answer);
-    this.realtime.send("call.answer", {
+    this.realtime.send("voice.answer", {
       call_id: p.call_id,
       target_session_id: p.from_session_id,
       sdp: answer

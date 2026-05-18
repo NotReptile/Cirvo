@@ -119,6 +119,20 @@ interface AppState {
   uploadInFlight: boolean;
   callSnapshot: CallSnapshot | null;
   voiceSnapshot: VoiceSnapshot | null;
+  voicePeek: VoicePeek | null;
+}
+
+interface VoicePeekParticipant {
+  userId: string;
+  sessionId: string;
+  username: string;
+  displayName?: string;
+  joinedAt: string;
+}
+
+interface VoicePeek {
+  channelId: string;
+  participants: VoicePeekParticipant[];
 }
 
 const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
@@ -145,7 +159,8 @@ const state: AppState = {
   pendingUploads: [],
   uploadInFlight: false,
   callSnapshot: null,
-  voiceSnapshot: null
+  voiceSnapshot: null,
+  voicePeek: null
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -258,7 +273,24 @@ async function selectChannel(id: string): Promise<void> {
   state.messages = [];
   state.editingMessageId = null;
   state.pickerForMessageId = null;
+  state.voicePeek = null;
   render();
+  const ch = state.channels.find((c) => c.id === id);
+  if (ch?.kind === "voice") {
+    try {
+      const data = await httpClient.get<{ items: VoicePeekParticipant[] }>(
+        `/api/v1/channels/${id}/voice/participants`
+      );
+      if (state.selectedChannelId === id) {
+        state.voicePeek = { channelId: id, participants: data.items ?? [] };
+        render();
+      }
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+    return;
+  }
   const data = await httpClient.get<{ items: Message[] }>(`/api/v1/channels/${id}/messages?limit=50`);
   state.messages = (data.items ?? []).slice().reverse();
   render();
@@ -355,6 +387,27 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     case "message.reaction.removed": {
       const p = event.payload as { messageId: string; userId: string; emoji: string };
       applyReactionDelta(p.messageId, p.emoji, -1, p.userId);
+      break;
+    }
+    case "voice.joined": {
+      const p = event.payload as VoicePeekParticipant & { channelId: string };
+      if (!state.voicePeek || state.voicePeek.channelId !== p.channelId) break;
+      if (state.voicePeek.participants.some((x) => x.sessionId === p.sessionId)) break;
+      state.voicePeek = {
+        channelId: p.channelId,
+        participants: [...state.voicePeek.participants, p]
+      };
+      render();
+      break;
+    }
+    case "voice.left": {
+      const p = event.payload as { channelId: string; sessionId: string };
+      if (!state.voicePeek || state.voicePeek.channelId !== p.channelId) break;
+      state.voicePeek = {
+        channelId: p.channelId,
+        participants: state.voicePeek.participants.filter((x) => x.sessionId !== p.sessionId)
+      };
+      render();
       break;
     }
   }
@@ -763,18 +816,26 @@ function renderVoiceChannelView(channel: Channel): string {
   const voice = state.voiceSnapshot;
   const joined = voice?.channelId === channel.id;
   const busyOther = voice && !joined ? voice.channelId : null;
-  const participants = joined ? voice!.participants : [];
+  // Если мы внутри канала — список из voiceMgr (там же selfSessionId,
+  // чтобы пометить «вы»). Если нет — peek с сервера, обновляется через
+  // voice.joined/left.
+  const participants = joined
+    ? voice!.participants
+    : state.voicePeek?.channelId === channel.id
+      ? state.voicePeek.participants
+      : [];
+  const selfSessionId = joined ? voice!.selfSessionId : null;
   const joining = voice?.state === "joining";
   const leaving = voice?.state === "leaving";
   const muted = joined && voice!.muted;
   const error = voice?.error ?? null;
 
   const list = participants.length === 0
-    ? `<div class="muted">Пока никого. ${joined ? "Подключайся, говори :)" : ""}</div>`
+    ? `<div class="muted">Пока никого. ${joined ? "Подключайся, говори :)" : "Будь первым."}</div>`
     : `<ul class="voice-participants">${participants
         .map((p) => {
           const name = p.displayName?.trim() || p.username || p.userId.slice(0, 8);
-          const isSelf = p.sessionId === voice!.selfSessionId;
+          const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
           return `<li class="voice-participant${isSelf ? " self" : ""}">
             <span class="voice-dot"></span>
             <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
