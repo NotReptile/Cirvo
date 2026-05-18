@@ -151,6 +151,7 @@ let rootEl: HTMLElement;
 let httpClient: HttpClient;
 let realtimeClient: RealtimeClient;
 let callMgr: CallManager;
+let callTimerInterval: ReturnType<typeof setInterval> | null = null;
 
 export function renderApp(
   container: HTMLElement,
@@ -229,9 +230,12 @@ async function selectWorkspace(id: string): Promise<void> {
   state.messages = [];
   state.invitesOpen = false;
   state.invites = [];
+  state.members = [];
   render();
   const data = await httpClient.get<{ items: Channel[] }>(`/api/v1/workspaces/${id}/channels`);
   state.channels = data.items ?? [];
+  // Резолвинг authorId → имя в сообщениях. Не блокируем загрузку каналов.
+  void loadMembers();
   if (state.channels.length > 0) {
     await selectChannel(state.channels[0].id);
   } else {
@@ -564,7 +568,7 @@ function renderCallOverlay(): string {
     case "active":
       body = `
         <div class="call-status">В разговоре с <b>${escapeHtml(peerName)}</b></div>
-        <div class="call-timer">${escapeHtml(durationLabel)}</div>
+        <div class="call-timer" id="call-timer">${escapeHtml(durationLabel)}</div>
       `;
       footer = `
         <button class="ghost" id="call-mute">${muteLabel}</button>
@@ -598,6 +602,29 @@ function formatDuration(ms: number): string {
   const mm = String(Math.floor(total / 60)).padStart(2, "0");
   const ss = String(total % 60).padStart(2, "0");
   return `${mm}:${ss}`;
+}
+
+function syncCallTimer(): void {
+  if (callTimerInterval) {
+    clearInterval(callTimerInterval);
+    callTimerInterval = null;
+  }
+  const snap = state.callSnapshot;
+  if (!snap || snap.state !== "active" || !snap.startedAt) return;
+  const startedAt = snap.startedAt;
+  const tick = () => {
+    const el = rootEl.querySelector<HTMLElement>("#call-timer");
+    if (!el) {
+      if (callTimerInterval) {
+        clearInterval(callTimerInterval);
+        callTimerInterval = null;
+      }
+      return;
+    }
+    el.textContent = formatDuration(Date.now() - startedAt);
+  };
+  tick();
+  callTimerInterval = setInterval(tick, 1000);
 }
 
 function renderEmpty(): string {
@@ -766,7 +793,7 @@ function renderMessage(m: Message): string {
     return `
       <div class="message" data-id="${m.id}">
         <div class="message-meta">
-          <span class="author">${shortId(m.authorId)}</span>
+          <span class="author">${escapeHtml(describePeer(m.authorId))}</span>
           <span class="timestamp">${formatTime(m.createdAt)}</span>
         </div>
         <form class="edit-form" data-edit-id="${m.id}">
@@ -781,7 +808,7 @@ function renderMessage(m: Message): string {
   return `
     <div class="message" data-id="${m.id}">
       <div class="message-meta">
-        <span class="author">${shortId(m.authorId)}${isMine ? " · вы" : ""}</span>
+        <span class="author">${escapeHtml(describePeer(m.authorId))}${isMine ? " · вы" : ""}</span>
         <span class="timestamp">${formatTime(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">😊</button>
@@ -1082,6 +1109,8 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#call-mute")?.addEventListener("click", () => {
     callMgr.toggleMute();
   });
+
+  syncCallTimer();
 
   rootEl.querySelectorAll<HTMLLIElement>("[data-ws]").forEach((li) => {
     li.addEventListener("click", () => {

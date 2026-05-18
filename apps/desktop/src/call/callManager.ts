@@ -212,7 +212,9 @@ export class CallManager {
 
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") {
-        this.update({ state: "active", startedAt: Date.now() });
+        if (this.snapshot.state !== "active") {
+          this.update({ state: "active", startedAt: Date.now() });
+        }
       } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
         this.teardown(`peer_${pc.connectionState}`);
       }
