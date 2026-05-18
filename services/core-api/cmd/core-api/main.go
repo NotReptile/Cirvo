@@ -20,6 +20,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
 
 	"github.com/NotReptile/RuCord/services/core-api/internal/app"
+	"github.com/NotReptile/RuCord/services/core-api/internal/bootstrap"
 	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
 )
 
@@ -58,6 +59,11 @@ func main() {
 	if err != nil {
 		logger.Warn("object storage init failed, file uploads disabled", "error", err)
 		objectStore = nil
+	}
+
+	if err := bootstrap.Run(rootCtx, db, logger, bootstrap.LoadFromEnv()); err != nil {
+		logger.Error("bootstrap admin failed", "error", err)
+		return
 	}
 
 	container := deps.Container{

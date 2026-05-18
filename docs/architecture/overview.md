@@ -10,7 +10,7 @@ RuCord is a modular communication platform with a Tauri desktop client and a Go 
 - `services/core-api` - main API process with internal domain modules.
 - `services/realtime` - transport, presence and signaling process.
 - `services/worker` - background jobs for media processing, notifications and audit fan-out.
-- `db` - relational schema, migrations and bootstrap seed data.
+- `db` - relational schema and migrations. The first admin user and default workspace are not seeded as SQL; `core-api` provisions them from `RUCORD_BOOTSTRAP_*` env on the first startup against an empty DB.
 
 ## Boundary Rules
 

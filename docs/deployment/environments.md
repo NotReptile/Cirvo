@@ -6,7 +6,7 @@ Deployment profile and runtime stage are separate concerns. A profile describes 
 
 - developer workstation;
 - minimal dependencies;
-- bootstrap seed allowed;
+- first admin provisioned via `RUCORD_BOOTSTRAP_*` env at startup, or self-register via `/auth/register`;
 - relaxed domain and TLS assumptions.
 
 ## Single-Node

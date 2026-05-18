@@ -8,7 +8,7 @@ RuCord is a modular communication platform with a desktop client and a Go backen
 - `services/core-api` - main Go API with internal domain modules.
 - `services/realtime` - transport, presence and signaling node.
 - `services/worker` - background jobs.
-- `db` - schema, migrations and bootstrap seed data.
+- `db` - schema and migrations (first admin is provisioned from env on first start).
 - `libs/contracts` - transport and event contracts.
 - `libs/shared-go` - reusable Go infrastructure packages.
 - `libs/shared-ts` - reusable TypeScript primitives.

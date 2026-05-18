@@ -15,7 +15,7 @@
 ## Database
 
 - schema changes go through numbered migrations;
-- seed data must stay technical and environment-scoped;
+- domain-level bootstrap (first admin, default workspace) is provisioned by `core-api/internal/bootstrap` from env, not committed as SQL seed;
 - relational storage owns canonical domain records.
 
 ## Client
