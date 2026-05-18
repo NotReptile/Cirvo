@@ -97,6 +97,18 @@ services:
       timeout: 5s
       retries: 12
 
+  # One-off контейнер для backup/restore MinIO бакета через mc mirror.
+  # Используется скриптами deploy/backup.sh и deploy/restore.sh:
+  #   docker compose run --rm --entrypoint /bin/sh mc -c "..."
+  mc:
+    image: minio/mc:latest
+    profiles: ["tools"]
+    entrypoint: ["tail", "-f", "/dev/null"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-rucord}
+
 volumes:
   caddy-data:
   caddy-config:

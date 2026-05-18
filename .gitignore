@@ -17,3 +17,4 @@ services/**/bin/
 *.exe
 *.test
 TASKS.md
+backups/
