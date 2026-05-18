@@ -1,0 +1,93 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: rucord
+          POSTGRES_USER: rucord
+          POSTGRES_PASSWORD: rucord
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rucord -d rucord"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+      minio:
+        image: bitnami/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+
+    env:
+      # core-api / shared-go ConnectFromEnv hooks
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: rucord
+      POSTGRES_USER: rucord
+      POSTGRES_PASSWORD: rucord
+      POSTGRES_SSLMODE: disable
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: 127.0.0.1:9000
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_BUCKET: rucord
+      RUCORD_JWT_SECRET: smoke-secret-with-at-least-32-bytes-of-padding
+      RUCORD_ENV: ci
+      RUCORD_STAGE: smoke
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+
+      - name: Wait for MinIO
+        run: |
+          for i in {1..30}; do
+            curl -sf http://127.0.0.1:9000/minio/health/ready && exit 0
+            sleep 1
+          done
+          echo "minio not ready" >&2
+          exit 1
+
+      - name: Apply migrations
+        run: |
+          docker run --rm --network=host \
+            -v ${{ github.workspace }}/db/migrations:/migrations:ro \
+            migrate/migrate:v4.17.1 \
+            -path=/migrations \
+            -database="postgres://rucord:rucord@127.0.0.1:5432/rucord?sslmode=disable" \
+            up
+
+      - name: Build
+        run: go build ./services/... ./libs/shared-go/...
+
+      - name: Smoke tests
+        run: go test -tags=smoke -count=1 -v ./services/core-api/smoketests/

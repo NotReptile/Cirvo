@@ -15,8 +15,12 @@ services:
       timeout: 3s
       retries: 20
 
+  # Запускается через `docker compose run --rm migrate` (см. VSCode task
+  # `migrate` или `Run All`). Profile `tools` исключает его из `up`, чтобы
+  # новые миграции применялись каждый раз, а не один раз на жизнь stack'а.
   migrate:
     image: migrate/migrate:v4.17.1
+    profiles: ["tools"]
     depends_on:
       postgres:
         condition: service_healthy

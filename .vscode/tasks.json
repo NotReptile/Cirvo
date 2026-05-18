@@ -34,6 +34,21 @@
       "problemMatcher": []
     },
     {
+      "label": "infra",
+      "type": "shell",
+      "command": "docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env up -d postgres redis minio",
+      "presentation": { "group": "rucord", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
+      "label": "migrate",
+      "type": "shell",
+      "command": "docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env run --rm migrate",
+      "dependsOn": ["infra"],
+      "presentation": { "group": "rucord", "panel": "shared" },
+      "problemMatcher": []
+    },
+    {
       "label": "Stop All",
       "type": "shell",
       "command": "Get-NetTCPConnection -LocalPort 1420,8080,8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"killed pid $_ (port)\" } catch {} }; Get-CimInstance Win32_Process -Filter \"Name = 'go.exe'\" | Where-Object { $_.CommandLine -match 'services[\\\\/]worker' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host \"killed worker go pid $($_.ProcessId)\" } catch {} }; Get-CimInstance Win32_Process -Filter \"Name = 'worker.exe'\" | Where-Object { $_.ExecutablePath -match 'go-build' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host \"killed worker exe pid $($_.ProcessId)\" } catch {} }",
@@ -41,9 +56,14 @@
       "problemMatcher": []
     },
     {
-      "label": "Run All",
+      "label": "Run Services",
       "dependsOn": ["core-api", "realtime", "worker", "frontend"],
       "dependsOrder": "parallel"
+    },
+    {
+      "label": "Run All",
+      "dependsOn": ["migrate", "Run Services"],
+      "dependsOrder": "sequence"
     }
   ]
 }

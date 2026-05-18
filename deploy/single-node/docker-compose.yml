@@ -51,8 +51,15 @@ services:
       timeout: 5s
       retries: 20
 
+  # Миграции применяются явно командой:
+  #   docker compose -f deploy/single-node/docker-compose.yml \
+  #     --env-file deploy/.env run --rm migrate
+  # Profile `tools` исключает контейнер из `docker compose up` — иначе он
+  # выполнился бы один раз и не пере-исполнялся при добавлении новых
+  # миграций без `--force-recreate`. См. A.5.
   migrate:
     image: migrate/migrate:v4.17.1
+    profiles: ["tools"]
     depends_on:
       postgres:
         condition: service_healthy

@@ -20,6 +20,18 @@
 
 ## Запуск инфраструктуры + edge
 
+Сначала миграции (отдельной командой — иначе при добавлении новых
+миграций они не пере-исполнятся без `--force-recreate`):
+
+```bash
+docker compose \
+  -f deploy/single-node/docker-compose.yml \
+  --env-file deploy/.env \
+  run --rm migrate
+```
+
+Затем поднимаем сам стек:
+
 ```bash
 docker compose \
   -f deploy/single-node/docker-compose.yml \
@@ -30,10 +42,12 @@ docker compose \
 Поднимаются:
 
 - `postgres` (порт наружу не публикуется — доступ через сервисы);
-- `migrate` (одноразовый прогон миграций; см. A.5);
 - `redis`;
 - `minio` (S3-совместимое хранилище);
 - `reverse-proxy` (Caddy на 80/443, HTTP/3 на 443/udp).
+
+Сервис `migrate` существует в compose-файле, но привязан к `profiles:
+["tools"]` — `up` его не трогает, нужно явно вызывать `run --rm migrate`.
 
 ## Запуск сервисов
 
@@ -82,8 +96,9 @@ CORS allow-list инфорсится в core-api через `RUCORD_CORS_ORIGINS
 ## Обновление
 
 ```bash
-docker compose -f deploy/single-node/docker-compose.yml pull
-docker compose -f deploy/single-node/docker-compose.yml up -d
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env pull
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env run --rm migrate
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env up -d
 ```
 
 Сертификаты Let's Encrypt живут в volume `caddy-data` и обновляются Caddy
