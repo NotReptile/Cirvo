@@ -755,7 +755,7 @@ function renderPendingUploads(): string {
 
 function renderAttachment(a: Attachment): string {
   if (isImage(a.contentType)) {
-    return `<div class="attach-image" data-media-url="${escapeHtml(a.url)}">
+    return `<div class="attach-image" data-media-url="${escapeHtml(a.url + "/thumb")}" data-full-url="${escapeHtml(a.url)}">
               <div class="attach-image-loader">Загрузка изображения…</div>
             </div>`;
   }

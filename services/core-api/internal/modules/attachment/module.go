@@ -43,6 +43,7 @@ func NewModule(db *postgres.Pool, store *objectstore.Client, logger *slog.Logger
 func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("POST /api/v1/uploads", m.handleUpload)
 	router.Protected("GET /api/v1/media/{mediaId}", m.handleDownload)
+	router.Protected("GET /api/v1/media/{mediaId}/thumb", m.handleThumbnail)
 }
 
 type mediaView struct {
@@ -127,6 +128,19 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isThumbnailable(contentType) {
+		jobID := uuid.New()
+		_, err = tx.Exec(r.Context(),
+			`insert into media_jobs (id, media_id, kind, status, scheduled_at, created_at)
+			 values ($1, $2, 'thumbnail', 'pending', $3, $3)`,
+			jobID, mediaID, now,
+		)
+		if err != nil {
+			m.logger.Warn("could not schedule thumbnail job", slog.String("error", err.Error()), slog.String("media_id", mediaID.String()))
+			// не валим аплоад — превью построится при следующем заходе
+		}
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		_ = m.store.Remove(context.Background(), objectKey)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
@@ -194,6 +208,65 @@ func (m *Module) handleDownload(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, reader)
 }
 
+func (m *Module) handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	if m.store == nil {
+		sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeInternal, "object storage is not configured")
+		return
+	}
+	_ = authctx.MustUserID(r.Context())
+	rawID := r.PathValue("mediaId")
+	mediaID, err := uuid.Parse(rawID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid media id")
+		return
+	}
+
+	var (
+		thumbKey  *string
+		origKey   string
+		origCT    string
+		origSize  int64
+	)
+	err = m.db.QueryRow(r.Context(),
+		`select thumbnail_object_key, object_key, content_type, size_bytes
+		 from media_objects where id = $1`,
+		mediaID,
+	).Scan(&thumbKey, &origKey, &origCT, &origSize)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "media not found")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+
+	objectKey := origKey
+	contentType := origCT
+	sizeHint := origSize
+	if thumbKey != nil && *thumbKey != "" {
+		objectKey = *thumbKey
+		contentType = "image/jpeg"
+		sizeHint = 0
+	}
+
+	reader, err := m.store.Get(r.Context(), objectKey)
+	if err != nil {
+		m.logger.Warn("thumbnail fetch failed", slog.String("error", err.Error()))
+		sharedhttp.WriteError(w, r, http.StatusBadGateway, sharedhttp.CodeInternal, "object store unavailable")
+		return
+	}
+	defer reader.Close()
+
+	w.Header().Set("Content-Type", contentType)
+	if sizeHint > 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", sizeHint))
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, reader)
+}
+
 func safeFilename(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -218,6 +291,15 @@ func safeHeaderValue(s string) string {
 		}
 		return r
 	}, s)
+}
+
+func isThumbnailable(contentType string) bool {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	switch ct {
+	case "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp":
+		return true
+	}
+	return false
 }
 
 func sniffByExt(filename string) string {
