@@ -206,6 +206,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("message_crud", testMessageCRUD)
 	t.Run("permission_deny", testPermissionDeny)
 	t.Run("attachment_upload", testAttachmentUpload)
+	t.Run("voice_channel", testVoiceChannel)
 }
 
 func testAuthFlow(t *testing.T) {
@@ -281,6 +282,107 @@ func createTextChannel(t *testing.T, token, wsID string) string {
 	var v idView
 	mustJSON(t, raw, &v)
 	return v.ID
+}
+
+func createVoiceChannel(t *testing.T, token, wsID string) string {
+	t.Helper()
+	suffix := uniqSuffix()
+	code, raw := doReq(t, http.MethodPost, "/api/v1/workspaces/"+wsID+"/channels", token, map[string]any{
+		"kind":      "voice",
+		"name":      "vc-" + suffix,
+		"isPrivate": false,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create voice channel: %d %s", code, string(raw))
+	}
+	var v idView
+	mustJSON(t, raw, &v)
+	return v.ID
+}
+
+func testVoiceChannel(t *testing.T) {
+	tk := registerFresh(t)
+	wsID := createWorkspace(t, tk.AccessToken)
+	chID := createVoiceChannel(t, tk.AccessToken, wsID)
+
+	// join — должен вернуть self и пустой others
+	code, raw := doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/voice/join", tk.AccessToken, map[string]any{})
+	if code != http.StatusOK {
+		t.Fatalf("voice join: %d %s", code, string(raw))
+	}
+	var join struct {
+		ChannelID string `json:"channelId"`
+		Self      struct {
+			UserID    string `json:"userId"`
+			SessionID string `json:"sessionId"`
+		} `json:"self"`
+		Others []map[string]any `json:"others"`
+	}
+	mustJSON(t, raw, &join)
+	if join.Self.UserID != tk.User.ID || join.Self.SessionID == "" {
+		t.Fatalf("voice join: bad self %+v", join.Self)
+	}
+	if len(join.Others) != 0 {
+		t.Fatalf("voice join: expected empty others, got %d", len(join.Others))
+	}
+
+	// list — содержит self
+	code, raw = doReq(t, http.MethodGet, "/api/v1/channels/"+chID+"/voice/participants", tk.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("voice list: %d %s", code, string(raw))
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	mustJSON(t, raw, &list)
+	if len(list.Items) != 1 {
+		t.Fatalf("voice list: expected 1, got %d", len(list.Items))
+	}
+
+	// чужой в воркспейсе НЕ участвует — second user joins → others=1
+	other := registerFresh(t)
+	// добавляем other'а в workspace через invite
+	code, raw = doReq(t, http.MethodPost, "/api/v1/workspaces/"+wsID+"/invites", tk.AccessToken, map[string]any{"maxUses": 10})
+	if code != http.StatusCreated {
+		t.Fatalf("create invite: %d %s", code, string(raw))
+	}
+	var inv struct {
+		Code string `json:"code"`
+	}
+	mustJSON(t, raw, &inv)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/invites/"+inv.Code+"/accept", other.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept invite: %d %s", code, string(raw))
+	}
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/voice/join", other.AccessToken, map[string]any{})
+	if code != http.StatusOK {
+		t.Fatalf("voice join (other): %d %s", code, string(raw))
+	}
+	mustJSON(t, raw, &join)
+	if len(join.Others) != 1 || join.Others[0]["userId"] != tk.User.ID {
+		t.Fatalf("voice join (other): expected to see first user, got %+v", join.Others)
+	}
+
+	// leave — list возвращается к одному
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/voice/leave", tk.AccessToken, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("voice leave: %d %s", code, string(raw))
+	}
+	code, raw = doReq(t, http.MethodGet, "/api/v1/channels/"+chID+"/voice/participants", other.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("voice list after leave: %d %s", code, string(raw))
+	}
+	mustJSON(t, raw, &list)
+	if len(list.Items) != 1 || list.Items[0]["userId"] != other.User.ID {
+		t.Fatalf("voice list after leave: expected only other user, got %+v", list.Items)
+	}
+
+	// text-канал отказывается с 400
+	textCh := createTextChannel(t, tk.AccessToken, wsID)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+textCh+"/voice/join", tk.AccessToken, map[string]any{})
+	if code != http.StatusBadRequest {
+		t.Fatalf("voice join on text channel: expected 400, got %d %s", code, string(raw))
+	}
 }
 
 func testMessageCRUD(t *testing.T) {

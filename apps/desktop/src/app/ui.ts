@@ -1,4 +1,5 @@
 import type { CallManager, CallSnapshot } from "../call/callManager";
+import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelManager";
 import type { ApiError, HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 
@@ -117,6 +118,7 @@ interface AppState {
   pendingUploads: PendingUpload[];
   uploadInFlight: boolean;
   callSnapshot: CallSnapshot | null;
+  voiceSnapshot: VoiceSnapshot | null;
 }
 
 const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
@@ -142,7 +144,8 @@ const state: AppState = {
   auditLoading: false,
   pendingUploads: [],
   uploadInFlight: false,
-  callSnapshot: null
+  callSnapshot: null,
+  voiceSnapshot: null
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -151,22 +154,29 @@ let rootEl: HTMLElement;
 let httpClient: HttpClient;
 let realtimeClient: RealtimeClient;
 let callMgr: CallManager;
+let voiceMgr: VoiceChannelManager;
 let callTimerInterval: ReturnType<typeof setInterval> | null = null;
 
 export function renderApp(
   container: HTMLElement,
   http: HttpClient,
   realtime: RealtimeClient,
-  callManager: CallManager
+  callManager: CallManager,
+  voiceManager: VoiceChannelManager
 ): void {
   rootEl = container;
   httpClient = http;
   realtimeClient = realtime;
   callMgr = callManager;
+  voiceMgr = voiceManager;
 
   realtime.subscribe(handleRealtimeEvent);
   callManager.subscribe((snap) => {
     state.callSnapshot = snap.state === "idle" ? null : snap;
+    render();
+  });
+  voiceManager.subscribe((snap) => {
+    state.voiceSnapshot = snap.state === "idle" ? null : snap;
     render();
   });
   http.onTokensChanged((tokens) => {
@@ -708,6 +718,9 @@ function renderInvitesBlock(): string {
 }
 
 function renderChannelView(channel: Channel): string {
+  if (channel.kind === "voice") {
+    return renderVoiceChannelView(channel);
+  }
   const canSend = channel.kind === "text";
   return `
     <header class="channel-header">
@@ -733,6 +746,59 @@ function renderChannelView(channel: Channel): string {
       />
       <button type="submit" ${canSend ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
+  `;
+}
+
+function renderVoiceChannelView(channel: Channel): string {
+  const voice = state.voiceSnapshot;
+  const joined = voice?.channelId === channel.id;
+  const busyOther = voice && !joined ? voice.channelId : null;
+  const participants = joined ? voice!.participants : [];
+  const joining = voice?.state === "joining";
+  const leaving = voice?.state === "leaving";
+  const muted = joined && voice!.muted;
+  const error = voice?.error ?? null;
+
+  const list = participants.length === 0
+    ? `<div class="muted">Пока никого. ${joined ? "Подключайся, говори :)" : ""}</div>`
+    : `<ul class="voice-participants">${participants
+        .map((p) => {
+          const name = p.displayName?.trim() || p.username || p.userId.slice(0, 8);
+          const isSelf = p.sessionId === voice!.selfSessionId;
+          return `<li class="voice-participant${isSelf ? " self" : ""}">
+            <span class="voice-dot"></span>
+            <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
+          </li>`;
+        })
+        .join("")}</ul>`;
+
+  const actions = joined
+    ? `
+      <button id="voice-mute" class="ghost">${muted ? "🔇 Включить микро" : "🎙 Заглушить"}</button>
+      <button id="voice-leave" ${leaving ? "disabled" : ""}>${leaving ? "Выхожу…" : "Выйти"}</button>
+    `
+    : `
+      <button id="voice-join" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
+        ${joining ? "Подключаюсь…" : "Войти в голосовой"}
+      </button>
+      ${busyOther ? `<div class="muted">Сейчас в другом voice-канале. Сначала выйди оттуда.</div>` : ""}
+    `;
+
+  return `
+    <header class="channel-header">
+      <div>
+        <h2>${channel.isPrivate ? "🔒" : "🔊"} ${escapeHtml(channel.name)}</h2>
+        ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
+      </div>
+    </header>
+    <div class="voice-room">
+      <div class="voice-room-body">
+        <h3>Сейчас в канале</h3>
+        ${list}
+        ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+      </div>
+      <div class="voice-room-actions">${actions}</div>
+    </div>
   `;
 }
 
@@ -1108,6 +1174,24 @@ function attachShellHandlers(): void {
   });
   rootEl.querySelector<HTMLButtonElement>("#call-mute")?.addEventListener("click", () => {
     callMgr.toggleMute();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#voice-join")?.addEventListener("click", async (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const channelId = btn.dataset.channelId;
+    if (!channelId) return;
+    try {
+      await voiceMgr.join(channelId);
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
+  rootEl.querySelector<HTMLButtonElement>("#voice-leave")?.addEventListener("click", () => {
+    void voiceMgr.leave();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#voice-mute")?.addEventListener("click", () => {
+    voiceMgr.toggleMute();
   });
 
   syncCallTimer();

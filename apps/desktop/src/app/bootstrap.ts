@@ -1,4 +1,5 @@
 import { CallManager } from "../call/callManager";
+import { VoiceChannelManager } from "../call/voiceChannelManager";
 import { HttpClient } from "../network/httpClient";
 import { RealtimeClient } from "../realtime/realtimeClient";
 import { renderApp } from "./ui";
@@ -20,13 +21,15 @@ export function bootstrapDesktopApp(container: HTMLElement): void {
   const realtime = new RealtimeClient(readRealtimeUrl());
 
   const callManager = new CallManager(http, realtime);
+  const voiceManager = new VoiceChannelManager(http, realtime);
 
   http.onTokensChanged((tokens) => {
     realtime.setAccessToken(tokens?.accessToken ?? null);
     if (!tokens) {
       callManager.hangup();
+      void voiceManager.leave();
     }
   });
 
-  renderApp(container, http, realtime, callManager);
+  renderApp(container, http, realtime, callManager, voiceManager);
 }
