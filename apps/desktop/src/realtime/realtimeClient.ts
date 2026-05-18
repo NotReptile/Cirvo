@@ -31,6 +31,18 @@ export class RealtimeClient {
     return () => this.listeners.delete(listener);
   }
 
+  send(event: string, payload: unknown): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify({ event, payload }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private connect(): void {
     if (!this.accessToken) return;
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {

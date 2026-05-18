@@ -1,3 +1,4 @@
+import type { CallManager, CallSnapshot } from "../call/callManager";
 import type { ApiError, HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 
@@ -115,6 +116,7 @@ interface AppState {
   auditLoading: boolean;
   pendingUploads: PendingUpload[];
   uploadInFlight: boolean;
+  callSnapshot: CallSnapshot | null;
 }
 
 const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
@@ -139,7 +141,8 @@ const state: AppState = {
   auditEntries: [],
   auditLoading: false,
   pendingUploads: [],
-  uploadInFlight: false
+  uploadInFlight: false,
+  callSnapshot: null
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -147,13 +150,24 @@ const mediaBlobCache = new Map<string, string>();
 let rootEl: HTMLElement;
 let httpClient: HttpClient;
 let realtimeClient: RealtimeClient;
+let callMgr: CallManager;
 
-export function renderApp(container: HTMLElement, http: HttpClient, realtime: RealtimeClient): void {
+export function renderApp(
+  container: HTMLElement,
+  http: HttpClient,
+  realtime: RealtimeClient,
+  callManager: CallManager
+): void {
   rootEl = container;
   httpClient = http;
   realtimeClient = realtime;
+  callMgr = callManager;
 
   realtime.subscribe(handleRealtimeEvent);
+  callManager.subscribe((snap) => {
+    state.callSnapshot = snap.state === "idle" ? null : snap;
+    render();
+  });
   http.onTokensChanged((tokens) => {
     if (!tokens) {
       Object.assign(state, {
@@ -517,9 +531,73 @@ function renderShell(): void {
       </main>
       ${state.status ? `<div class="status-bar">${escapeHtml(state.status)}</div>` : ""}
       ${renderModal()}
+      ${renderCallOverlay()}
     </div>
   `;
   attachShellHandlers();
+}
+
+function renderCallOverlay(): string {
+  const snap = state.callSnapshot;
+  if (!snap) return "";
+  const peerName = describePeer(snap.peerUserId);
+  const muteLabel = snap.muted ? "🔇 Включить микрофон" : "🎙 Заглушить";
+  const durationLabel = snap.startedAt ? formatDuration(Date.now() - snap.startedAt) : "";
+  let body = "";
+  let footer = "";
+  switch (snap.state) {
+    case "incoming":
+      body = `<div class="call-status">Входящий звонок от <b>${escapeHtml(peerName)}</b></div>`;
+      footer = `
+        <button class="call-accept" id="call-accept">Принять</button>
+        <button class="call-reject" id="call-reject">Отклонить</button>
+      `;
+      break;
+    case "outgoing":
+      body = `<div class="call-status">Звоним <b>${escapeHtml(peerName)}</b>…</div>`;
+      footer = `<button class="call-reject" id="call-hangup">Отменить</button>`;
+      break;
+    case "connecting":
+      body = `<div class="call-status">Подключение к <b>${escapeHtml(peerName)}</b>…</div>`;
+      footer = `<button class="call-reject" id="call-hangup">Завершить</button>`;
+      break;
+    case "active":
+      body = `
+        <div class="call-status">В разговоре с <b>${escapeHtml(peerName)}</b></div>
+        <div class="call-timer">${escapeHtml(durationLabel)}</div>
+      `;
+      footer = `
+        <button class="ghost" id="call-mute">${muteLabel}</button>
+        <button class="call-reject" id="call-hangup">Завершить</button>
+      `;
+      break;
+    case "ended":
+      body = `<div class="call-status">Звонок завершён${snap.endedReason ? ` · ${escapeHtml(snap.endedReason)}` : ""}</div>`;
+      footer = "";
+      break;
+  }
+  return `
+    <div class="call-overlay" role="dialog">
+      <div class="call-card">
+        <div class="call-body">${body}</div>
+        <div class="call-footer">${footer}</div>
+      </div>
+    </div>
+  `;
+}
+
+function describePeer(userId: string | null): string {
+  if (!userId) return "—";
+  const member = state.members.find((m) => m.userId === userId);
+  if (member) return member.displayName || member.username;
+  return userId.slice(0, 8);
+}
+
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const mm = String(Math.floor(total / 60)).padStart(2, "0");
+  const ss = String(total % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
 }
 
 function renderEmpty(): string {
@@ -860,6 +938,7 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
   const roleOptions = ["admin", "moderator", "member"];
   const showRoleSelect = canManageRole && !isOwner && !isSelf;
   const showKick = canKick && !isOwner && !isSelf;
+  const showCall = !isSelf && state.callSnapshot === null;
   return `
     <tr data-member="${m.userId}">
       <td>
@@ -880,6 +959,7 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
         }
       </td>
       <td>
+        ${showCall ? `<button class="ghost member-call" data-user-id="${m.userId}" title="Позвонить">📞</button>` : ""}
         ${showKick ? `<button class="ghost member-kick" data-user-id="${m.userId}" title="Удалить">🗑</button>` : ""}
       </td>
     </tr>
@@ -969,6 +1049,38 @@ function attachShellHandlers(): void {
         render();
       }
     });
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>(".member-call").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const userId = btn.dataset.userId;
+      if (!userId) return;
+      try {
+        state.modal = null;
+        await callMgr.placeCall(userId);
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#call-accept")?.addEventListener("click", async () => {
+    try {
+      await callMgr.acceptIncoming();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
+  rootEl.querySelector<HTMLButtonElement>("#call-reject")?.addEventListener("click", () => {
+    callMgr.rejectIncoming();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#call-hangup")?.addEventListener("click", () => {
+    callMgr.hangup();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#call-mute")?.addEventListener("click", () => {
+    callMgr.toggleMute();
   });
 
   rootEl.querySelectorAll<HTMLLIElement>("[data-ws]").forEach((li) => {

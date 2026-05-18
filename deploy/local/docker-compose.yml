@@ -50,6 +50,28 @@ services:
     volumes:
       - minio-data:/data
 
+  # TURN/STUN-сервер для WebRTC. Запускается под профилем `turn`:
+  #   docker compose --profile turn up coturn
+  # На локальной 1-к-1 разработке обычно не нужен (хватает host candidates +
+  # Google STUN). Поднимай при тестах через NAT/мобильные сети.
+  coturn:
+    image: coturn/coturn:latest
+    profiles: ["turn"]
+    network_mode: host
+    command: >
+      -n
+      --no-cli
+      --no-tls
+      --no-dtls
+      --listening-port=3478
+      --min-port=49160
+      --max-port=49200
+      --realm=${TURN_REALM:-rucord.local}
+      --user=${TURN_USERNAME:-rucord}:${TURN_PASSWORD:-change-me}
+      --lt-cred-mech
+      --fingerprint
+      --log-file=stdout
+
 volumes:
   postgres-data:
   minio-data:

@@ -9,6 +9,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/audit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/auth"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/ice"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/invite"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/profile"
@@ -52,6 +53,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		attachment.NewModule(container.DB, container.ObjectStore, container.Logger),
 		invite.NewModule(container.DB, container.Logger),
 		audit.NewModule(container.DB),
+		ice.NewModule(),
 		system.NewModule(),
 	)
 

@@ -1,3 +1,4 @@
+import { CallManager } from "../call/callManager";
 import { HttpClient } from "../network/httpClient";
 import { RealtimeClient } from "../realtime/realtimeClient";
 import { renderApp } from "./ui";
@@ -18,9 +19,14 @@ export function bootstrapDesktopApp(container: HTMLElement): void {
   const http = new HttpClient(readApiBaseUrl());
   const realtime = new RealtimeClient(readRealtimeUrl());
 
+  const callManager = new CallManager(http, realtime);
+
   http.onTokensChanged((tokens) => {
     realtime.setAccessToken(tokens?.accessToken ?? null);
+    if (!tokens) {
+      callManager.hangup();
+    }
   });
 
-  renderApp(container, http, realtime);
+  renderApp(container, http, realtime, callManager);
 }

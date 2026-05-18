@@ -531,3 +531,40 @@ input:focus { outline: none; border-color: var(--accent); }
   font-size: 12px;
   color: var(--text-mute);
 }
+
+.call-overlay {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 1000;
+}
+.call-card {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  min-width: 280px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.call-body { margin-bottom: 10px; }
+.call-status { font-size: 14px; color: var(--text); }
+.call-timer { color: var(--text-mute); font-size: 12px; margin-top: 4px; }
+.call-footer { display: flex; gap: 8px; flex-wrap: wrap; }
+.call-footer button { font-size: 13px; padding: 6px 12px; }
+.call-accept {
+  background: #2e7d32;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.call-accept:hover { background: #388e3c; }
+.call-reject {
+  background: #c62828;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.call-reject:hover { background: #d32f2f; }
+.member-call { margin-right: 4px; }
