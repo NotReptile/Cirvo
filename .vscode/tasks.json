@@ -4,7 +4,7 @@
     {
       "label": "core-api",
       "type": "shell",
-      "command": "Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/core-api/cmd/core-api",
+      "command": "Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/core-api/cmd/core-api",
       "isBackground": true,
       "presentation": { "group": "rucord", "panel": "dedicated" },
       "problemMatcher": []
@@ -12,7 +12,7 @@
     {
       "label": "realtime",
       "type": "shell",
-      "command": "Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/realtime/cmd/realtime",
+      "command": "Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/realtime/cmd/realtime",
       "isBackground": true,
       "presentation": { "group": "rucord", "panel": "dedicated" },
       "problemMatcher": []
@@ -20,7 +20,7 @@
     {
       "label": "worker",
       "type": "shell",
-      "command": "Get-Content deploy/.env | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/worker/cmd/worker",
+      "command": "Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; go run github.com/NotReptile/RuCord/services/worker/cmd/worker",
       "isBackground": true,
       "presentation": { "group": "rucord", "panel": "dedicated" },
       "problemMatcher": []
