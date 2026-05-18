@@ -657,7 +657,7 @@ function renderChannelsBlock(): string {
         .map(
           (ch) => `
         <li class="${ch.id === state.selectedChannelId ? "active" : ""}" data-ch="${ch.id}">
-          <span class="channel-prefix">${ch.isPrivate ? "🔒" : "#"}</span>
+          <span class="channel-prefix">${channelPrefix(ch)}</span>
           <span>${escapeHtml(ch.name)}</span>
         </li>
       `
@@ -665,10 +665,20 @@ function renderChannelsBlock(): string {
         .join("")}
     </ul>
     <form id="create-channel" class="inline-form">
+      <select name="kind" title="Тип канала">
+        <option value="text">#</option>
+        <option value="voice">🔊</option>
+      </select>
       <input name="name" placeholder="новый-канал" required />
       <button type="submit">+</button>
     </form>
   `;
+}
+
+function channelPrefix(ch: Channel): string {
+  if (ch.isPrivate) return "🔒";
+  if (ch.kind === "voice") return "🔊";
+  return "#";
 }
 
 function renderMembersButton(): string {
@@ -1273,9 +1283,10 @@ function attachShellHandlers(): void {
     if (!state.selectedWorkspaceId) return;
     const form = e.currentTarget as HTMLFormElement;
     const data = new FormData(form);
+    const kind = String(data.get("kind") ?? "text").trim() || "text";
     try {
       const ch = await httpClient.post<Channel>(`/api/v1/workspaces/${state.selectedWorkspaceId}/channels`, {
-        kind: "text",
+        kind,
         name: String(data.get("name") ?? "").trim()
       });
       state.channels = [...state.channels, ch];
