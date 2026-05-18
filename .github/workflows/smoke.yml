@@ -35,14 +35,6 @@ jobs:
           --health-timeout 3s
           --health-retries 20
 
-      minio:
-        image: bitnami/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        ports:
-          - 9000:9000
-
     env:
       # core-api / shared-go ConnectFromEnv hooks
       POSTGRES_HOST: 127.0.0.1
@@ -68,6 +60,19 @@ jobs:
         with:
           go-version-file: go.work
 
+      # MinIO нельзя поднять через services-блок: у GH Actions services нет
+      # поля command, а официальный minio/minio требует `server /data`.
+      # Bitnami-вариант, который умеет стартовать сам, выпилили из публичного
+      # docker hub в августе 2025, поэтому поднимаем обычным docker run.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest \
+            server /data --console-address ":9001"
+
       - name: Wait for MinIO
         run: |
           for i in {1..30}; do
@@ -75,6 +80,7 @@ jobs:
             sleep 1
           done
           echo "minio not ready" >&2
+          docker logs minio || true
           exit 1
 
       - name: Apply migrations
