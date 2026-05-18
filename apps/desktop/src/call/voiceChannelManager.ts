@@ -28,6 +28,7 @@ export interface VoiceSnapshot {
   participants: VoiceParticipant[];
   selfSessionId: string | null;
   muted: boolean;
+  cameraOn: boolean;
   state: VoiceState;
   error: string | null;
 }
@@ -71,6 +72,16 @@ interface PeerEntry {
   remoteStream: MediaStream;
   remoteAudio: HTMLAudioElement;
   pendingCandidates: RTCIceCandidateInit[];
+  // Perfect-negotiation flag — пока true, входящий offer мы игнорируем
+  // (collision detected). Когда наш собственный offer отослан,
+  // сбрасываем во ВРЕМЯ setRemoteDescription(answer).
+  makingOffer: boolean;
+  // Polite-side: только caller (тот, кто создаёт peer первым через
+  // dialPeer()) считается impolite — он не уступает в коллизии.
+  // Receiver (peer создан в handleOffer) — polite, в коллизии откатывает
+  // свой offer. Это снимает race-condition при двустороннем
+  // одновременном renegotiate (например, если оба разом включают камеру).
+  polite: boolean;
 }
 
 const IDLE: VoiceSnapshot = {
@@ -78,6 +89,7 @@ const IDLE: VoiceSnapshot = {
   participants: [],
   selfSessionId: null,
   muted: false,
+  cameraOn: false,
   state: "idle",
   error: null
 };
@@ -86,9 +98,20 @@ export class VoiceChannelManager {
   private snapshot: VoiceSnapshot = { ...IDLE };
   private listeners = new Set<Listener>();
   private localStream: MediaStream | null = null;
+  private cameraTrack: MediaStreamTrack | null = null;
   private iceServers: RTCIceServer[] | null = null;
   private peers = new Map<string, PeerEntry>(); // key = peer sessionId
   private unsubscribe: (() => void) | null = null;
+
+  // Streams для UI: локальное превью + remote-stream по sessionId.
+  // Возвращаем объекты-ссылки, чтобы UI после render() мог attach их
+  // в созданные <video> элементы через .srcObject.
+  getLocalStream(): MediaStream | null {
+    return this.localStream;
+  }
+  getRemoteStream(sessionId: string): MediaStream | null {
+    return this.peers.get(sessionId)?.remoteStream ?? null;
+  }
 
   constructor(
     private readonly http: HttpClient,
@@ -187,28 +210,75 @@ export class VoiceChannelManager {
     return next;
   }
 
+  // toggleCamera включает/выключает локальную камеру. При включении —
+  // getUserMedia({video:true}), добавляет track в localStream и через
+  // pc.addTrack во ВСЕ активные peer-connection'ы. Это триггерит
+  // onnegotiationneeded → авто-renegotiate (perfect negotiation).
+  // При выключении — track.stop() + removeTrack у каждого sender'а,
+  // тоже renegotiation. Возвращает новое состояние.
+  async toggleCamera(): Promise<boolean> {
+    if (this.snapshot.state !== "active") return false;
+    if (!this.cameraTrack) {
+      let videoStream: MediaStream;
+      try {
+        videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "camera access denied";
+        this.update({ error: message });
+        return false;
+      }
+      const track = videoStream.getVideoTracks()[0];
+      if (!track) return false;
+      this.cameraTrack = track;
+      if (this.localStream) {
+        this.localStream.addTrack(track);
+      }
+      // Для уже подключённых peer'ов: addTrack триггерит negotiation.
+      // У свеже-создаваемых через createPeer трек попадёт сразу через
+      // tracks-перебор в localStream.
+      for (const peer of this.peers.values()) {
+        try {
+          peer.pc.addTrack(track, this.localStream!);
+        } catch {
+          /* ignore — peer закрывается */
+        }
+      }
+      this.update({ cameraOn: true, error: null });
+      return true;
+    }
+    const track = this.cameraTrack;
+    this.cameraTrack = null;
+    if (this.localStream) {
+      this.localStream.removeTrack(track);
+    }
+    track.stop();
+    for (const peer of this.peers.values()) {
+      for (const sender of peer.pc.getSenders()) {
+        if (sender.track && sender.track.kind === "video") {
+          try {
+            peer.pc.removeTrack(sender);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+    this.update({ cameraOn: false });
+    return false;
+  }
+
   // ---- internals -----------------------------------------------------------
 
   private async dialPeer(other: VoiceParticipant): Promise<void> {
     const callId = randomId();
-    const peer = this.createPeer(other.sessionId, callId);
+    // Caller — impolite (polite=false). Он не уступает в коллизии.
+    const peer = this.createPeer(other.sessionId, callId, /*polite*/ false);
     this.peers.set(other.sessionId, peer);
-
-    const offer = await peer.pc.createOffer({ offerToReceiveAudio: true });
-    await peer.pc.setLocalDescription(offer);
-
-    // Намеренно НЕ шлём call.invite — voice-каналы не делают UI
-    // приглашений, участники уже видят воркшоп через voice.joined.
-    this.realtime.send("voice.offer", {
-      call_id: callId,
-      target_session_id: other.sessionId,
-      target_user_id: other.userId,
-      channel_id: this.snapshot.channelId ?? "",
-      sdp: offer
-    });
+    // addTrack уже отработали в createPeer; onnegotiationneeded
+    // самостоятельно создаст и отправит initial offer.
   }
 
-  private createPeer(peerSessionId: string, callId: string): PeerEntry {
+  private createPeer(peerSessionId: string, callId: string, polite: boolean): PeerEntry {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers ?? [] });
     const remoteStream = new MediaStream();
     const remoteAudio = document.createElement("audio");
@@ -218,12 +288,25 @@ export class VoiceChannelManager {
     remoteAudio.srcObject = remoteStream;
     document.body.appendChild(remoteAudio);
 
+    const entry: PeerEntry = {
+      pc,
+      callId,
+      remoteStream,
+      remoteAudio,
+      pendingCandidates: [],
+      makingOffer: false,
+      polite
+    };
+
     pc.ontrack = (evt) => {
       for (const track of evt.streams[0]?.getTracks() ?? [evt.track]) {
         if (!remoteStream.getTracks().some((x) => x.id === track.id)) {
           remoteStream.addTrack(track);
         }
       }
+      // Когда remote добавляет/убирает video — UI должен переотрисовать
+      // tile, поэтому форсим snapshot-emit (даже если данные те же).
+      this.emit();
     };
     pc.onicecandidate = (evt) => {
       if (!evt.candidate) return;
@@ -242,12 +325,33 @@ export class VoiceChannelManager {
         this.destroyPeer(peerSessionId);
       }
     };
+    // Perfect-negotiation: каждое изменение треков (addTrack/removeTrack
+    // на нашей стороне) триггерит negotiationneeded — мы создаём offer
+    // и шлём. handleOffer на той стороне умеет принимать пере-offer.
+    pc.onnegotiationneeded = async () => {
+      try {
+        entry.makingOffer = true;
+        await pc.setLocalDescription();
+        if (!pc.localDescription) return;
+        this.realtime.send("voice.offer", {
+          call_id: callId,
+          target_session_id: peerSessionId,
+          channel_id: this.snapshot.channelId ?? "",
+          sdp: pc.localDescription
+        });
+      } catch {
+        /* renegotiate ошибка — игнорим, peer может закрыться */
+      } finally {
+        entry.makingOffer = false;
+      }
+    };
+
     if (this.localStream) {
       for (const t of this.localStream.getTracks()) {
         pc.addTrack(t, this.localStream);
       }
     }
-    return { pc, callId, remoteStream, remoteAudio, pendingCandidates: [] };
+    return entry;
   }
 
   private destroyPeer(sessionId: string): void {
@@ -268,6 +372,7 @@ export class VoiceChannelManager {
       for (const t of this.localStream.getTracks()) t.stop();
       this.localStream = null;
     }
+    this.cameraTrack = null;
   }
 
   private async ensureIceServers(): Promise<void> {
@@ -348,27 +453,43 @@ export class VoiceChannelManager {
     if (!p.sdp || !p.from_session_id) return;
     let peer = this.peers.get(p.from_session_id);
     if (!peer) {
-      peer = this.createPeer(p.from_session_id, p.call_id);
+      // Receiver — polite (уступает в коллизии).
+      peer = this.createPeer(p.from_session_id, p.call_id, /*polite*/ true);
       this.peers.set(p.from_session_id, peer);
     }
-    await peer.pc.setRemoteDescription(p.sdp);
-    await this.drainPending(peer);
-    const answer = await peer.pc.createAnswer();
-    await peer.pc.setLocalDescription(answer);
-    this.realtime.send("voice.answer", {
-      call_id: p.call_id,
-      target_session_id: p.from_session_id,
-      sdp: answer
-    });
+    // Perfect negotiation: если мы уже шлём свой offer ИЛИ не в stable —
+    // это коллизия. Polite сторона откатывает свой offer; impolite —
+    // игнорит входящий.
+    const offerCollision = peer.makingOffer || peer.pc.signalingState !== "stable";
+    const ignoreOffer = !peer.polite && offerCollision;
+    if (ignoreOffer) {
+      return;
+    }
+    try {
+      await peer.pc.setRemoteDescription(p.sdp);
+      await this.drainPending(peer);
+      await peer.pc.setLocalDescription();
+      if (!peer.pc.localDescription) return;
+      this.realtime.send("voice.answer", {
+        call_id: p.call_id,
+        target_session_id: p.from_session_id,
+        sdp: peer.pc.localDescription
+      });
+    } catch {
+      /* ignore — peer мог быть закрыт пока шла обработка */
+    }
   }
 
   private async handleAnswer(p: RelayPayload): Promise<void> {
     if (!p.sdp || !p.from_session_id) return;
     const peer = this.peers.get(p.from_session_id);
     if (!peer) return;
-    if (peer.pc.signalingState === "stable") return;
-    await peer.pc.setRemoteDescription(p.sdp);
-    await this.drainPending(peer);
+    try {
+      await peer.pc.setRemoteDescription(p.sdp);
+      await this.drainPending(peer);
+    } catch {
+      /* ignore */
+    }
   }
 
   private async handleIce(p: RelayPayload): Promise<void> {

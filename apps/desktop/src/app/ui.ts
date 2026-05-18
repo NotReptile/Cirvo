@@ -602,6 +602,7 @@ function renderShell(): void {
     </div>
   `;
   attachShellHandlers();
+  attachVoiceVideoStreams();
 }
 
 function renderCallOverlay(): string {
@@ -628,16 +629,27 @@ function renderCallOverlay(): string {
       body = `<div class="call-status">Подключение к <b>${escapeHtml(peerName)}</b>…</div>`;
       footer = `<button class="call-reject" id="call-hangup">Завершить</button>`;
       break;
-    case "active":
+    case "active": {
+      const cameraLabel = snap.cameraOn ? "📷 Выключить камеру" : "📹 Включить камеру";
       body = `
         <div class="call-status">В разговоре с <b>${escapeHtml(peerName)}</b></div>
         <div class="call-timer" id="call-timer">${escapeHtml(durationLabel)}</div>
+        <div class="call-video-grid">
+          <div class="call-video-tile remote">
+            <video data-call-remote="1" autoplay playsinline></video>
+          </div>
+          <div class="call-video-tile self">
+            <video data-call-self="1" autoplay playsinline muted></video>
+          </div>
+        </div>
       `;
       footer = `
         <button class="ghost" id="call-mute">${muteLabel}</button>
+        <button class="ghost" id="call-camera">${cameraLabel}</button>
         <button class="call-reject" id="call-hangup">Завершить</button>
       `;
       break;
+    }
     case "ended":
       body = `<div class="call-status">Звонок завершён${snap.endedReason ? ` · ${escapeHtml(snap.endedReason)}` : ""}</div>`;
       footer = "";
@@ -816,9 +828,6 @@ function renderVoiceChannelView(channel: Channel): string {
   const voice = state.voiceSnapshot;
   const joined = voice?.channelId === channel.id;
   const busyOther = voice && !joined ? voice.channelId : null;
-  // Если мы внутри канала — список из voiceMgr (там же selfSessionId,
-  // чтобы пометить «вы»). Если нет — peek с сервера, обновляется через
-  // voice.joined/left.
   const participants = joined
     ? voice!.participants
     : state.voicePeek?.channelId === channel.id
@@ -828,24 +837,33 @@ function renderVoiceChannelView(channel: Channel): string {
   const joining = voice?.state === "joining";
   const leaving = voice?.state === "leaving";
   const muted = joined && voice!.muted;
+  const cameraOn = joined && voice!.cameraOn;
   const error = voice?.error ?? null;
 
-  const list = participants.length === 0
+  // tiles: один на каждого участника. Для своих — local stream через
+  // data-voice-self; для чужих — remote stream через data-voice-peer.
+  // srcObject цепляется после render() в attachVoiceVideoStreams().
+  const tiles = participants.length === 0
     ? `<div class="muted">Пока никого. ${joined ? "Подключайся, говори :)" : "Будь первым."}</div>`
-    : `<ul class="voice-participants">${participants
+    : `<div class="voice-tiles">${participants
         .map((p) => {
           const name = p.displayName?.trim() || p.username || p.userId.slice(0, 8);
           const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
-          return `<li class="voice-participant${isSelf ? " self" : ""}">
-            <span class="voice-dot"></span>
-            <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
-          </li>`;
+          const tag = isSelf ? `data-voice-self="1"` : `data-voice-peer="${escapeHtml(p.sessionId)}"`;
+          return `<div class="voice-tile${isSelf ? " self" : ""}">
+            <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
+            <div class="voice-tile-overlay">
+              <span class="voice-dot"></span>
+              <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
+            </div>
+          </div>`;
         })
-        .join("")}</ul>`;
+        .join("")}</div>`;
 
   const actions = joined
     ? `
       <button id="voice-mute" class="ghost">${muted ? "🔇 Включить микро" : "🎙 Заглушить"}</button>
+      <button id="voice-camera" class="ghost">${cameraOn ? "📷 Выключить камеру" : "📹 Включить камеру"}</button>
       <button id="voice-leave" ${leaving ? "disabled" : ""}>${leaving ? "Выхожу…" : "Выйти"}</button>
     `
     : `
@@ -865,12 +883,36 @@ function renderVoiceChannelView(channel: Channel): string {
     <div class="voice-room">
       <div class="voice-room-body">
         <h3>Сейчас в канале</h3>
-        ${list}
+        ${tiles}
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
       </div>
       <div class="voice-room-actions">${actions}</div>
     </div>
   `;
+}
+
+// После render() цепляем MediaStream'ы в <video data-voice-*> /
+// <video data-call-*> элементы. Через innerHTML srcObject не
+// сериализуется — нужно ставить программно.
+function attachVoiceVideoStreams(): void {
+  const voiceLocal = voiceMgr.getLocalStream();
+  for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-voice-self]")) {
+    if (el.srcObject !== voiceLocal) el.srcObject = voiceLocal;
+  }
+  for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-voice-peer]")) {
+    const sid = el.dataset.voicePeer;
+    if (!sid) continue;
+    const stream = voiceMgr.getRemoteStream(sid);
+    if (el.srcObject !== stream) el.srcObject = stream;
+  }
+  const callLocal = callMgr.getLocalStream();
+  const callRemote = callMgr.getRemoteStream();
+  for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-call-self]")) {
+    if (el.srcObject !== callLocal) el.srcObject = callLocal;
+  }
+  for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-call-remote]")) {
+    if (el.srcObject !== callRemote) el.srcObject = callRemote;
+  }
 }
 
 function renderPendingUploads(): string {
@@ -1246,6 +1288,14 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#call-mute")?.addEventListener("click", () => {
     callMgr.toggleMute();
   });
+  rootEl.querySelector<HTMLButtonElement>("#call-camera")?.addEventListener("click", async () => {
+    try {
+      await callMgr.toggleCamera();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
 
   rootEl.querySelector<HTMLButtonElement>("#voice-join")?.addEventListener("click", async (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
@@ -1263,6 +1313,14 @@ function attachShellHandlers(): void {
   });
   rootEl.querySelector<HTMLButtonElement>("#voice-mute")?.addEventListener("click", () => {
     voiceMgr.toggleMute();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#voice-camera")?.addEventListener("click", async () => {
+    try {
+      await voiceMgr.toggleCamera();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
   });
 
   syncCallTimer();

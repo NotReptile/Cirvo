@@ -16,6 +16,7 @@ export interface CallSnapshot {
   peerSessionId: string | null;
   channelId: string | null;
   muted: boolean;
+  cameraOn: boolean;
   startedAt: number | null;
   endedReason: string | null;
 }
@@ -45,6 +46,7 @@ const IDLE_SNAPSHOT: CallSnapshot = {
   peerSessionId: null,
   channelId: null,
   muted: false,
+  cameraOn: false,
   startedAt: null,
   endedReason: null
 };
@@ -54,11 +56,19 @@ export class CallManager {
   private listeners = new Set<Listener>();
   private pc: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
+  private cameraTrack: MediaStreamTrack | null = null;
   private remoteStream: MediaStream | null = null;
   private remoteAudio: HTMLAudioElement | null = null;
   private iceServers: RTCIceServer[] | null = null;
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private unsubscribeRealtime: (() => void) | null = null;
+
+  getLocalStream(): MediaStream | null {
+    return this.localStream;
+  }
+  getRemoteStream(): MediaStream | null {
+    return this.remoteStream;
+  }
 
   constructor(
     private readonly http: HttpClient,
@@ -165,6 +175,64 @@ export class CallManager {
     }
     this.update({ muted: next });
     return next;
+  }
+
+  async toggleCamera(): Promise<boolean> {
+    if (!this.pc || !this.localStream || this.snapshot.state !== "active") {
+      return this.snapshot.cameraOn;
+    }
+    if (!this.cameraTrack) {
+      let videoStream: MediaStream;
+      try {
+        videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      } catch {
+        return false;
+      }
+      const track = videoStream.getVideoTracks()[0];
+      if (!track) return false;
+      this.cameraTrack = track;
+      this.localStream.addTrack(track);
+      try {
+        this.pc.addTrack(track, this.localStream);
+      } catch {
+        /* ignore */
+      }
+      await this.renegotiate();
+      this.update({ cameraOn: true });
+      return true;
+    }
+    const track = this.cameraTrack;
+    this.cameraTrack = null;
+    this.localStream.removeTrack(track);
+    track.stop();
+    for (const sender of this.pc.getSenders()) {
+      if (sender.track && sender.track.kind === "video") {
+        try {
+          this.pc.removeTrack(sender);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    await this.renegotiate();
+    this.update({ cameraOn: false });
+    return false;
+  }
+
+  private async renegotiate(): Promise<void> {
+    if (!this.pc || !this.snapshot.callId || !this.snapshot.peerSessionId) return;
+    try {
+      const offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      this.realtime.send("call.offer", {
+        call_id: this.snapshot.callId,
+        target_user_id: this.snapshot.peerUserId,
+        target_session_id: this.snapshot.peerSessionId,
+        sdp: offer
+      });
+    } catch {
+      /* ignore — peer мог закрыться */
+    }
   }
 
   // ---------- internals -----------------------------------------------------
@@ -298,6 +366,23 @@ export class CallManager {
     if (!this.pc || !p.sdp || p.call_id !== this.snapshot.callId) return;
     await this.pc.setRemoteDescription(p.sdp);
     await this.drainPendingCandidates();
+    // Renegotiation — повторный offer уже на установленном соединении
+    // (например, оппонент включил камеру). Отвечаем answer'ом
+    // автоматически, без UI-подтверждения.
+    if (this.snapshot.state === "active") {
+      try {
+        const answer = await this.pc.createAnswer();
+        await this.pc.setLocalDescription(answer);
+        this.realtime.send("call.answer", {
+          call_id: p.call_id,
+          target_user_id: p.from_user_id ?? this.snapshot.peerUserId,
+          target_session_id: p.from_session_id ?? this.snapshot.peerSessionId,
+          sdp: answer
+        });
+      } catch {
+        /* peer мог закрыться */
+      }
+    }
   }
 
   private async handleAnswer(p: RelayPayload): Promise<void> {
@@ -367,6 +452,7 @@ export class CallManager {
       }
       this.localStream = null;
     }
+    this.cameraTrack = null;
     if (this.remoteAudio) {
       this.remoteAudio.srcObject = null;
       this.remoteAudio.remove();
