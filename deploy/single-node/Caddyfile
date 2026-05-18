@@ -1,19 +1,90 @@
-:443 {
-  tls internal
+# RuCord single-node reverse proxy.
+#
+# Управляется переменными окружения (передаются через `docker-compose.yml`,
+# который читает `deploy/.env`):
+#
+#   RUCORD_DOMAIN        — публичное имя хоста (например `chat.example.com`).
+#                          Для self-host без публичного DNS можно указать IP
+#                          или `localhost` — но тогда обязательно
+#                          RUCORD_TLS_EMAIL=internal (self-signed CA).
+#   RUCORD_TLS_EMAIL     — email для ACME/Let's Encrypt либо литерал
+#                          `internal` — тогда Caddy выдаст self-signed
+#                          сертификат через встроенный CA.
+#   RUCORD_UPSTREAM_HOST — хост, где слушают core-api/realtime. По умолчанию
+#                          `host.docker.internal` (сервисы как host-процессы).
+#                          Если поднимаешь core-api/realtime контейнерами в
+#                          этом же compose — поставь имя сервиса.
 
-  handle_path /healthz {
-    reverse_proxy 127.0.0.1:8080
-  }
-
-  handle_path /readyz {
-    reverse_proxy 127.0.0.1:8080
-  }
-
-  handle /ws* {
-    reverse_proxy 127.0.0.1:8090
-  }
-
-  handle {
-    reverse_proxy 127.0.0.1:8080
-  }
+{
+	# Глобальный admin endpoint наружу не торчит.
+	admin off
+	# Чтобы Caddy не разлогинивал acme при self-signed варианте —
+	# email вычисляется внутри блока сайта.
 }
+
+{$RUCORD_DOMAIN:localhost} {
+	tls {$RUCORD_TLS_EMAIL:internal}
+
+	encode zstd gzip
+
+	# --- Security headers ---
+	# HSTS включается только когда сайт реально под TLS с валидным CA.
+	# Для self-signed (`internal`) HSTS будет мешать локальной отладке,
+	# поэтому ставим относительно умеренное значение и не включаем preload.
+	header {
+		Strict-Transport-Security "max-age=15552000; includeSubDomains"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		# Не палим версию Caddy.
+		-Server
+	}
+
+	# CORS allow-list реализуется в core-api через RUCORD_CORS_ORIGINS.
+	# Здесь дополнительно блокируем «дикие» preflight'ы на чужие пути:
+	# legal preflight всегда уходит в core-api, который сам решит, отвечать ли.
+
+	# --- Маршруты ---
+	# WebSocket → realtime (порт 8090).
+	handle /ws* {
+		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8090 {
+			# WebSocket таймауты длиннее обычных HTTP.
+			transport http {
+				read_timeout 1h
+				write_timeout 1h
+			}
+		}
+	}
+
+	# Liveness/readiness — наружу отдаём, но без кеширования.
+	handle /healthz {
+		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8080
+	}
+	handle /readyz {
+		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8080
+	}
+
+	# REST API.
+	handle /api/* {
+		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8080
+	}
+
+	# Всё остальное — статика клиента (если будет монтироваться в /srv)
+	# либо явный 404. Сейчас отдельной статики нет — отвечаем 404, чтобы
+	# случайные пути не попадали в core-api.
+	handle {
+		respond "Not Found" 404
+	}
+
+	# Лог в stdout контейнера — picked up by `docker logs`.
+	log {
+		output stdout
+		format console
+	}
+}
+
+# HTTP → HTTPS редирект уже автоматически создаётся Caddy для блока выше,
+# когда домен не `localhost` и tls не `off`. Дополнительной директивы не
+# требуется.
