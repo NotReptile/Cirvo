@@ -97,7 +97,15 @@ jobs:
             up
 
       - name: Build
-        run: go build ./services/... ./libs/shared-go/...
+        # ./services/... не работает в go workspace: services — это каталог
+        # модулей, а не модуль, и `...` расширяется только внутри модуля.
+        # Перечисляем модули по очереди.
+        run: |
+          go build \
+            ./services/core-api/... \
+            ./services/realtime/... \
+            ./services/worker/... \
+            ./libs/shared-go/...
 
       - name: Smoke tests
         run: go test -tags=smoke -count=1 -v ./services/core-api/smoketests/
