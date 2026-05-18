@@ -15,12 +15,17 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
+
+// Лимит на accept — per user. Защищает от перебора кодов приглашения и от
+// абуза одной учёткой (массовое присоединение к воркспейсам).
+var inviteAcceptRule = ratelimit.Rule{Capacity: 20, Window: time.Hour}
 
 const (
 	codeBytes      = 8 // 8 raw bytes -> 13-char base32 code
@@ -31,20 +36,30 @@ const (
 var codeEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 type Module struct {
-	db     *postgres.Pool
-	logger *slog.Logger
+	db      *postgres.Pool
+	limiter *ratelimit.Limiter
+	logger  *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, logger *slog.Logger) *Module {
-	return &Module{db: db, logger: logger}
+func NewModule(db *postgres.Pool, limiter *ratelimit.Limiter, logger *slog.Logger) *Module {
+	return &Module{db: db, limiter: limiter, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
+	acceptLimited := ratelimit.Middleware(m.limiter, m.logger, "invite_accept", inviteAcceptRule, userIDKey)(m.handleAccept)
 	router.Protected("POST /api/v1/workspaces/{workspaceId}/invites", m.handleCreate)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/invites", m.handleList)
 	router.Protected("DELETE /api/v1/invites/{inviteId}", m.handleRevoke)
-	router.Protected("POST /api/v1/invites/{code}/accept", m.handleAccept)
+	router.Protected("POST /api/v1/invites/{code}/accept", acceptLimited)
 	router.Public("GET /api/v1/invites/{code}", m.handlePreview)
+}
+
+func userIDKey(r *http.Request) string {
+	uid, ok := authctx.UserID(r.Context())
+	if !ok {
+		return ""
+	}
+	return uid.String()
 }
 
 type createRequest struct {

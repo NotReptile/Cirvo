@@ -7,6 +7,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
 )
@@ -18,5 +19,6 @@ type Container struct {
 	JWT         *jwtauth.Issuer
 	Publisher   *realtimebus.Publisher
 	ObjectStore *objectstore.Client
+	Limiter     *ratelimit.Limiter
 	CORS        func(http.Handler) http.Handler
 }

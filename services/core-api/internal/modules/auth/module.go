@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -18,8 +19,18 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+)
+
+// Лимиты anti brute-force на auth-эндпоинтах. Считаются per-IP (за Caddy —
+// X-Forwarded-For). Цифры подобраны как «явно щадящие для людей, но
+// мешающие перебору словарём».
+var (
+	authLoginRule    = ratelimit.Rule{Capacity: 10, Window: 5 * time.Minute}
+	authRegisterRule = ratelimit.Rule{Capacity: 5, Window: time.Hour}
+	authRefreshRule  = ratelimit.Rule{Capacity: 30, Window: 5 * time.Minute}
 )
 
 const (
@@ -30,18 +41,23 @@ const (
 var usernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
 
 type Module struct {
-	db  *postgres.Pool
-	jwt *jwtauth.Issuer
+	db      *postgres.Pool
+	jwt     *jwtauth.Issuer
+	limiter *ratelimit.Limiter
+	logger  *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, jwt *jwtauth.Issuer) *Module {
-	return &Module{db: db, jwt: jwt}
+func NewModule(db *postgres.Pool, jwt *jwtauth.Issuer, limiter *ratelimit.Limiter, logger *slog.Logger) *Module {
+	return &Module{db: db, jwt: jwt, limiter: limiter, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
-	router.Public("POST /api/v1/auth/register", m.handleRegister)
-	router.Public("POST /api/v1/auth/login", m.handleLogin)
-	router.Public("POST /api/v1/auth/refresh", m.handleRefresh)
+	rl := func(scope string, rule ratelimit.Rule, h http.HandlerFunc) http.HandlerFunc {
+		return ratelimit.Middleware(m.limiter, m.logger, scope, rule, ratelimit.IPKey)(h)
+	}
+	router.Public("POST /api/v1/auth/register", rl("auth_register", authRegisterRule, m.handleRegister))
+	router.Public("POST /api/v1/auth/login", rl("auth_login", authLoginRule, m.handleLogin))
+	router.Public("POST /api/v1/auth/refresh", rl("auth_refresh", authRefreshRule, m.handleRefresh))
 	router.Protected("POST /api/v1/auth/logout", m.handleLogout)
 	router.Protected("GET /api/v1/users/me", m.handleMe)
 }

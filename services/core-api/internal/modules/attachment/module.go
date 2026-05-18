@@ -19,6 +19,7 @@ import (
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
@@ -28,22 +29,40 @@ const (
 	streamCopyBuf  = 64 * 1024
 )
 
+// Лимиты на uploads — per user. Token bucket защищает от спама запросами,
+// Charge — кумулятивный размер за окно (защита от DoS дискового места).
+// Когда D.1 добавит server_settings — эти константы переедут туда.
+var (
+	uploadRequestRule = ratelimit.Rule{Capacity: 60, Window: 10 * time.Minute}
+	uploadSizeBudget  = ratelimit.Budget{Max: 500 * 1024 * 1024, Window: time.Hour} // 500 MiB/час/юзер
+)
+
 var safeFilenameRE = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 type Module struct {
-	db     *postgres.Pool
-	store  *objectstore.Client
-	logger *slog.Logger
+	db      *postgres.Pool
+	store   *objectstore.Client
+	limiter *ratelimit.Limiter
+	logger  *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, store *objectstore.Client, logger *slog.Logger) *Module {
-	return &Module{db: db, store: store, logger: logger}
+func NewModule(db *postgres.Pool, store *objectstore.Client, limiter *ratelimit.Limiter, logger *slog.Logger) *Module {
+	return &Module{db: db, store: store, limiter: limiter, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
-	router.Protected("POST /api/v1/uploads", m.handleUpload)
+	uploadLimited := ratelimit.Middleware(m.limiter, m.logger, "upload_count", uploadRequestRule, userIDKey)(m.handleUpload)
+	router.Protected("POST /api/v1/uploads", uploadLimited)
 	router.Protected("GET /api/v1/media/{mediaId}", m.handleDownload)
 	router.Protected("GET /api/v1/media/{mediaId}/thumb", m.handleThumbnail)
+}
+
+func userIDKey(r *http.Request) string {
+	uid, ok := authctx.UserID(r.Context())
+	if !ok {
+		return ""
+	}
+	return uid.String()
 }
 
 type mediaView struct {
@@ -76,6 +95,25 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if header.Size <= 0 || header.Size > maxUploadBytes {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "file too large or empty")
 		return
+	}
+
+	// Кумулятивный лимит размера: суммарно за окно один юзер не может
+	// засосать больше uploadSizeBudget.Max байт.
+	if m.limiter != nil {
+		decision, err := m.limiter.Charge(r.Context(),
+			ratelimit.Key("upload_bytes", userID.String()),
+			header.Size,
+			uploadSizeBudget,
+		)
+		if err != nil {
+			m.logger.Warn("ratelimit charge failed, falling open",
+				slog.String("scope", "upload_bytes"),
+				slog.String("error", err.Error()),
+			)
+		} else if !decision.Allowed {
+			ratelimit.WriteTooMany(w, r, decision.RetryAfter)
+			return
+		}
 	}
 
 	contentType := strings.TrimSpace(header.Header.Get("Content-Type"))

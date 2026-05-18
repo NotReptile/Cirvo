@@ -16,6 +16,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
 	"github.com/NotReptile/RuCord/libs/shared-go/observability"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
 
@@ -66,13 +67,16 @@ func main() {
 		return
 	}
 
+	limiter := ratelimit.New(redisClient.Client)
+
 	container := deps.Container{
-		Logger:    logger,
-		DB:        db,
-		Redis:     redisClient,
-		JWT:       jwtIssuer,
+		Logger:      logger,
+		DB:          db,
+		Redis:       redisClient,
+		JWT:         jwtIssuer,
 		Publisher:   publisher,
 		ObjectStore: objectStore,
+		Limiter:     limiter,
 		CORS:        sharedhttp.CORS(parseCORSOrigins(os.Getenv("RUCORD_CORS_ORIGINS"))),
 	}
 

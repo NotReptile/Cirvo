@@ -45,13 +45,13 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 
 	server.registerBaseRoutes()
 	server.registerModules(
-		auth.NewModule(container.DB, container.JWT),
+		auth.NewModule(container.DB, container.JWT, container.Limiter, container.Logger),
 		profile.NewModule(container.DB, container.Logger),
 		workspace.NewModule(container.DB, container.Logger),
 		channel.NewModule(container.DB, container.Logger),
 		message.NewModule(container.DB, container.Publisher, container.Logger),
-		attachment.NewModule(container.DB, container.ObjectStore, container.Logger),
-		invite.NewModule(container.DB, container.Logger),
+		attachment.NewModule(container.DB, container.ObjectStore, container.Limiter, container.Logger),
+		invite.NewModule(container.DB, container.Limiter, container.Logger),
 		audit.NewModule(container.DB),
 		ice.NewModule(),
 		system.NewModule(),
