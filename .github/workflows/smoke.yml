@@ -59,6 +59,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.work
+          # У нас go workspace — нет общего go.sum в корне; модули каждый со
+          # своим go.sum. setup-go@v5 по умолчанию включает cache и шумит
+          # «Dependencies file is not found». Кэш не критичен для smoke.
+          cache: false
 
       # MinIO нельзя поднять через services-блок: у GH Actions services нет
       # поля command, а официальный minio/minio требует `server /data`.
