@@ -200,7 +200,7 @@ func (m *Module) handleDownload(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeInternal, "object storage is not configured")
 		return
 	}
-	_ = authctx.MustUserID(r.Context())
+	userID := authctx.MustUserID(r.Context())
 	rawID := r.PathValue("mediaId")
 	mediaID, err := uuid.Parse(rawID)
 	if err != nil {
@@ -213,18 +213,25 @@ func (m *Module) handleDownload(w http.ResponseWriter, r *http.Request) {
 		contentType string
 		sizeBytes   int64
 		filename    *string
+		ownerID     *uuid.UUID
 	)
 	err = m.db.QueryRow(r.Context(),
-		`select object_key, content_type, size_bytes, original_filename
+		`select object_key, content_type, size_bytes, original_filename, uploaded_by_user_id
 		 from media_objects where id = $1`,
 		mediaID,
-	).Scan(&objectKey, &contentType, &sizeBytes, &filename)
+	).Scan(&objectKey, &contentType, &sizeBytes, &filename, &ownerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "media not found")
 			return
 		}
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+
+	if !m.canAccess(r.Context(), mediaID, userID, ownerID) {
+		// 404 вместо 403, чтобы не палить факт существования media.
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "media not found")
 		return
 	}
 
@@ -251,7 +258,7 @@ func (m *Module) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeInternal, "object storage is not configured")
 		return
 	}
-	_ = authctx.MustUserID(r.Context())
+	userID := authctx.MustUserID(r.Context())
 	rawID := r.PathValue("mediaId")
 	mediaID, err := uuid.Parse(rawID)
 	if err != nil {
@@ -260,22 +267,28 @@ func (m *Module) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		thumbKey  *string
-		origKey   string
-		origCT    string
-		origSize  int64
+		thumbKey *string
+		origKey  string
+		origCT   string
+		origSize int64
+		ownerID  *uuid.UUID
 	)
 	err = m.db.QueryRow(r.Context(),
-		`select thumbnail_object_key, object_key, content_type, size_bytes
+		`select thumbnail_object_key, object_key, content_type, size_bytes, uploaded_by_user_id
 		 from media_objects where id = $1`,
 		mediaID,
-	).Scan(&thumbKey, &origKey, &origCT, &origSize)
+	).Scan(&thumbKey, &origKey, &origCT, &origSize, &ownerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "media not found")
 			return
 		}
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+
+	if !m.canAccess(r.Context(), mediaID, userID, ownerID) {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "media not found")
 		return
 	}
 
@@ -303,6 +316,46 @@ func (m *Module) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, reader)
+}
+
+// canAccess решает, можно ли отдать содержимое media текущему юзеру.
+// Разрешено если:
+//   1) юзер — владелец загрузки (`media_objects.uploaded_by_user_id`),
+//      даже если media ещё не приложена к сообщению (свежий аплоад);
+//   2) media приложена к сообщению в канале, который юзеру видим:
+//      он workspace-member, и канал либо публичный, либо он в channel_members.
+//
+// При отсутствии доступа возвращаем false — вызывающий пишет 404, чтобы
+// не палить факт существования media.
+func (m *Module) canAccess(ctx context.Context, mediaID, userID uuid.UUID, ownerID *uuid.UUID) bool {
+	if ownerID != nil && *ownerID == userID {
+		return true
+	}
+	var allowed bool
+	err := m.db.QueryRow(ctx,
+		`select exists (
+		   select 1
+		   from message_attachments ma
+		   join messages msg on msg.id = ma.message_id
+		   join channels c on c.id = msg.channel_id
+		   join workspace_members wm
+		     on wm.workspace_id = c.workspace_id and wm.user_id = $2
+		   where ma.media_id = $1
+		     and (
+		       c.is_private = false
+		       or exists (
+		         select 1 from channel_members cm
+		         where cm.channel_id = c.id and cm.user_id = $2
+		       )
+		     )
+		 )`,
+		mediaID, userID,
+	).Scan(&allowed)
+	if err != nil {
+		m.logger.Warn("media acl check failed", slog.String("error", err.Error()), slog.String("media_id", mediaID.String()))
+		return false
+	}
+	return allowed
 }
 
 func safeFilename(name string) string {
