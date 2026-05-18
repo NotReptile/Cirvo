@@ -20,7 +20,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
@@ -445,8 +445,7 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if authorID != userID {
-		role, ok := workspace.RoleOf(r.Context(), m.db, scope.WorkspaceID, userID)
-		if !ok || !workspace.CanModerate(role) {
+		if _, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, userID, permission.MessageModerate); !allowed {
 			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only author or moderator can delete")
 			return
 		}

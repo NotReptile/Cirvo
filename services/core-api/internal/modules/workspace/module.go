@@ -16,6 +16,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
@@ -284,12 +285,12 @@ func (m *Module) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorRole, ok := RoleOf(r.Context(), m.db, workspaceID, actorID)
-	if !ok {
+	_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, actorID, permission.MemberManageRole)
+	if !isMember {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
 		return
 	}
-	if actorRole != RoleOwner && actorRole != RoleAdmin {
+	if !allowed {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only owner or admin can change roles")
 		return
 	}
@@ -351,15 +352,22 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorRole, ok := RoleOf(r.Context(), m.db, workspaceID, actorID)
-	if !ok {
-		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
-		return
-	}
-
-	if actorID != targetID && !CanModerate(actorRole) {
-		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
-		return
+	if actorID == targetID {
+		// self-leave is always allowed; just need membership to exist
+		if !IsMember(r.Context(), m.db, workspaceID, actorID) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+			return
+		}
+	} else {
+		_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, actorID, permission.MemberKick)
+		if !isMember {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+			return
+		}
+		if !allowed {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
+			return
+		}
 	}
 
 	var targetRole string
@@ -408,11 +416,6 @@ func RoleOf(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.UUI
 		return "", false
 	}
 	return role, true
-}
-
-// CanModerate reports whether the role can manage workspace resources.
-func CanModerate(role string) bool {
-	return role == RoleOwner || role == RoleAdmin || role == RoleModerator
 }
 
 func parseUUIDParam(r *http.Request, name string) (uuid.UUID, bool) {

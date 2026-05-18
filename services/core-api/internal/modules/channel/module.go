@@ -14,6 +14,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
@@ -121,12 +122,12 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
 		return
 	}
-	role, ok := workspace.RoleOf(r.Context(), m.db, workspaceID, userID)
-	if !ok {
+	_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, userID, permission.ChannelCreate)
+	if !isMember {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
 		return
 	}
-	if !workspace.CanModerate(role) {
+	if !allowed {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
 		return
 	}
@@ -294,8 +295,7 @@ func (m *Module) handleAddMember(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
 		return
 	}
-	role, ok := workspace.RoleOf(r.Context(), m.db, scope.WorkspaceID, actorID)
-	if !ok || !workspace.CanModerate(role) {
+	if _, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, actorID, permission.ChannelManageMembers); !allowed {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
 		return
 	}
@@ -353,8 +353,7 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if actorID != targetID {
-		role, ok := workspace.RoleOf(r.Context(), m.db, scope.WorkspaceID, actorID)
-		if !ok || !workspace.CanModerate(role) {
+		if _, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, actorID, permission.ChannelManageMembers); !allowed {
 			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
 			return
 		}

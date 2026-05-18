@@ -7,7 +7,7 @@
 - `auth`
 - `profile`
 - `workspace`
-- `permission`
+- `permission` - role-based access matrix; single source of truth for "who can do what".
 - `channel`
 - `message`
 - `attachment`
@@ -21,6 +21,15 @@
 - domain modules do not read another module's tables directly without a contract;
 - external systems are reached through infrastructure adapters;
 - gateway concerns are treated as an edge role inside `core-api` in the first iteration.
+
+## Permission Module
+
+`modules/permission` owns the role-to-actions matrix. Modules never compare role strings inline; they call `permission.Authorize(ctx, db, workspaceID, userID, action)` or, when the role is already in hand, `permission.Can(role, action)`.
+
+- `Action` is a semantic constant (`permission.ChannelCreate`, `permission.MessageModerate`, ...). New permissions live here, not as new `if role == "..."` branches inside handlers.
+- `Authorize` returns `(role, isMember, allowed)` so callers can distinguish 404 ("not a member - hide the workspace's existence") from 403 ("member but no permission").
+- The matrix grants `owner` and `admin` everything; `moderator` gets content moderation + invites + audit + kick; `member` gets nothing extra. Owner-only actions (transfer ownership, delete workspace) will be modeled as separate Actions when they appear.
+- To avoid an import cycle with `workspace` (which itself calls `permission.Authorize`), role codes are duplicated as unexported constants in `permission`. The canonical source remains `workspace.RoleOwner` / `RoleAdmin` / `RoleModerator` / `RoleMember`.
 
 ## `realtime`
 
