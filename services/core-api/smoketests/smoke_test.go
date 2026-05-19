@@ -211,6 +211,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("message_reply", testMessageReply)
 	t.Run("message_mentions", testMessageMentions)
 	t.Run("unread_counts", testUnreadCounts)
+	t.Run("message_search", testMessageSearch)
 }
 
 func testAuthFlow(t *testing.T) {
@@ -741,6 +742,91 @@ func testUnreadCounts(t *testing.T) {
 	code, raw = doReq(t, http.MethodGet, "/api/v1/workspaces/"+wsID+"/unread", stranger.AccessToken, nil)
 	if code != http.StatusNotFound {
 		t.Fatalf("stranger unread: expected 404, got %d %s", code, string(raw))
+	}
+}
+
+func testMessageSearch(t *testing.T) {
+	// A создаёт workspace + два канала, пишет три сообщения. Поиск по
+	// уникальному токену даёт ровно одно совпадение; highlight содержит
+	// sentinel'ы. Чужой пользователь — 404 по workspace.
+	a := registerFresh(t)
+	wsID := createWorkspace(t, a.AccessToken)
+	ch1 := createTextChannel(t, a.AccessToken, wsID)
+	ch2 := createTextChannel(t, a.AccessToken, wsID)
+
+	needle := "квазимодулярная" + uniqSuffix() // уникальный токен на сессию
+	post := func(ch, body string) string {
+		c, r := doReq(t, http.MethodPost, "/api/v1/channels/"+ch+"/messages", a.AccessToken, map[string]any{
+			"body":            body,
+			"clientMessageId": uuid.NewString(),
+		})
+		if c != http.StatusCreated {
+			t.Fatalf("post: %d %s", c, string(r))
+		}
+		var v idView
+		mustJSON(t, r, &v)
+		return v.ID
+	}
+	post(ch1, "обычное сообщение без иголки")
+	hit := post(ch2, "тут спрятана "+needle+" в середине текста")
+	post(ch1, "ещё одно без неё")
+
+	type searchResult struct {
+		ID          string `json:"id"`
+		ChannelID   string `json:"channelId"`
+		ChannelName string `json:"channelName"`
+		Highlight   string `json:"highlight"`
+		Body        string `json:"body"`
+	}
+	type searchResp struct {
+		Items      []searchResult `json:"items"`
+		NextCursor string         `json:"nextCursor"`
+	}
+
+	code, raw := doReq(t, http.MethodGet, "/api/v1/workspaces/"+wsID+"/search?q="+needle, a.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("search: %d %s", code, string(raw))
+	}
+	var sr searchResp
+	mustJSON(t, raw, &sr)
+	if len(sr.Items) != 1 {
+		t.Fatalf("search: expected 1 hit, got %d (%+v)", len(sr.Items), sr.Items)
+	}
+	got := sr.Items[0]
+	if got.ID != hit {
+		t.Fatalf("search: expected id %s, got %s", hit, got.ID)
+	}
+	if got.ChannelID != ch2 {
+		t.Fatalf("search: wrong channelId %s", got.ChannelID)
+	}
+	if got.ChannelName == "" {
+		t.Fatalf("search: empty channelName")
+	}
+	if !strings.Contains(got.Highlight, "⟨MARK⟩") || !strings.Contains(got.Highlight, "⟨/MARK⟩") {
+		t.Fatalf("search: highlight missing sentinels: %q", got.Highlight)
+	}
+
+	// Слишком короткий запрос — 400.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/workspaces/"+wsID+"/search?q=a", a.AccessToken, nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("search short q: expected 400, got %d %s", code, string(raw))
+	}
+
+	// Чужой не видит — 404 по workspace.
+	stranger := registerFresh(t)
+	code, raw = doReq(t, http.MethodGet, "/api/v1/workspaces/"+wsID+"/search?q="+needle, stranger.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("search stranger: expected 404, got %d %s", code, string(raw))
+	}
+
+	// Запрос без совпадений — пустой items, 200.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/workspaces/"+wsID+"/search?q=несуществующеетокеноидонеслово", a.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("search no match: %d %s", code, string(raw))
+	}
+	mustJSON(t, raw, &sr)
+	if len(sr.Items) != 0 {
+		t.Fatalf("search no match: expected 0, got %d", len(sr.Items))
 	}
 }
 

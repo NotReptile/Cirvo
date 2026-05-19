@@ -112,7 +112,24 @@ interface AuditEntry {
   createdAt: string;
 }
 
-type ModalKind = "profile" | "members" | "audit" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | null;
+
+interface SearchHit {
+  id: string;
+  channelId: string;
+  channelName: string;
+  authorId: string;
+  body: string;
+  highlight: string;
+  createdAt: string;
+}
+
+interface SearchState {
+  query: string;
+  loading: boolean;
+  hits: SearchHit[];
+  error: string | null;
+}
 
 interface AppState {
   me: Me | null;
@@ -149,6 +166,8 @@ interface AppState {
   // C.5: unread indicators
   unread: Record<string, number>;                 // channelId → count
   selectedChannelLastReadAt: string | null;       // фриз lastReadAt на момент входа — для divider'а
+  // C.7: поиск сообщений
+  search: SearchState;
 }
 
 interface VoicePeekParticipant {
@@ -198,7 +217,8 @@ const state: AppState = {
   stickToBottom: true,
   restoreScrollBottom: null,
   unread: {},
-  selectedChannelLastReadAt: null
+  selectedChannelLastReadAt: null,
+  search: { query: "", loading: false, hits: [], error: null }
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -417,6 +437,66 @@ async function loadOlderMessages(channelId: string, list: HTMLDivElement): Promi
   } finally {
     state.messagesLoadingOlder = false;
   }
+}
+
+// C.7: поиск. Запросы шлются с debounce'ом в attachShellHandlers, здесь —
+// сам fetch. searchToken защищает от гонки: если за время запроса юзер
+// дописал ещё букв, старый ответ выбросим.
+let searchToken = 0;
+
+async function runSearch(query: string): Promise<void> {
+  const wsId = state.selectedWorkspaceId;
+  const q = query.trim();
+  state.search.query = q;
+  if (!wsId || q.length < 2) {
+    state.search.loading = false;
+    state.search.hits = [];
+    state.search.error = null;
+    render();
+    return;
+  }
+  const myToken = ++searchToken;
+  state.search.loading = true;
+  state.search.error = null;
+  render();
+  try {
+    const data = await httpClient.get<{ items: SearchHit[] }>(
+      `/api/v1/workspaces/${wsId}/search?q=${encodeURIComponent(q)}&limit=25`
+    );
+    if (myToken !== searchToken) return;
+    state.search.hits = data.items ?? [];
+    state.search.loading = false;
+    render();
+  } catch (err) {
+    if (myToken !== searchToken) return;
+    state.search.loading = false;
+    state.search.error = describeError(err);
+    state.search.hits = [];
+    render();
+  }
+}
+
+// Прыжок к сообщению из результатов: переключиться на канал, дождаться
+// загрузки списка, попытаться найти DOM-узел и подсветить. Если
+// сообщение вне первой страницы — просто переключаем канал (lazy
+// pagination C.4 подгрузит при скролле вверх).
+async function jumpToSearchHit(hit: SearchHit): Promise<void> {
+  state.modal = null;
+  if (hit.channelId !== state.selectedChannelId) {
+    await selectChannel(hit.channelId);
+  } else {
+    render();
+  }
+  // селектор messageItem использует [data-message-id], если у нас такого
+  // нет — нужно его навесить в renderMessage. Пробуем найти по id класса.
+  requestAnimationFrame(() => {
+    const el = rootEl.querySelector<HTMLElement>(`.message[data-id="${hit.id}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("highlight");
+      setTimeout(() => el.classList.remove("highlight"), 1500);
+    }
+  });
 }
 
 async function loadInvites(): Promise<void> {
@@ -743,6 +823,7 @@ function renderShell(): void {
           <button type="submit" title="Принять">↵</button>
         </form>
         ${state.selectedWorkspaceId ? renderChannelsBlock() : ""}
+        ${state.selectedWorkspaceId ? renderSearchButton() : ""}
         ${state.selectedWorkspaceId ? renderMembersButton() : ""}
         ${state.selectedWorkspaceId && canModerate ? renderAuditButton() : ""}
         ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}
@@ -939,6 +1020,10 @@ function channelPrefix(ch: Channel): string {
 
 function renderMembersButton(): string {
   return `<button id="open-members" class="ghost wide-btn">Участники</button>`;
+}
+
+function renderSearchButton(): string {
+  return `<button id="open-search" class="ghost wide-btn">🔍 Поиск</button>`;
 }
 
 function renderAuditButton(): string {
@@ -1502,7 +1587,59 @@ function renderModal(): string {
   if (state.modal === "profile") return renderProfileModal();
   if (state.modal === "members") return renderMembersModal();
   if (state.modal === "audit") return renderAuditModal();
+  if (state.modal === "search") return renderSearchModal();
   return "";
+}
+
+function renderSearchModal(): string {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  if (!ws) return "";
+  const { query, loading, hits, error } = state.search;
+  const body = (() => {
+    if (error) return `<div class="search-empty error">${escapeHtml(error)}</div>`;
+    if (loading) return `<div class="search-empty">Ищу…</div>`;
+    if (query.trim().length < 2) return `<div class="search-empty">Введите минимум 2 символа</div>`;
+    if (hits.length === 0) return `<div class="search-empty">Ничего не найдено</div>`;
+    return `<ul class="search-results">
+      ${hits.map(renderSearchHit).join("")}
+    </ul>`;
+  })();
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide" role="dialog">
+        <div class="modal-header">
+          <h3>Поиск · ${escapeHtml(ws.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body">
+          <input id="search-input" class="search-input" type="text" autocomplete="off"
+                 placeholder="Поиск по сообщениям…" value="${escapeHtml(query)}" />
+          ${body}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSearchHit(hit: SearchHit): string {
+  const author = describePeer(hit.authorId);
+  // ts_headline вернул body с sentinel'ами ⟨MARK⟩…⟨/MARK⟩. Экранируем
+  // ВСЁ как обычный текст, потом превращаем sentinel'ы в <mark>. Так в
+  // <mark> попадают только escape'нутые куски пользовательского ввода.
+  const safe = escapeHtml(hit.highlight || hit.body);
+  const highlighted = safe
+    .replace(/⟨MARK⟩/g, '<mark class="search-mark">')
+    .replace(/⟨\/MARK⟩/g, "</mark>");
+  return `
+    <li class="search-hit" data-hit-id="${hit.id}" data-hit-channel="${hit.channelId}">
+      <div class="search-hit-head">
+        <span class="search-hit-channel">#${escapeHtml(hit.channelName)}</span>
+        <span class="search-hit-author">${escapeHtml(author)}</span>
+        <span class="search-hit-time">${escapeHtml(formatTime(hit.createdAt))}</span>
+      </div>
+      <div class="search-hit-body">${highlighted}</div>
+    </li>
+  `;
 }
 
 function renderAuditModal(): string {
@@ -1657,6 +1794,43 @@ function attachShellHandlers(): void {
     state.modal = "audit";
     render();
     await loadAudit();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#open-search")?.addEventListener("click", () => {
+    state.modal = "search";
+    state.search = { query: state.search.query, loading: false, hits: state.search.hits, error: null };
+    render();
+    // фокус и каретка в конец после render()
+    const input = rootEl.querySelector<HTMLInputElement>("#search-input");
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  });
+
+  // Debounce поиска на input. 200мс достаточно чтобы юзер допечатал
+  // слово и сервер не молотил каждое нажатие. Прямой DOM-update inside
+  // modal-body — иначе render() сбрасывал бы фокус и каретку.
+  const searchInput = rootEl.querySelector<HTMLInputElement>("#search-input");
+  if (searchInput) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    searchInput.addEventListener("input", () => {
+      if (timer) clearTimeout(timer);
+      const value = searchInput.value;
+      timer = setTimeout(() => {
+        void runSearch(value);
+      }, 200);
+    });
+  }
+
+  rootEl.querySelectorAll<HTMLElement>(".search-hit").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.hitId;
+      const ch = el.dataset.hitChannel;
+      if (!id || !ch) return;
+      const hit = state.search.hits.find((h) => h.id === id);
+      if (hit) void jumpToSearchHit(hit);
+    });
   });
 
   rootEl.querySelectorAll<HTMLElement>("[data-modal-close]").forEach((el) => {

@@ -991,3 +991,73 @@ input:focus { outline: none; border-color: var(--accent); }
   font-size: 13px;
   flex-basis: 100%;
 }
+
+/* C.7: поиск сообщений ------------------------------------------------- */
+.search-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2d31);
+  background: var(--bg-elev, #1e2024);
+  color: inherit;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent, #5865f2);
+}
+.search-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--muted, #888);
+  font-size: 13px;
+}
+.search-empty.error {
+  color: #f04747;
+}
+.search-results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.search-hit {
+  padding: 10px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  margin-bottom: 4px;
+}
+.search-hit:hover {
+  background: var(--bg-elev-hover, #2a2d31);
+  border-color: var(--border, #2a2d31);
+}
+.search-hit-head {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted, #888);
+  margin-bottom: 4px;
+  align-items: baseline;
+}
+.search-hit-channel {
+  color: var(--accent, #5865f2);
+  font-weight: 600;
+}
+.search-hit-time {
+  margin-left: auto;
+}
+.search-hit-body {
+  font-size: 14px;
+  line-height: 1.4;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.search-mark {
+  background: color-mix(in srgb, var(--accent, #5865f2) 35%, transparent);
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 2px;
+}

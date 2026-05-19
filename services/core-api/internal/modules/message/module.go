@@ -107,6 +107,7 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("POST /api/v1/channels/{channelId}/read", m.handleMarkRead)
 	router.Protected("GET /api/v1/channels/{channelId}/read", m.handleGetRead)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/unread", m.handleListUnread)
+	router.Protected("GET /api/v1/workspaces/{workspaceId}/search", m.handleSearch)
 }
 
 type reactionAgg struct {
@@ -904,6 +905,179 @@ func (m *Module) handleListUnread(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// ---- search -----------------------------------------------------------------
+
+const (
+	searchMinQueryLen   = 2
+	searchDefaultLimit  = 25
+	searchMaxLimit      = 50
+	searchHeadlineStart = "⟨MARK⟩"  // ⟨MARK⟩
+	searchHeadlineStop  = "⟨/MARK⟩" // ⟨/MARK⟩
+)
+
+// searchResultView — расширение messageView полями channelName (резолвится
+// на сервере одним JOIN, чтобы клиент не дёргал каналы повторно) и
+// highlight: ts_headline c sentinel-делимитерами вместо HTML тегов.
+// Клиент эскейпит highlight, потом заменяет sentinel'ы на <mark>.
+type searchResultView struct {
+	messageView
+	ChannelName string `json:"channelName"`
+	Highlight   string `json:"highlight"`
+}
+
+// handleSearch — полнотекстовый поиск по messages.body в рамках одного
+// воркспейса. Фильтрация по видимым каналам (приватные через
+// channel_members), исключаются soft-deleted. Сортировка — по
+// created_at desc (Discord-style «свежее сверху»), пагинация — cursor
+// `before` (RFC3339Nano), как в list.
+//
+// q парсится через websearch_to_tsquery — терпит пользовательский ввод
+// со словами, фразами в кавычках, OR. На пустой запрос/слишком короткий
+// — 400.
+func (m *Module) handleSearch(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUID(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	if !workspace.IsMember(r.Context(), m.db, workspaceID, userID) {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if len([]rune(q)) < searchMinQueryLen {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "query too short")
+		return
+	}
+
+	limit := searchDefaultLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid limit")
+			return
+		}
+		if parsed > searchMaxLimit {
+			parsed = searchMaxLimit
+		}
+		limit = parsed
+	}
+
+	var before time.Time
+	if raw := r.URL.Query().Get("before"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid before cursor")
+			return
+		}
+		before = parsed
+	} else {
+		before = time.Now().UTC().Add(time.Hour)
+	}
+
+	headlineOpts := "StartSel=" + searchHeadlineStart +
+		", StopSel=" + searchHeadlineStop +
+		", MaxFragments=2, MaxWords=15, MinWords=5, ShortWord=2, HighlightAll=FALSE"
+
+	// $1 viewer (для reactions.mine в messageSelectColumns), $2 workspace,
+	// $3 q (websearch), $4 before, $5 limit, $6 headline options.
+	rows, err := m.db.Query(r.Context(),
+		`select `+messageSelectColumns+`,
+		        c.name,
+		        ts_headline('russian', m.body, websearch_to_tsquery('russian', $3), $6)
+		 from messages m
+		 join channels c on c.id = m.channel_id
+		 where c.workspace_id = $2
+		   and m.deleted_at is null
+		   and m.search_vector @@ websearch_to_tsquery('russian', $3)
+		   and (c.is_private = false
+		        or exists (select 1 from channel_members cm
+		                    where cm.channel_id = c.id and cm.user_id = $1))
+		   and m.created_at < $4
+		 order by m.created_at desc
+		 limit $5`,
+		userID, workspaceID, q, before, limit, headlineOpts,
+	)
+	if err != nil {
+		m.logger.Error("search query failed", "error", err, "workspaceId", workspaceID)
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer rows.Close()
+
+	items := make([]searchResultView, 0)
+	for rows.Next() {
+		v, channelName, highlight, err := scanSearchResult(rows)
+		if err != nil {
+			m.logger.Error("search scan failed", "error", err, "workspaceId", workspaceID)
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
+			return
+		}
+		items = append(items, searchResultView{messageView: v, ChannelName: channelName, Highlight: highlight})
+	}
+
+	var nextCursor string
+	if len(items) == limit {
+		nextCursor = items[len(items)-1].CreatedAt.Format(time.RFC3339Nano)
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{
+		"items":      items,
+		"nextCursor": nextCursor,
+	})
+}
+
+func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
+	var (
+		id, chID, authID uuid.UUID
+		body, cmid       string
+		created          time.Time
+		edited           *time.Time
+		reactionsJSON    []byte
+		attachmentsJSON  []byte
+		replyJSON        []byte
+		mentionsJSON     []byte
+		channelName      string
+		highlight        string
+	)
+	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
+		return messageView{}, "", "", err
+	}
+	reactions := map[string]reactionAgg{}
+	if len(reactionsJSON) > 0 {
+		_ = json.Unmarshal(reactionsJSON, &reactions)
+	}
+	attachments := []attachmentView{}
+	if len(attachmentsJSON) > 0 {
+		_ = json.Unmarshal(attachmentsJSON, &attachments)
+	}
+	var reply *replySnippetView
+	if len(replyJSON) > 0 && string(replyJSON) != "null" {
+		var snippet replySnippetView
+		if json.Unmarshal(replyJSON, &snippet) == nil {
+			reply = &snippet
+		}
+	}
+	mentions := []string{}
+	if len(mentionsJSON) > 0 {
+		_ = json.Unmarshal(mentionsJSON, &mentions)
+	}
+	return messageView{
+		ID:              id.String(),
+		ChannelID:       chID.String(),
+		AuthorID:        authID.String(),
+		Body:            body,
+		ClientMessageID: cmid,
+		CreatedAt:       created,
+		EditedAt:        edited,
+		Reactions:       reactions,
+		Attachments:     attachments,
+		ReplyTo:         reply,
+		Mentions:        mentions,
+	}, channelName, highlight, nil
 }
 
 // ---- helpers ----------------------------------------------------------------
