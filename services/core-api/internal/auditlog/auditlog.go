@@ -21,6 +21,10 @@ const (
 	ActionInviteRevoked        = "invite.revoked"
 	ActionInviteUsed           = "invite.used"
 	ActionProfileUpdated       = "profile.updated"
+	ActionUserBanned           = "user.banned"
+	ActionUserUnbanned         = "user.unbanned"
+	ActionUserDeleted          = "user.deleted"
+	ActionServerSettingsUpdate = "server.settings.updated"
 )
 
 // Entry describes a single audit log entry to be persisted.

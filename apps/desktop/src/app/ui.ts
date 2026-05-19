@@ -12,6 +12,7 @@ interface Me {
   email: string;
   username: string;
   displayName?: string;
+  isRoot?: boolean;
 }
 
 interface Workspace {
@@ -112,7 +113,65 @@ interface AuditEntry {
   createdAt: string;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | null;
+
+// D.2 — Admin panel.
+type AdminTab = "settings" | "users" | "metrics";
+
+interface AdminUser {
+  id: string;
+  email: string;
+  username: string;
+  displayName?: string;
+  isRoot: boolean;
+  bannedAt?: string;
+  bannedReason?: string;
+  createdAt: string;
+  lastSeenAt?: string;
+  activeSession: boolean;
+}
+
+interface ServerSettings {
+  maxUsers: number;
+  maxWorkspaces: number;
+  maxChannelsPerWorkspace: number;
+  maxMessageBytes: number;
+  maxAttachmentBytes: number;
+  storageQuotaBytes: number;
+  messageRetentionDays: number;
+  registrationOpen: boolean;
+  updatedAt: string;
+  updatedByUserId?: string;
+}
+
+interface ServerMetrics {
+  userCount: number;
+  bannedUserCount: number;
+  workspaceCount: number;
+  channelCount: number;
+  messageCount: number;
+  activeSessions24h: number;
+  storageBytes: number;
+  mediaObjectCount: number;
+  databaseSizeBytes: number;
+  storageQuotaBytes: number;
+  storageQuotaUsedRatio?: number;
+}
+
+interface AdminState {
+  tab: AdminTab;
+  settings: ServerSettings | null;
+  settingsDraft: Partial<ServerSettings> | null;
+  settingsSaving: boolean;
+  settingsError: string | null;
+  users: AdminUser[];
+  usersQuery: string;
+  usersLoading: boolean;
+  usersTotal: number;
+  metrics: ServerMetrics | null;
+  metricsLoading: boolean;
+  error: string | null;
+}
 
 // C.8: in-app уведомления.
 interface NotificationPayload {
@@ -190,6 +249,8 @@ interface AppState {
   notifications: NotificationItem[];
   notificationsUnread: number;
   notificationsLoading: boolean;
+  // D.2: admin panel
+  admin: AdminState;
 }
 
 interface VoicePeekParticipant {
@@ -243,7 +304,21 @@ const state: AppState = {
   search: { query: "", loading: false, hits: [], error: null },
   notifications: [],
   notificationsUnread: 0,
-  notificationsLoading: false
+  notificationsLoading: false,
+  admin: {
+    tab: "settings",
+    settings: null,
+    settingsDraft: null,
+    settingsSaving: false,
+    settingsError: null,
+    users: [],
+    usersQuery: "",
+    usersLoading: false,
+    usersTotal: 0,
+    metrics: null,
+    metricsLoading: false,
+    error: null
+  }
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -973,6 +1048,7 @@ function renderShell(): void {
             </div>
           </button>
           ${renderBellButton()}
+          ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">🛡</button>` : ""}
           <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
         </div>
         <div class="section-title">Воркспейсы</div>
@@ -1772,6 +1848,7 @@ function renderModal(): string {
   if (state.modal === "audit") return renderAuditModal();
   if (state.modal === "search") return renderSearchModal();
   if (state.modal === "notifications") return renderNotificationsModal();
+  if (state.modal === "admin") return renderAdminModal();
   return "";
 }
 
@@ -2032,6 +2109,16 @@ function attachShellHandlers(): void {
     void loadNotifications();
   });
 
+  rootEl.querySelector<HTMLButtonElement>("#open-admin")?.addEventListener("click", () => {
+    state.modal = "admin";
+    state.admin.tab = "settings";
+    state.admin.error = null;
+    render();
+    void loadAdminTab("settings");
+  });
+
+  attachAdminHandlers();
+
   rootEl.querySelector<HTMLButtonElement>("#notif-mark-all")?.addEventListener("click", () => {
     void markAllNotificationsRead();
   });
@@ -2099,7 +2186,10 @@ function attachShellHandlers(): void {
       const updated = await httpClient.put<Me & { updatedAt: string }>("/api/v1/users/me", {
         displayName
       });
-      state.me = { id: updated.id, email: updated.email, username: updated.username, displayName: updated.displayName };
+      state.me = {
+        id: updated.id, email: updated.email, username: updated.username,
+        displayName: updated.displayName, isRoot: state.me?.isRoot
+      };
       state.modal = null;
       state.status = "Профиль обновлён";
       render();
@@ -2788,4 +2878,319 @@ function escapeHtml(value: string | undefined | null): string {
   return String(value).replace(/[&<>"']/g, (c) =>
     c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === '"' ? "&quot;" : "&#39;"
   );
+}
+
+// ============================================================
+// D.2 — Admin panel
+// ============================================================
+
+function renderAdminModal(): string {
+  const a = state.admin;
+  const tabs: { key: AdminTab; label: string }[] = [
+    { key: "settings", label: "Настройки" },
+    { key: "users", label: "Пользователи" },
+    { key: "metrics", label: "Метрики" }
+  ];
+  const tabsHtml = tabs.map((t) =>
+    `<button class="admin-tab ${a.tab === t.key ? "active" : ""}" data-admin-tab="${t.key}">${t.label}</button>`
+  ).join("");
+  let body = "";
+  if (a.tab === "settings") body = renderAdminSettings();
+  else if (a.tab === "users") body = renderAdminUsers();
+  else if (a.tab === "metrics") body = renderAdminMetrics();
+
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide admin-modal" role="dialog">
+        <div class="modal-header">
+          <h3>Админ-панель</h3>
+          <div class="modal-header-actions">
+            <button class="ghost modal-close-btn" data-modal-close>✕</button>
+          </div>
+        </div>
+        <div class="admin-tabs">${tabsHtml}</div>
+        ${a.error ? `<div class="admin-error">${escapeHtml(a.error)}</div>` : ""}
+        <div class="modal-body admin-body">${body}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderAdminSettings(): string {
+  const a = state.admin;
+  if (!a.settings) return `<div class="search-empty">Загрузка…</div>`;
+  const s = { ...a.settings, ...a.settingsDraft };
+  const updatedAt = a.settings.updatedAt ? formatTime(a.settings.updatedAt) : "—";
+  const numberField = (key: keyof ServerSettings, label: string, hint?: string) => `
+    <label class="admin-field">
+      <span class="admin-field-label">${escapeHtml(label)}</span>
+      <input type="number" min="0" name="${String(key)}" value="${String(s[key] ?? 0)}" />
+      ${hint ? `<span class="admin-field-hint">${escapeHtml(hint)}</span>` : ""}
+    </label>
+  `;
+  const saving = a.settingsSaving ? "Сохраняю…" : "Сохранить";
+  return `
+    <form id="admin-settings-form" class="admin-form">
+      <div class="admin-grid">
+        ${numberField("maxUsers", "Лимит пользователей", "0 = безлимит")}
+        ${numberField("maxWorkspaces", "Лимит воркспейсов", "0 = безлимит")}
+        ${numberField("maxChannelsPerWorkspace", "Каналов на воркспейс", "0 = безлимит")}
+        ${numberField("maxMessageBytes", "Размер сообщения, байт", "0 = безлимит")}
+        ${numberField("maxAttachmentBytes", "Размер вложения, байт", "0 = безлимит")}
+        ${numberField("storageQuotaBytes", "Квота хранилища, байт", "0 = безлимит (D.3)")}
+        ${numberField("messageRetentionDays", "Срок хранения сообщений, дни", "0 = бессрочно (D.3)")}
+        <label class="admin-field admin-field-bool">
+          <input type="checkbox" name="registrationOpen" ${s.registrationOpen ? "checked" : ""} />
+          <span>Открытая регистрация</span>
+        </label>
+      </div>
+      <div class="admin-actions">
+        <span class="admin-meta">Обновлено: ${escapeHtml(updatedAt)}</span>
+        <button type="submit" class="primary" ${a.settingsSaving ? "disabled" : ""}>${saving}</button>
+      </div>
+      ${a.settingsError ? `<div class="admin-error">${escapeHtml(a.settingsError)}</div>` : ""}
+    </form>
+  `;
+}
+
+function renderAdminUsers(): string {
+  const a = state.admin;
+  const meId = state.me?.id;
+  const rows = a.users.map((u) => {
+    const isMe = u.id === meId;
+    const status = u.bannedAt
+      ? `<span class="badge banned">забанен</span>`
+      : u.activeSession
+        ? `<span class="badge active">активен</span>`
+        : `<span class="badge">офлайн</span>`;
+    const role = u.isRoot ? `<span class="badge root">root</span>` : "";
+    const banBtn = u.isRoot || isMe
+      ? ""
+      : u.bannedAt
+        ? `<button class="ghost admin-user-action" data-action="unban" data-user="${u.id}">Разбан</button>`
+        : `<button class="ghost admin-user-action" data-action="ban" data-user="${u.id}">Бан</button>`;
+    const delBtn = u.isRoot || isMe
+      ? ""
+      : `<button class="ghost danger admin-user-action" data-action="delete" data-user="${u.id}">Удалить</button>`;
+    const display = u.displayName ? `${escapeHtml(u.displayName)} (@${escapeHtml(u.username)})` : `@${escapeHtml(u.username)}`;
+    return `
+      <tr>
+        <td><div class="admin-user-cell"><div>${display}</div><div class="admin-user-email">${escapeHtml(u.email)}</div></div></td>
+        <td>${role} ${status}</td>
+        <td class="admin-user-meta">
+          <div>Создан: ${escapeHtml(formatDate(u.createdAt))}</div>
+          ${u.lastSeenAt ? `<div>Был: ${escapeHtml(formatTime(u.lastSeenAt))}</div>` : ""}
+          ${u.bannedReason ? `<div class="admin-ban-reason">«${escapeHtml(u.bannedReason)}»</div>` : ""}
+        </td>
+        <td class="admin-user-actions">${banBtn}${delBtn}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <div class="admin-users-toolbar">
+      <input id="admin-users-search" type="search" placeholder="Поиск по email / username…" value="${escapeHtml(a.usersQuery)}" />
+      <span class="admin-meta">Всего: ${a.usersTotal}</span>
+    </div>
+    ${a.usersLoading ? `<div class="search-empty">Загрузка…</div>` : a.users.length === 0
+      ? `<div class="search-empty">Никого не найдено</div>`
+      : `<table class="admin-users-table">
+          <thead><tr><th>Пользователь</th><th>Статус</th><th>Информация</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`
+    }
+  `;
+}
+
+function renderAdminMetrics(): string {
+  const a = state.admin;
+  if (a.metricsLoading || !a.metrics) return `<div class="search-empty">Загрузка…</div>`;
+  const m = a.metrics;
+  const card = (label: string, value: string, sub?: string) => `
+    <div class="admin-metric-card">
+      <div class="admin-metric-label">${escapeHtml(label)}</div>
+      <div class="admin-metric-value">${escapeHtml(value)}</div>
+      ${sub ? `<div class="admin-metric-sub">${escapeHtml(sub)}</div>` : ""}
+    </div>
+  `;
+  const storageSub = m.storageQuotaBytes > 0
+    ? `Квота: ${formatBytesLarge(m.storageQuotaBytes)} (${Math.round((m.storageQuotaUsedRatio ?? 0) * 100)}%)`
+    : `Без квоты`;
+  return `
+    <div class="admin-metric-grid">
+      ${card("Пользователи", String(m.userCount), `Забанено: ${m.bannedUserCount}`)}
+      ${card("Воркспейсы", String(m.workspaceCount))}
+      ${card("Каналы", String(m.channelCount))}
+      ${card("Сообщения", String(m.messageCount))}
+      ${card("Активные сессии (24ч)", String(m.activeSessions24h))}
+      ${card("Файлов", String(m.mediaObjectCount), `Размер: ${formatBytesLarge(m.storageBytes)}`)}
+      ${card("Хранилище", formatBytesLarge(m.storageBytes), storageSub)}
+      ${card("Размер БД", formatBytesLarge(m.databaseSizeBytes))}
+    </div>
+    <div class="admin-actions">
+      <button id="admin-metrics-refresh" class="ghost">Обновить</button>
+    </div>
+  `;
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString();
+}
+
+function formatBytesLarge(n: number): string {
+  if (n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+async function loadAdminTab(tab: AdminTab): Promise<void> {
+  state.admin.error = null;
+  if (tab === "settings") await loadAdminSettings();
+  else if (tab === "users") await loadAdminUsers();
+  else if (tab === "metrics") await loadAdminMetrics();
+}
+
+async function loadAdminSettings(): Promise<void> {
+  try {
+    const s = await httpClient.get<ServerSettings>("/api/v1/server/settings");
+    state.admin.settings = s;
+    state.admin.settingsDraft = null;
+    state.admin.settingsError = null;
+    render();
+  } catch (err) {
+    state.admin.error = describeError(err);
+    render();
+  }
+}
+
+async function loadAdminUsers(): Promise<void> {
+  state.admin.usersLoading = true;
+  render();
+  try {
+    const q = state.admin.usersQuery.trim();
+    const url = q
+      ? `/api/v1/server/users?q=${encodeURIComponent(q)}&limit=100`
+      : `/api/v1/server/users?limit=100`;
+    const resp = await httpClient.get<{ items: AdminUser[]; total: number }>(url);
+    state.admin.users = resp.items;
+    state.admin.usersTotal = resp.total;
+  } catch (err) {
+    state.admin.error = describeError(err);
+  } finally {
+    state.admin.usersLoading = false;
+    render();
+  }
+}
+
+async function loadAdminMetrics(): Promise<void> {
+  state.admin.metricsLoading = true;
+  render();
+  try {
+    state.admin.metrics = await httpClient.get<ServerMetrics>("/api/v1/server/metrics");
+  } catch (err) {
+    state.admin.error = describeError(err);
+  } finally {
+    state.admin.metricsLoading = false;
+    render();
+  }
+}
+
+function attachAdminHandlers(): void {
+  rootEl.querySelectorAll<HTMLButtonElement>(".admin-tab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.adminTab as AdminTab;
+      if (!next || state.admin.tab === next) return;
+      state.admin.tab = next;
+      state.admin.error = null;
+      render();
+      void loadAdminTab(next);
+    });
+  });
+
+  const settingsForm = rootEl.querySelector<HTMLFormElement>("#admin-settings-form");
+  if (settingsForm) {
+    settingsForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (!state.admin.settings) return;
+      const data = new FormData(settingsForm);
+      const numKeys: (keyof ServerSettings)[] = [
+        "maxUsers", "maxWorkspaces", "maxChannelsPerWorkspace",
+        "maxMessageBytes", "maxAttachmentBytes",
+        "storageQuotaBytes", "messageRetentionDays"
+      ];
+      const payload: Record<string, unknown> = {};
+      for (const k of numKeys) {
+        const raw = data.get(String(k));
+        if (raw == null) continue;
+        const v = Number(raw);
+        if (Number.isFinite(v) && v >= 0) payload[k] = v;
+      }
+      payload.registrationOpen = data.get("registrationOpen") === "on";
+      state.admin.settingsSaving = true;
+      state.admin.settingsError = null;
+      render();
+      try {
+        state.admin.settings = await httpClient.put<ServerSettings>("/api/v1/server/settings", payload);
+        state.admin.settingsDraft = null;
+      } catch (err) {
+        state.admin.settingsError = describeError(err);
+      } finally {
+        state.admin.settingsSaving = false;
+        render();
+      }
+    });
+  }
+
+  const searchInput = rootEl.querySelector<HTMLInputElement>("#admin-users-search");
+  if (searchInput) {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    searchInput.addEventListener("input", () => {
+      if (timer) clearTimeout(timer);
+      const value = searchInput.value;
+      timer = setTimeout(() => {
+        state.admin.usersQuery = value;
+        void loadAdminUsers();
+      }, 250);
+    });
+  }
+
+  rootEl.querySelectorAll<HTMLButtonElement>(".admin-user-action").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const userId = btn.dataset.user;
+      const action = btn.dataset.action;
+      if (!userId || !action) return;
+      void runAdminUserAction(userId, action);
+    });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#admin-metrics-refresh")?.addEventListener("click", () => {
+    void loadAdminMetrics();
+  });
+}
+
+async function runAdminUserAction(userId: string, action: string): Promise<void> {
+  try {
+    if (action === "ban") {
+      const reason = window.prompt("Причина бана (необязательно):", "") ?? "";
+      await httpClient.post(`/api/v1/server/users/${userId}/ban`, reason ? { reason } : {});
+    } else if (action === "unban") {
+      await httpClient.post(`/api/v1/server/users/${userId}/unban`, {});
+    } else if (action === "delete") {
+      if (!window.confirm("Удалить пользователя? Действие необратимо.")) return;
+      await httpClient.del(`/api/v1/server/users/${userId}`);
+    } else {
+      return;
+    }
+    await loadAdminUsers();
+  } catch (err) {
+    state.admin.error = describeError(err);
+    render();
+  }
 }

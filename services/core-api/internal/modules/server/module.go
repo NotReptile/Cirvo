@@ -12,6 +12,7 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
@@ -30,6 +31,11 @@ func NewModule(db *postgres.Pool, settings *serversettings.Provider, logger *slo
 func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/server/settings", m.handleGet)
 	router.Protected("PUT /api/v1/server/settings", m.handleUpdate)
+	router.Protected("GET /api/v1/server/users", m.handleListUsers)
+	router.Protected("POST /api/v1/server/users/{userId}/ban", m.handleBanUser)
+	router.Protected("POST /api/v1/server/users/{userId}/unban", m.handleUnbanUser)
+	router.Protected("DELETE /api/v1/server/users/{userId}", m.handleDeleteUser)
+	router.Protected("GET /api/v1/server/metrics", m.handleMetrics)
 }
 
 type settingsView struct {
@@ -163,6 +169,12 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	m.settings.Invalidate()
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:    userID,
+		Action:     auditlog.ActionServerSettingsUpdate,
+		TargetType: "server_settings",
+		TargetID:   "singleton",
+	})
 	snap := m.settings.Get(r.Context())
 	sharedhttp.WriteJSON(w, http.StatusOK, viewFromSnapshot(snap))
 }

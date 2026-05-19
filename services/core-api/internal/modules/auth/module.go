@@ -95,6 +95,7 @@ type userView struct {
 	Email       string `json:"email"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName,omitempty"`
+	IsRoot      bool   `json:"isRoot,omitempty"`
 }
 
 func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -158,13 +159,15 @@ func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Первый зарегистрированный = root-owner инстанса (если bootstrap
 	// через env не запускали). Проверяем под транзакцией, чтобы не было
 	// race с одновременным insert.
-	_, err = tx.Exec(r.Context(),
+	var registeredIsRoot bool
+	err = tx.QueryRow(r.Context(),
 		`insert into users (id, email, username, display_name, password_hash, is_root, created_at, updated_at)
 		 values ($1, $2, $3, nullif($4, ''), $5,
 		         not exists (select 1 from users where is_root = true),
-		         $6, $6)`,
+		         $6, $6)
+		 returning is_root`,
 		userID, req.Email, req.Username, req.DisplayName, passwordHash, now,
-	)
+	).Scan(&registeredIsRoot)
 	if err != nil {
 		if isUniqueViolation(err) {
 			sharedhttp.WriteError(w, r, http.StatusConflict, sharedhttp.CodeConflict, "email or username already taken")
@@ -184,6 +187,7 @@ func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Email:       req.Email,
 		Username:    req.Username,
 		DisplayName: req.DisplayName,
+		IsRoot:      registeredIsRoot,
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
@@ -212,12 +216,14 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		email        string
 		username     string
 		displayName  *string
+		bannedAt     *time.Time
+		isRoot       bool
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select id, email, username, display_name, password_hash
+		`select id, email, username, display_name, password_hash, banned_at, is_root
 		 from users where email = $1 or username = $1`,
 		req.Login,
-	).Scan(&userID, &email, &username, &displayName, &passwordHash)
+	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
@@ -229,6 +235,11 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if err := passwords.Verify(passwordHash, req.Password); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
+		return
+	}
+
+	if bannedAt != nil {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "account banned")
 		return
 	}
 
@@ -248,6 +259,7 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		ID:       userID.String(),
 		Email:    email,
 		Username: username,
+		IsRoot:   isRoot,
 	}
 	if displayName != nil {
 		resp.User.DisplayName = *displayName
@@ -286,13 +298,15 @@ func (m *Module) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		userID    uuid.UUID
 		revoked   *time.Time
 		expires   time.Time
+		bannedAt  *time.Time
 	)
 	err = tx.QueryRow(r.Context(),
-		`select id, user_id, revoked_at, refresh_expires_at
-		 from user_sessions where refresh_token_hash = $1
-		 for update`,
+		`select s.id, s.user_id, s.revoked_at, s.refresh_expires_at, u.banned_at
+		 from user_sessions s join users u on u.id = s.user_id
+		 where s.refresh_token_hash = $1
+		 for update of s`,
 		hash,
-	).Scan(&sessionID, &userID, &revoked, &expires)
+	).Scan(&sessionID, &userID, &revoked, &expires, &bannedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid refresh token")
@@ -303,6 +317,10 @@ func (m *Module) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	if revoked != nil {
 		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session revoked")
+		return
+	}
+	if bannedAt != nil {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "account banned")
 		return
 	}
 	if time.Now().After(expires) {
@@ -368,11 +386,12 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		email       string
 		username    string
 		displayName *string
+		isRoot      bool
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select email, username, display_name from users where id = $1`,
+		`select email, username, display_name, is_root from users where id = $1`,
 		userID,
-	).Scan(&email, &username, &displayName)
+	).Scan(&email, &username, &displayName, &isRoot)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -381,7 +400,7 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
-	view := userView{ID: userID.String(), Email: email, Username: username}
+	view := userView{ID: userID.String(), Email: email, Username: username, IsRoot: isRoot}
 	if displayName != nil {
 		view.DisplayName = *displayName
 	}

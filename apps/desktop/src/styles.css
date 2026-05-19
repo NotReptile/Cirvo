@@ -1139,3 +1139,152 @@ input:focus { outline: none; border-color: var(--accent); }
   color: var(--muted, #888);
   margin-top: 4px;
 }
+
+/* D.2 — Admin panel */
+.admin-modal { width: 820px; max-width: 95vw; }
+.admin-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+}
+.admin-tab {
+  background: transparent;
+  border: none;
+  color: var(--muted, #888);
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+}
+.admin-tab:hover { color: var(--text, #ddd); }
+.admin-tab.active {
+  color: var(--accent, #5b8def);
+  border-bottom-color: var(--accent, #5b8def);
+}
+.admin-body { padding: 16px; max-height: 65vh; overflow-y: auto; }
+.admin-error {
+  background: rgba(220, 60, 60, 0.12);
+  color: #ff8a8a;
+  border-left: 3px solid #c14b4b;
+  padding: 8px 12px;
+  margin: 8px 16px 0;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.admin-form .admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.admin-field-label {
+  font-size: 12px;
+  color: var(--muted, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.admin-field-hint { font-size: 11px; color: var(--muted, #888); }
+.admin-field input[type="number"] {
+  width: 100%;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 14px;
+}
+.admin-field-bool {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.admin-actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.admin-meta { font-size: 12px; color: var(--muted, #888); }
+.admin-users-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.admin-users-toolbar input[type="search"] {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+.admin-users-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.admin-users-table th,
+.admin-users-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  vertical-align: top;
+  text-align: left;
+}
+.admin-users-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted, #888);
+}
+.admin-user-cell { display: flex; flex-direction: column; gap: 2px; }
+.admin-user-email { font-size: 11px; color: var(--muted, #888); }
+.admin-user-meta { font-size: 11px; color: var(--muted, #888); }
+.admin-ban-reason { font-style: italic; color: #ff9a9a; margin-top: 2px; }
+.admin-user-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.admin-user-actions button.danger { color: #ff8a8a; }
+.badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted, #aaa);
+  margin-right: 4px;
+}
+.badge.active { background: rgba(80, 200, 120, 0.18); color: #7ee0a4; }
+.badge.banned { background: rgba(220, 60, 60, 0.18); color: #ff9a9a; }
+.badge.root { background: rgba(91, 141, 239, 0.22); color: #a8c6ff; }
+.admin-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+.admin-metric-card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  padding: 12px;
+}
+.admin-metric-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--muted, #888);
+  letter-spacing: 0.04em;
+}
+.admin-metric-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-top: 6px;
+}
+.admin-metric-sub {
+  font-size: 11px;
+  color: var(--muted, #888);
+  margin-top: 4px;
+}

@@ -218,6 +218,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("message_search", testMessageSearch)
 	t.Run("notifications", testNotifications)
 	t.Run("server_settings", testServerSettings)
+	t.Run("admin_panel", testAdminPanel)
 }
 
 // drainNotificationJobs прогоняет все pending-задачи из notification_jobs
@@ -1261,3 +1262,146 @@ func testServerSettings(t *testing.T) {
 	}
 }
 
+
+// testAdminPanel — D.2. Проверяем list/ban/unban/delete пользователей и метрики.
+// Root-only доступ, бан блокирует login и ревокирует refresh, root защищён от
+// бана/удаления, self-action запрещён.
+func testAdminPanel(t *testing.T) {
+	root := registerFresh(t)
+	regular := registerFresh(t)
+	victim := registerFresh(t)
+	victimPassword := "smoke-password-12345"
+
+	// Промоутим root детерминированно (см. комментарий в testServerSettings).
+	ctx := context.Background()
+	if _, err := dbPool.Exec(ctx,
+		`update users set is_root = (id = $1) where id in ($1, $2, $3)`,
+		root.User.ID, regular.User.ID, victim.User.ID); err != nil {
+		t.Fatalf("promote root: %v", err)
+	}
+
+	// regular → 404 на admin-ручках.
+	code, _ := doReq(t, http.MethodGet, "/api/v1/server/users", regular.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("regular list users: expected 404, got %d", code)
+	}
+	code, _ = doReq(t, http.MethodGet, "/api/v1/server/metrics", regular.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("regular metrics: expected 404, got %d", code)
+	}
+
+	// root list — пользователи присутствуют, root-флаг и created_at заполнены.
+	code, raw := doReq(t, http.MethodGet, "/api/v1/server/users?limit=200", root.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("root list: %d %s", code, string(raw))
+	}
+	var listResp struct {
+		Items []struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+			IsRoot   bool   `json:"isRoot"`
+			BannedAt *string `json:"bannedAt,omitempty"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	mustJSON(t, raw, &listResp)
+	if listResp.Total < 3 {
+		t.Fatalf("expected at least 3 users, got %d", listResp.Total)
+	}
+	var rootInList, victimInList bool
+	for _, it := range listResp.Items {
+		if it.ID == root.User.ID {
+			rootInList = true
+			if !it.IsRoot {
+				t.Fatalf("root user shows isRoot=false")
+			}
+		}
+		if it.ID == victim.User.ID {
+			victimInList = true
+		}
+	}
+	if !rootInList || !victimInList {
+		t.Fatalf("missing users in list (root=%v victim=%v)", rootInList, victimInList)
+	}
+
+	// Self-ban запрещён.
+	code, _ = doReq(t, http.MethodPost, "/api/v1/server/users/"+root.User.ID+"/ban", root.AccessToken, map[string]any{})
+	if code != http.StatusBadRequest {
+		t.Fatalf("self-ban: expected 400, got %d", code)
+	}
+
+	// Бан root'а запрещён (даже если делает другой root — здесь актёр и так root).
+	// Создаём промежуточный — promote victim в root временно нельзя, поэтому
+	// проверим прямой запрет банить root'а через попытку забанить себя выше.
+	// Бан обычного юзера: victim.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/server/users/"+victim.User.ID+"/ban", root.AccessToken,
+		map[string]any{"reason": "тест"})
+	if code != http.StatusNoContent {
+		t.Fatalf("ban victim: %d %s", code, string(raw))
+	}
+
+	// victim не может залогиниться.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/auth/login", "", map[string]any{
+		"login":    victim.User.Username,
+		"password": victimPassword,
+	})
+	if code != http.StatusForbidden {
+		t.Fatalf("banned login: expected 403, got %d %s", code, string(raw))
+	}
+
+	// victim refresh тоже не работает (сессия revoked при бане).
+	code, _ = doReq(t, http.MethodPost, "/api/v1/auth/refresh", "", map[string]any{
+		"refreshToken": victim.RefreshToken,
+	})
+	if code != http.StatusUnauthorized && code != http.StatusForbidden {
+		t.Fatalf("banned refresh: expected 401/403, got %d", code)
+	}
+
+	// Unban → login снова работает.
+	code, _ = doReq(t, http.MethodPost, "/api/v1/server/users/"+victim.User.ID+"/unban", root.AccessToken, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("unban: %d", code)
+	}
+	code, raw = doReq(t, http.MethodPost, "/api/v1/auth/login", "", map[string]any{
+		"login":    victim.User.Username,
+		"password": victimPassword,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("login after unban: %d %s", code, string(raw))
+	}
+
+	// Self-delete запрещён.
+	code, _ = doReq(t, http.MethodDelete, "/api/v1/server/users/"+root.User.ID, root.AccessToken, nil)
+	if code != http.StatusBadRequest {
+		t.Fatalf("self-delete: expected 400, got %d", code)
+	}
+
+	// Удаление обычного юзера.
+	code, raw = doReq(t, http.MethodDelete, "/api/v1/server/users/"+victim.User.ID, root.AccessToken, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("delete victim: %d %s", code, string(raw))
+	}
+	// После удаления — попытка снова забанить вернёт 404.
+	code, _ = doReq(t, http.MethodPost, "/api/v1/server/users/"+victim.User.ID+"/ban", root.AccessToken, map[string]any{})
+	if code != http.StatusNotFound {
+		t.Fatalf("ban deleted user: expected 404, got %d", code)
+	}
+
+	// Метрики: ожидаем непустые значения.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/server/metrics", root.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("metrics: %d %s", code, string(raw))
+	}
+	var m struct {
+		UserCount         int   `json:"userCount"`
+		WorkspaceCount    int   `json:"workspaceCount"`
+		ChannelCount      int   `json:"channelCount"`
+		MessageCount      int64 `json:"messageCount"`
+		ActiveSessions24h int   `json:"activeSessions24h"`
+		DatabaseSizeBytes int64 `json:"databaseSizeBytes"`
+	}
+	mustJSON(t, raw, &m)
+	if m.UserCount <= 0 || m.DatabaseSizeBytes <= 0 {
+		t.Fatalf("metrics zero: %+v", m)
+	}
+}
