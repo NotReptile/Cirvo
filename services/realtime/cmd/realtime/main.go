@@ -125,6 +125,12 @@ func runSubscriber(ctx context.Context, subscriber *realtimebus.Subscriber, h *h
 			if err != nil {
 				return
 			}
+			if event.UserID != "" {
+				if uid, err := uuid.Parse(event.UserID); err == nil {
+					h.BroadcastUser(uid, payload)
+				}
+				return
+			}
 			if event.WorkspaceID != "" {
 				if wsID, err := uuid.Parse(event.WorkspaceID); err == nil {
 					h.BroadcastWorkspace(wsID, payload)

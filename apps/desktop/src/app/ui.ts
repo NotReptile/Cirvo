@@ -112,7 +112,25 @@ interface AuditEntry {
   createdAt: string;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | null;
+
+// C.8: in-app уведомления.
+interface NotificationPayload {
+  actorId?: string;
+  workspaceId?: string;
+  channelId?: string;
+  messageId?: string;
+  callId?: string;
+  snippet?: string;
+}
+
+interface NotificationItem {
+  id: string;
+  kind: "mention" | "reply" | "call_incoming";
+  payload: NotificationPayload;
+  createdAt: string;
+  readAt?: string;
+}
 
 interface SearchHit {
   id: string;
@@ -168,6 +186,10 @@ interface AppState {
   selectedChannelLastReadAt: string | null;       // фриз lastReadAt на момент входа — для divider'а
   // C.7: поиск сообщений
   search: SearchState;
+  // C.8: in-app уведомления
+  notifications: NotificationItem[];
+  notificationsUnread: number;
+  notificationsLoading: boolean;
 }
 
 interface VoicePeekParticipant {
@@ -218,7 +240,10 @@ const state: AppState = {
   restoreScrollBottom: null,
   unread: {},
   selectedChannelLastReadAt: null,
-  search: { query: "", loading: false, hits: [], error: null }
+  search: { query: "", loading: false, hits: [], error: null },
+  notifications: [],
+  notificationsUnread: 0,
+  notificationsLoading: false
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -266,7 +291,9 @@ export function renderApp(
         invites: [],
         modal: null,
         members: [],
-        pickerForMessageId: null
+        pickerForMessageId: null,
+        notifications: [],
+        notificationsUnread: 0
       });
       render();
     }
@@ -285,6 +312,8 @@ async function bootstrapSession(): Promise<void> {
     render();
     state.me = await httpClient.get<Me>("/api/v1/users/me");
     await loadWorkspaces();
+    void loadNotifications();
+    void requestBrowserNotificationPermission();
     state.status = "";
     render();
   } catch (err) {
@@ -499,6 +528,140 @@ async function jumpToSearchHit(hit: SearchHit): Promise<void> {
   });
 }
 
+// C.8 — in-app уведомления.
+
+async function loadNotifications(): Promise<void> {
+  state.notificationsLoading = true;
+  try {
+    const [list, count] = await Promise.all([
+      httpClient.get<{ items: NotificationItem[] }>("/api/v1/notifications?limit=30"),
+      httpClient.get<{ unread: number }>("/api/v1/notifications/count")
+    ]);
+    state.notifications = list.items ?? [];
+    state.notificationsUnread = count.unread ?? 0;
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    state.notificationsLoading = false;
+    render();
+  }
+}
+
+function handleIncomingNotification(p: {
+  id: string;
+  kind: NotificationItem["kind"];
+  createdAt: string;
+  payload: NotificationPayload;
+}): void {
+  // Дедуп: если уже видели (мульти-сессия одного юзера) — игнорируем.
+  if (state.notifications.some((n) => n.id === p.id)) return;
+  const item: NotificationItem = {
+    id: p.id,
+    kind: p.kind,
+    payload: p.payload,
+    createdAt: p.createdAt
+  };
+  state.notifications = [item, ...state.notifications].slice(0, 50);
+  state.notificationsUnread += 1;
+  render();
+  maybeShowBrowserNotification(item);
+}
+
+// Браузерное уведомление показываем ТОЛЬКО когда окно неактивно
+// (document.hidden). Когда юзер активен — обновится badge + dropdown,
+// дёргать системный popup незачем.
+function maybeShowBrowserNotification(item: NotificationItem): void {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  if (typeof document !== "undefined" && document.visibilityState !== "hidden") return;
+  const title = notificationTitle(item);
+  const body = notificationBody(item);
+  try {
+    const n = new Notification(title, { body, tag: item.id });
+    n.onclick = () => {
+      window.focus();
+      void openNotification(item);
+      n.close();
+    };
+  } catch {
+    /* старые браузеры могут кидать TypeError */
+  }
+}
+
+function notificationTitle(item: NotificationItem): string {
+  const actor = item.payload.actorId ? describePeer(item.payload.actorId) : "—";
+  switch (item.kind) {
+    case "mention":
+      return `${actor} упомянул вас`;
+    case "reply":
+      return `${actor} ответил на ваше сообщение`;
+    case "call_incoming":
+      return `Входящий звонок от ${actor}`;
+  }
+}
+
+function notificationBody(item: NotificationItem): string {
+  if (item.kind === "call_incoming") return "Нажмите, чтобы открыть RuCord";
+  return item.payload.snippet ?? "";
+}
+
+async function requestBrowserNotificationPermission(): Promise<void> {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "default") return;
+  try {
+    await Notification.requestPermission();
+  } catch {
+    /* пользователь отказался или браузер не поддерживает Promise-вариант */
+  }
+}
+
+async function openNotification(item: NotificationItem): Promise<void> {
+  state.modal = null;
+  // Mark as read локально и на сервере (fire-and-forget).
+  if (!item.readAt) {
+    item.readAt = new Date().toISOString();
+    state.notificationsUnread = Math.max(0, state.notificationsUnread - 1);
+    void httpClient.post(`/api/v1/notifications/${item.id}/read`).catch(() => {
+      /* idempotent */
+    });
+  }
+  const targetChannel = item.payload.channelId;
+  const targetWorkspace = item.payload.workspaceId;
+  if (targetWorkspace && targetWorkspace !== state.selectedWorkspaceId) {
+    await selectWorkspace(targetWorkspace);
+  }
+  if (targetChannel && targetChannel !== state.selectedChannelId) {
+    await selectChannel(targetChannel);
+  } else {
+    render();
+  }
+  const messageID = item.payload.messageId;
+  if (messageID) {
+    requestAnimationFrame(() => {
+      const el = rootEl.querySelector<HTMLElement>(`.message[data-id="${messageID}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("highlight");
+        setTimeout(() => el.classList.remove("highlight"), 1500);
+      }
+    });
+  }
+}
+
+async function markAllNotificationsRead(): Promise<void> {
+  try {
+    await httpClient.post("/api/v1/notifications/read");
+    state.notifications = state.notifications.map((n) =>
+      n.readAt ? n : { ...n, readAt: new Date().toISOString() }
+    );
+    state.notificationsUnread = 0;
+    render();
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+  }
+}
+
 async function loadInvites(): Promise<void> {
   if (!state.selectedWorkspaceId) return;
   state.invitesLoading = true;
@@ -559,6 +722,17 @@ async function loadMembers(): Promise<void> {
 }
 
 function handleRealtimeEvent(event: RealtimeEvent): void {
+  // C.8: уведомления приходят с UserID-routing (workspaceId/channelId не
+  // обязательны), обрабатываем до проверки channelId ниже.
+  if (event.event === "notification.created") {
+    handleIncomingNotification(event.payload as {
+      id: string;
+      kind: NotificationItem["kind"];
+      createdAt: string;
+      payload: NotificationPayload;
+    });
+    return;
+  }
   // C.5: события для не-активных каналов обрабатываем отдельно (unread).
   if (event.channelId && event.channelId !== state.selectedChannelId) {
     if (event.event === "message.created") {
@@ -798,6 +972,7 @@ function renderShell(): void {
               <div class="user-sub">@${escapeHtml(me?.username || "")}</div>
             </div>
           </button>
+          ${renderBellButton()}
           <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
         </div>
         <div class="section-title">Воркспейсы</div>
@@ -1020,6 +1195,14 @@ function channelPrefix(ch: Channel): string {
 
 function renderMembersButton(): string {
   return `<button id="open-members" class="ghost wide-btn">Участники</button>`;
+}
+
+function renderBellButton(): string {
+  const count = state.notificationsUnread;
+  const badge = count > 0
+    ? `<span class="bell-badge">${count > 99 ? "99+" : count}</span>`
+    : "";
+  return `<button id="open-notifications" class="ghost bell-btn" title="Уведомления" aria-label="Уведомления">🔔${badge}</button>`;
 }
 
 function renderSearchButton(): string {
@@ -1588,7 +1771,54 @@ function renderModal(): string {
   if (state.modal === "members") return renderMembersModal();
   if (state.modal === "audit") return renderAuditModal();
   if (state.modal === "search") return renderSearchModal();
+  if (state.modal === "notifications") return renderNotificationsModal();
   return "";
+}
+
+function renderNotificationsModal(): string {
+  const items = state.notifications;
+  const body = (() => {
+    if (state.notificationsLoading) return `<div class="search-empty">Загрузка…</div>`;
+    if (items.length === 0) return `<div class="search-empty">Нет уведомлений</div>`;
+    return `<ul class="notif-list">
+      ${items.map(renderNotificationItem).join("")}
+    </ul>`;
+  })();
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide" role="dialog">
+        <div class="modal-header">
+          <h3>Уведомления</h3>
+          <div class="modal-header-actions">
+            ${state.notificationsUnread > 0
+              ? `<button id="notif-mark-all" class="ghost">Прочитано всё</button>`
+              : ""}
+            <button class="ghost modal-close-btn" data-modal-close>✕</button>
+          </div>
+        </div>
+        <div class="modal-body">${body}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderNotificationItem(n: NotificationItem): string {
+  const unread = !n.readAt;
+  const title = notificationTitle(n);
+  const body = notificationBody(n);
+  const kindIcon =
+    n.kind === "call_incoming" ? "📞" :
+    n.kind === "reply" ? "↩" : "@";
+  return `
+    <li class="notif-item ${unread ? "unread" : ""}" data-notif-id="${n.id}">
+      <span class="notif-kind">${kindIcon}</span>
+      <div class="notif-body">
+        <div class="notif-title">${escapeHtml(title)}</div>
+        ${body ? `<div class="notif-snippet">${escapeHtml(body)}</div>` : ""}
+        <div class="notif-time">${escapeHtml(formatTime(n.createdAt))}</div>
+      </div>
+    </li>
+  `;
 }
 
 function renderSearchModal(): string {
@@ -1794,6 +2024,25 @@ function attachShellHandlers(): void {
     state.modal = "audit";
     render();
     await loadAudit();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#open-notifications")?.addEventListener("click", () => {
+    state.modal = "notifications";
+    render();
+    void loadNotifications();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#notif-mark-all")?.addEventListener("click", () => {
+    void markAllNotificationsRead();
+  });
+
+  rootEl.querySelectorAll<HTMLElement>(".notif-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.notifId;
+      if (!id) return;
+      const item = state.notifications.find((n) => n.id === id);
+      if (item) void openNotification(item);
+    });
   });
 
   rootEl.querySelector<HTMLButtonElement>("#open-search")?.addEventListener("click", () => {

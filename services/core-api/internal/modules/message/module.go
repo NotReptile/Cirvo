@@ -21,6 +21,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
@@ -287,7 +288,10 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// reply_to: parent должен жить в том же канале и не быть удалён.
 	// Иначе reply теряет смысл (или это попытка процитировать сообщение
 	// из приватного канала, к которому юзер не имеет доступа).
-	var replyToID *uuid.UUID
+	var (
+		replyToID       *uuid.UUID
+		replyAuthorID   *uuid.UUID
+	)
 	if req.ReplyToMessageID != "" {
 		pid, err := uuid.Parse(req.ReplyToMessageID)
 		if err != nil {
@@ -295,11 +299,12 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var parentChannel uuid.UUID
+		var parentAuthor uuid.UUID
 		var parentDeleted *time.Time
 		err = m.db.QueryRow(r.Context(),
-			`select channel_id, deleted_at from messages where id = $1`,
+			`select channel_id, author_user_id, deleted_at from messages where id = $1`,
 			pid,
-		).Scan(&parentChannel, &parentDeleted)
+		).Scan(&parentChannel, &parentAuthor, &parentDeleted)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "reply target not found")
@@ -317,6 +322,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		replyToID = &pid
+		replyAuthorID = &parentAuthor
 	}
 
 	if req.ClientMessageID != "" {
@@ -388,12 +394,14 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var mentionIDs []uuid.UUID
 	if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
 		ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
 		if err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "mentions lookup failed")
 			return
 		}
+		mentionIDs = ids
 		for _, uid := range ids {
 			if _, err := tx.Exec(r.Context(),
 				`insert into message_mentions (message_id, user_id) values ($1, $2) on conflict do nothing`,
@@ -402,6 +410,50 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not save mention")
 				return
 			}
+		}
+	}
+
+	// Notification jobs. Enqueue внутри tx — атомарно с insert сообщения.
+	// Дедуп: если автор parent'а (reply) есть среди упомянутых, он
+	// получит только reply-нотификацию (без дубля mention).
+	snippet := req.Body
+	if len(snippet) > replySnippetMaxLen {
+		snippet = snippet[:replySnippetMaxLen]
+	}
+	mentionRecipients := make([]string, 0, len(mentionIDs))
+	for _, uid := range mentionIDs {
+		if uid == userID {
+			continue // сам себя
+		}
+		if replyAuthorID != nil && uid == *replyAuthorID {
+			continue // получит reply
+		}
+		mentionRecipients = append(mentionRecipients, uid.String())
+	}
+	if len(mentionRecipients) > 0 {
+		if err := notification.Enqueue(r.Context(), tx, notification.KindMention, notification.JobPayload{
+			Recipients:  mentionRecipients,
+			ActorID:     userID.String(),
+			WorkspaceID: scope.WorkspaceID.String(),
+			ChannelID:   channelID.String(),
+			MessageID:   messageID.String(),
+			Snippet:     snippet,
+		}); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not enqueue mention notification")
+			return
+		}
+	}
+	if replyAuthorID != nil && *replyAuthorID != userID {
+		if err := notification.Enqueue(r.Context(), tx, notification.KindReply, notification.JobPayload{
+			Recipients:  []string{replyAuthorID.String()},
+			ActorID:     userID.String(),
+			WorkspaceID: scope.WorkspaceID.String(),
+			ChannelID:   channelID.String(),
+			MessageID:   messageID.String(),
+			Snippet:     snippet,
+		}); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not enqueue reply notification")
+			return
 		}
 	}
 

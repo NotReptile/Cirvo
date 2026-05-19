@@ -13,6 +13,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/ice"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/invite"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/profile"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/system"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/voice"
@@ -53,6 +54,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		workspace.NewModule(container.DB, container.Logger),
 		channel.NewModule(container.DB, container.Logger),
 		message.NewModule(container.DB, container.Publisher, container.Logger),
+		notification.NewModule(container.DB, container.Logger),
 		attachment.NewModule(container.DB, container.ObjectStore, container.Limiter, container.Logger),
 		invite.NewModule(container.DB, container.Limiter, container.Logger),
 		voice.NewModule(container.DB, container.Publisher, container.Logger),

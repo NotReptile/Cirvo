@@ -4,12 +4,14 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
 	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
 	"github.com/NotReptile/RuCord/libs/shared-go/observability"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
 	"github.com/NotReptile/RuCord/services/worker/internal/jobs"
 )
 
@@ -32,8 +34,19 @@ func main() {
 		logger.Warn("object store unavailable; thumbnail jobs will fail", "error", err)
 	}
 
-	runner := jobs.NewRunner(logger, db, store)
+	redisClient, err := redisstore.ConnectFromEnv(ctx)
+	if err != nil {
+		logger.Warn("redis unavailable; notification realtime events will be skipped", "error", err)
+	}
+
+	mediaRunner := jobs.NewRunner(logger, db, store)
+	notifRunner := jobs.NewNotificationRunner(logger, db, redisClient)
 
 	logger.Info("starting worker", "environment", cfg.Environment)
-	runner.Run(ctx)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); mediaRunner.Run(ctx) }()
+	go func() { defer wg.Done(); notifRunner.Run(ctx) }()
+	wg.Wait()
 }

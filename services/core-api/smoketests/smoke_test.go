@@ -44,6 +44,7 @@ var (
 	baseURL string
 	client  = &http.Client{Timeout: 30 * time.Second}
 	redisCl *redisstore.Client
+	dbPool  *postgres.Pool
 )
 
 func TestMain(m *testing.M) {
@@ -57,6 +58,7 @@ func TestMain(m *testing.M) {
 			return 0
 		}
 		defer db.Close()
+		dbPool = db
 
 		redisClient, err := redisstore.ConnectFromEnv(ctx)
 		if err != nil {
@@ -212,6 +214,226 @@ func TestSmoke(t *testing.T) {
 	t.Run("message_mentions", testMessageMentions)
 	t.Run("unread_counts", testUnreadCounts)
 	t.Run("message_search", testMessageSearch)
+	t.Run("notifications", testNotifications)
+}
+
+// drainNotificationJobs прогоняет все pending-задачи из notification_jobs
+// (мини-копия worker'а — см. services/worker/internal/jobs/notifications.go).
+// В smoke-тестах настоящий воркер не крутится; нам нужно убедиться, что
+// core-api enqueue'ит правильно и что выходные user_notifications
+// корректно достижимы через API.
+func drainNotificationJobs(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		var (
+			jobID     string
+			kind      string
+			payload   []byte
+		)
+		err := dbPool.QueryRow(ctx, `
+			update notification_jobs
+			set status = 'done', started_at = now(), finished_at = now(),
+			    attempts = attempts + 1
+			where id = (
+			  select id from notification_jobs
+			  where status = 'pending' and scheduled_at <= now()
+			  order by scheduled_at
+			  for update skip locked
+			  limit 1
+			)
+			returning id, kind, payload
+		`).Scan(&jobID, &kind, &payload)
+		if err != nil {
+			// нет больше задач
+			return
+		}
+		var p struct {
+			Recipients  []string `json:"recipients"`
+			ActorID     string   `json:"actorId"`
+			WorkspaceID string   `json:"workspaceId"`
+			ChannelID   string   `json:"channelId"`
+			MessageID   string   `json:"messageId"`
+			CallID      string   `json:"callId"`
+			Snippet     string   `json:"snippet"`
+		}
+		if err := json.Unmarshal(payload, &p); err != nil {
+			t.Fatalf("drain: decode payload: %v", err)
+		}
+		for _, recipient := range p.Recipients {
+			row := map[string]any{
+				"actorId":     p.ActorID,
+				"workspaceId": p.WorkspaceID,
+				"channelId":   p.ChannelID,
+				"messageId":   p.MessageID,
+				"callId":      p.CallID,
+				"snippet":     p.Snippet,
+			}
+			rowJSON, _ := json.Marshal(row)
+			if _, err := dbPool.Exec(ctx,
+				`insert into user_notifications (user_id, kind, payload) values ($1, $2, $3)`,
+				recipient, kind, rowJSON,
+			); err != nil {
+				t.Fatalf("drain: insert notification: %v", err)
+			}
+		}
+	}
+}
+
+func testNotifications(t *testing.T) {
+	// A создаёт ws + канал, B принимает инвайт.
+	a := registerFresh(t)
+	wsID := createWorkspace(t, a.AccessToken)
+	chID := createTextChannel(t, a.AccessToken, wsID)
+
+	b := registerFresh(t)
+	code, raw := doReq(t, http.MethodPost, "/api/v1/workspaces/"+wsID+"/invites", a.AccessToken, map[string]any{"maxUses": 10})
+	if code != http.StatusCreated {
+		t.Fatalf("invite: %d %s", code, string(raw))
+	}
+	var inv struct {
+		Code string `json:"code"`
+	}
+	mustJSON(t, raw, &inv)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/invites/"+inv.Code+"/accept", b.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, string(raw))
+	}
+
+	// (1) mention: A пишет @B → у B mention-нотификация.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", a.AccessToken, map[string]any{
+		"body":            "@" + b.User.Username + " глянь",
+		"clientMessageId": uuid.NewString(),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("post mention: %d %s", code, string(raw))
+	}
+	var mentionMsg struct {
+		ID string `json:"id"`
+	}
+	mustJSON(t, raw, &mentionMsg)
+
+	// (2) B пишет своё сообщение, A на него отвечает → reply-нотификация для B.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", b.AccessToken, map[string]any{
+		"body":            "первое сообщение B",
+		"clientMessageId": uuid.NewString(),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("B post: %d %s", code, string(raw))
+	}
+	var bMsg struct {
+		ID string `json:"id"`
+	}
+	mustJSON(t, raw, &bMsg)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", a.AccessToken, map[string]any{
+		"body":             "ответ A",
+		"clientMessageId":  uuid.NewString(),
+		"replyToMessageId": bMsg.ID,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("A reply: %d %s", code, string(raw))
+	}
+
+	// (3) A звонит B (1-к-1) → call_incoming-нотификация для B.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/calls", a.AccessToken, map[string]any{
+		"kind":       "one_to_one",
+		"peerUserId": b.User.ID,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("call start: %d %s", code, string(raw))
+	}
+
+	// Эмулируем worker.
+	drainNotificationJobs(t)
+
+	// /count и /list у B — должно быть 3 непрочитанных (mention, reply, call).
+	code, raw = doReq(t, http.MethodGet, "/api/v1/notifications/count", b.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("count: %d %s", code, string(raw))
+	}
+	var cnt struct {
+		Unread int `json:"unread"`
+	}
+	mustJSON(t, raw, &cnt)
+	if cnt.Unread != 3 {
+		t.Fatalf("expected unread=3, got %d", cnt.Unread)
+	}
+
+	code, raw = doReq(t, http.MethodGet, "/api/v1/notifications", b.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list: %d %s", code, string(raw))
+	}
+	var list struct {
+		Items []struct {
+			ID      string `json:"id"`
+			Kind    string `json:"kind"`
+			ReadAt  *string `json:"readAt"`
+			Payload struct {
+				ActorID   string `json:"actorId"`
+				ChannelID string `json:"channelId"`
+				MessageID string `json:"messageId"`
+				CallID    string `json:"callId"`
+				Snippet   string `json:"snippet"`
+			} `json:"payload"`
+		} `json:"items"`
+	}
+	mustJSON(t, raw, &list)
+	if len(list.Items) != 3 {
+		t.Fatalf("expected 3 notifications, got %d", len(list.Items))
+	}
+	kinds := map[string]bool{}
+	for _, it := range list.Items {
+		kinds[it.Kind] = true
+		if it.Payload.ActorID != a.User.ID {
+			t.Fatalf("actorId mismatch: want %s, got %s", a.User.ID, it.Payload.ActorID)
+		}
+		if it.ReadAt != nil {
+			t.Fatalf("notification should be unread initially")
+		}
+	}
+	for _, k := range []string{"mention", "reply", "call_incoming"} {
+		if !kinds[k] {
+			t.Fatalf("missing notification kind=%s", k)
+		}
+	}
+
+	// (4) Mark one read → count уменьшается.
+	target := list.Items[0]
+	code, raw = doReq(t, http.MethodPost, "/api/v1/notifications/"+target.ID+"/read", b.AccessToken, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("mark read: %d %s", code, string(raw))
+	}
+	code, raw = doReq(t, http.MethodGet, "/api/v1/notifications/count", b.AccessToken, nil)
+	mustJSON(t, raw, &cnt)
+	if cnt.Unread != 2 {
+		t.Fatalf("after single read: expected 2, got %d", cnt.Unread)
+	}
+
+	// (5) Mark all read → 0.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/notifications/read", b.AccessToken, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("mark all: %d %s", code, string(raw))
+	}
+	code, raw = doReq(t, http.MethodGet, "/api/v1/notifications/count", b.AccessToken, nil)
+	mustJSON(t, raw, &cnt)
+	if cnt.Unread != 0 {
+		t.Fatalf("after mark all: expected 0, got %d", cnt.Unread)
+	}
+
+	// (6) Чужой не видит уведомления B (404 на mark-read чужого id).
+	stranger := registerFresh(t)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/notifications/"+target.ID+"/read", stranger.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("stranger mark read: expected 404, got %d %s", code, string(raw))
+	}
+
+	// (7) A не получает уведомлений от собственных действий.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/notifications/count", a.AccessToken, nil)
+	mustJSON(t, raw, &cnt)
+	if cnt.Unread != 0 {
+		t.Fatalf("A self-notifications: expected 0, got %d", cnt.Unread)
+	}
 }
 
 func testAuthFlow(t *testing.T) {

@@ -14,7 +14,11 @@ type Event struct {
 	Event       string          `json:"event"`
 	WorkspaceID string          `json:"workspaceId,omitempty"`
 	ChannelID   string          `json:"channelId,omitempty"`
-	Payload     json.RawMessage `json:"payload"`
+	// UserID — таргет-юзер для приватных событий (notifications). Если
+	// задан, realtime-сабскрайбер маршрутизирует через BroadcastUser
+	// вместо workspace-fanout.
+	UserID  string          `json:"userId,omitempty"`
+	Payload json.RawMessage `json:"payload"`
 }
 
 type Publisher struct {

@@ -21,6 +21,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
@@ -162,6 +163,19 @@ func (m *Module) handleStart(w http.ResponseWriter, r *http.Request) {
 	if channelID != nil {
 		view.ChannelID = channelID.String()
 	}
+
+	// 1-к-1: уведомление peer'у о входящем звонке. Voice-channel
+	// «звонки» нотифицировать не нужно — туда заходят по своей воле.
+	if req.Kind == KindOneToOne && peerID != nil {
+		if err := notification.Enqueue(r.Context(), m.db, notification.KindCallIncoming, notification.JobPayload{
+			Recipients: []string{peerID.String()},
+			ActorID:    userID.String(),
+			CallID:     id.String(),
+		}); err != nil {
+			m.logger.Warn("could not enqueue call notification", "error", err, "callId", id)
+		}
+	}
+
 	sharedhttp.WriteJSON(w, http.StatusCreated, view)
 }
 
