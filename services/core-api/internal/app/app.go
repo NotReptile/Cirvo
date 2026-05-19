@@ -8,6 +8,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/attachment"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/audit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/auth"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/call"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/ice"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/invite"
@@ -47,6 +48,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 	server.registerBaseRoutes()
 	server.registerModules(
 		auth.NewModule(container.DB, container.JWT, container.Limiter, container.Logger),
+		call.NewModule(container.DB, container.Publisher, container.Logger),
 		profile.NewModule(container.DB, container.Logger),
 		workspace.NewModule(container.DB, container.Logger),
 		channel.NewModule(container.DB, container.Logger),

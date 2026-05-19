@@ -26,6 +26,18 @@ interface IceServersResponse {
   iceServers: RTCIceServer[];
 }
 
+interface CallRecord {
+  id: string;
+  kind: string;
+  initiatorId: string;
+  peerId?: string;
+  channelId?: string;
+  startedAt: string;
+  endedAt?: string;
+  reason?: string;
+  durationMs?: number;
+}
+
 interface RelayPayload {
   call_id: string;
   from_user_id?: string;
@@ -65,6 +77,9 @@ export class CallManager {
   private iceServers: RTCIceServer[] | null = null;
   private pendingCandidates: RTCIceCandidateInit[] = [];
   private unsubscribeRealtime: (() => void) | null = null;
+  // initiator пишет запись в БД (POST /calls) и завершает её (POST /calls/{id}/end).
+  // receiver не пишет — он узнаёт исход через `call.ended` realtime-эвент.
+  private isInitiator = false;
 
   getLocalStream(): MediaStream | null {
     return this.localStream;
@@ -104,7 +119,23 @@ export class CallManager {
     if (this.snapshot.state !== "idle" && this.snapshot.state !== "ended") {
       throw new Error("call already in progress");
     }
-    const callId = randomId();
+    // Сначала создаём запись в БД — её id служит call_id во ВСЕЙ
+    // signaling-цепочке. Раньше клиент сам генерировал randomId() и
+    // звонок не оставлял следа в истории; теперь у каждого звонка
+    // server-side row, который и закрывается в teardown.
+    let record: CallRecord;
+    try {
+      record = await this.http.post<CallRecord>("/api/v1/calls", {
+        kind: "one_to_one",
+        peerUserId: targetUserId,
+        channelId: channelId ?? undefined
+      });
+    } catch (err) {
+      throw err instanceof Error ? err : new Error("could not start call");
+    }
+    const callId = record.id;
+    this.isInitiator = true;
+
     await this.ensureIceServers();
     await this.acquireLocalStream();
     this.createPeerConnection();
@@ -116,7 +147,8 @@ export class CallManager {
       peerSessionId: null,
       channelId: channelId ?? null,
       muted: false,
-      startedAt: null,
+      // startedAt из БД — единый источник; UI не пляшет от Date.now() оппонента.
+      startedAt: Date.parse(record.startedAt) || null,
       endedReason: null
     });
 
@@ -355,7 +387,13 @@ export class CallManager {
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") {
         if (this.snapshot.state !== "active") {
-          this.update({ state: "active", startedAt: Date.now() });
+          // startedAt уже мог быть выставлен из БД (для initiator) либо
+          // прийти в handleAnswer (для receiver). Сохраняем — иначе
+          // длительность звонка у пиров разъедется.
+          this.update({
+            state: "active",
+            startedAt: this.snapshot.startedAt ?? Date.now()
+          });
         }
       } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
         this.teardown(`peer_${pc.connectionState}`);
@@ -389,6 +427,18 @@ export class CallManager {
 
   private async onRealtimeEvent(event: RealtimeEvent): Promise<void> {
     if (!event.event.startsWith("call.")) return;
+
+    // call.ended приходит от сервера (через realtimebus) когда запись в
+    // calls закрыта /calls/{id}/end. Полезен для receiver'а — он сам не
+    // POST'ит, но из call.ended берёт финальный reason/durationMs.
+    if (event.event === "call.ended") {
+      const rec = event.payload as CallRecord | undefined;
+      if (!rec || !rec.id || rec.id !== this.snapshot.callId) return;
+      if (this.snapshot.state === "idle" || this.snapshot.state === "ended") return;
+      this.teardown(rec.reason || "remote_ended");
+      return;
+    }
+
     const payload = event.payload as RelayPayload | undefined;
     if (!payload || !payload.call_id) return;
 
@@ -424,6 +474,11 @@ export class CallManager {
     }
     await this.ensureIceServers();
     this.createPeerConnection();
+    this.isInitiator = false;
+    // Synchronously start showing incoming. startedAt пытаемся подтянуть
+    // с сервера (initiator уже создал запись) — это нужно для синхронной
+    // длительности в финальном UI. Если запрос упал — не критично,
+    // оставим null и UI покажет 00:00 на старте active.
     this.update({
       state: "incoming",
       callId: p.call_id,
@@ -431,9 +486,19 @@ export class CallManager {
       peerSessionId: p.from_session_id ?? null,
       channelId: p.channel_id ?? null,
       muted: false,
+      cameraOn: false,
+      screenSharing: false,
       startedAt: null,
       endedReason: null
     });
+    try {
+      const rec = await this.http.get<CallRecord>(`/api/v1/calls/${p.call_id}`);
+      if (this.snapshot.callId === p.call_id) {
+        this.update({ startedAt: Date.parse(rec.startedAt) || null });
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   private async handleOffer(p: RelayPayload): Promise<void> {
@@ -512,6 +577,19 @@ export class CallManager {
   }
 
   private teardown(reason: string): void {
+    // Закрыть БД-запись (только initiator). Сбрасываем флаг до POST,
+    // чтобы повторный teardown не дублировал запрос.
+    if (this.isInitiator && this.snapshot.callId) {
+      const callId = this.snapshot.callId;
+      this.isInitiator = false;
+      void this.http
+        .post(`/api/v1/calls/${callId}/end`, { reason })
+        .catch(() => {
+          /* idempotent на сервере; сетевая ошибка — не критично */
+        });
+    } else {
+      this.isInitiator = false;
+    }
     if (this.pc) {
       try {
         this.pc.close();

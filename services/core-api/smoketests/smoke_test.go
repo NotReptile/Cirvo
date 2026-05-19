@@ -207,6 +207,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("permission_deny", testPermissionDeny)
 	t.Run("attachment_upload", testAttachmentUpload)
 	t.Run("voice_channel", testVoiceChannel)
+	t.Run("call_lifecycle", testCallLifecycle)
 }
 
 func testAuthFlow(t *testing.T) {
@@ -382,6 +383,86 @@ func testVoiceChannel(t *testing.T) {
 	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+textCh+"/voice/join", tk.AccessToken, map[string]any{})
 	if code != http.StatusBadRequest {
 		t.Fatalf("voice join on text channel: expected 400, got %d %s", code, string(raw))
+	}
+}
+
+func testCallLifecycle(t *testing.T) {
+	// Два пира в одном workspace. Initiator (A) создаёт звонок, peer (B)
+	// его завершает (как rejectIncoming). Проверяем что durationMs > 0,
+	// что end идемпотентен, что не-участник не видит запись.
+	a := registerFresh(t)
+	wsID := createWorkspace(t, a.AccessToken)
+	// инвайт для B и accept
+	b := registerFresh(t)
+	code, raw := doReq(t, http.MethodPost, "/api/v1/workspaces/"+wsID+"/invites", a.AccessToken, map[string]any{"maxUses": 10})
+	if code != http.StatusCreated {
+		t.Fatalf("invite: %d %s", code, string(raw))
+	}
+	var inv struct {
+		Code string `json:"code"`
+	}
+	mustJSON(t, raw, &inv)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/invites/"+inv.Code+"/accept", b.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, string(raw))
+	}
+
+	// A инициирует звонок
+	code, raw = doReq(t, http.MethodPost, "/api/v1/calls", a.AccessToken, map[string]any{
+		"kind":       "one_to_one",
+		"peerUserId": b.User.ID,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("call start: %d %s", code, string(raw))
+	}
+	var call struct {
+		ID          string  `json:"id"`
+		Kind        string  `json:"kind"`
+		InitiatorID string  `json:"initiatorId"`
+		PeerID      string  `json:"peerId"`
+		StartedAt   string  `json:"startedAt"`
+		EndedAt     *string `json:"endedAt"`
+		DurationMs  *int64  `json:"durationMs"`
+	}
+	mustJSON(t, raw, &call)
+	if call.ID == "" || call.Kind != "one_to_one" || call.InitiatorID != a.User.ID || call.PeerID != b.User.ID {
+		t.Fatalf("call start: bad fields %+v", call)
+	}
+	if call.EndedAt != nil {
+		t.Fatalf("call start: ended_at should be null on fresh row")
+	}
+
+	// B завершает (rejectIncoming)
+	time.Sleep(20 * time.Millisecond) // чтобы durationMs точно > 0
+	code, raw = doReq(t, http.MethodPost, "/api/v1/calls/"+call.ID+"/end", b.AccessToken, map[string]any{"reason": "rejected"})
+	if code != http.StatusOK {
+		t.Fatalf("call end: %d %s", code, string(raw))
+	}
+	mustJSON(t, raw, &call)
+	if call.EndedAt == nil || call.DurationMs == nil || *call.DurationMs <= 0 {
+		t.Fatalf("call end: expected durationMs > 0, got %+v", call)
+	}
+
+	// Идемпотентность: повторный end не падает
+	code, raw = doReq(t, http.MethodPost, "/api/v1/calls/"+call.ID+"/end", a.AccessToken, map[string]any{"reason": "again"})
+	if code != http.StatusOK {
+		t.Fatalf("call end (idempotent): %d %s", code, string(raw))
+	}
+
+	// Чужой не видит звонок
+	stranger := registerFresh(t)
+	code, raw = doReq(t, http.MethodGet, "/api/v1/calls/"+call.ID, stranger.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("call get by stranger: expected 404, got %d %s", code, string(raw))
+	}
+
+	// validation: peer не в shared workspace
+	code, raw = doReq(t, http.MethodPost, "/api/v1/calls", a.AccessToken, map[string]any{
+		"kind":       "one_to_one",
+		"peerUserId": stranger.User.ID,
+	})
+	if code != http.StatusForbidden {
+		t.Fatalf("call start to stranger: expected 403, got %d %s", code, string(raw))
 	}
 }
 
