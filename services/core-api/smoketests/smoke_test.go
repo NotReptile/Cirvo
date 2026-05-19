@@ -209,6 +209,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("voice_channel", testVoiceChannel)
 	t.Run("call_lifecycle", testCallLifecycle)
 	t.Run("message_reply", testMessageReply)
+	t.Run("message_mentions", testMessageMentions)
 }
 
 func testAuthFlow(t *testing.T) {
@@ -546,6 +547,104 @@ func testMessageReply(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Fatalf("reply to nonexistent: expected 400, got %d %s", code, string(raw))
 	}
+}
+
+func testMessageMentions(t *testing.T) {
+	// A — автор, B — упоминаемый участник того же воркспейса. Кроме B
+	// в body есть `@ghost000000` — несуществующий slug, должен молча
+	// отвалиться (валидный синтаксис, но не участник). И `bad@bademail`
+	// — НЕ упоминание (перед @ слово-символ).
+	a := registerFresh(t)
+	wsID := createWorkspace(t, a.AccessToken)
+	chID := createTextChannel(t, a.AccessToken, wsID)
+
+	b := registerFresh(t)
+	code, raw := doReq(t, http.MethodPost, "/api/v1/workspaces/"+wsID+"/invites", a.AccessToken, map[string]any{"maxUses": 10})
+	if code != http.StatusCreated {
+		t.Fatalf("invite: %d %s", code, string(raw))
+	}
+	var inv struct {
+		Code string `json:"code"`
+	}
+	mustJSON(t, raw, &inv)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/invites/"+inv.Code+"/accept", b.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, string(raw))
+	}
+
+	// C — посторонний, НЕ в воркспейсе — упоминание @C должно отвалиться.
+	c := registerFresh(t)
+
+	body := "@" + b.User.Username + " привет, и @" + c.User.Username + " тоже, и @ghost000000, и bad@bademail"
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", a.AccessToken, map[string]any{
+		"body":            body,
+		"clientMessageId": uuid.NewString(),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create: %d %s", code, string(raw))
+	}
+	var msg struct {
+		ID       string   `json:"id"`
+		Mentions []string `json:"mentions"`
+	}
+	mustJSON(t, raw, &msg)
+	if len(msg.Mentions) != 1 || msg.Mentions[0] != b.User.ID {
+		t.Fatalf("mentions: expected [%s], got %v", b.User.ID, msg.Mentions)
+	}
+
+	// Edit: убираем mention @B → mentions пустой.
+	code, raw = doReq(t, http.MethodPatch, "/api/v1/messages/"+msg.ID, a.AccessToken, map[string]any{
+		"body": "просто текст без упоминаний",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("edit (clear): %d %s", code, string(raw))
+	}
+	var edited struct {
+		Mentions []string `json:"mentions"`
+	}
+	mustJSON(t, raw, &edited)
+	if len(edited.Mentions) != 0 {
+		t.Fatalf("mentions after clear: expected empty, got %v", edited.Mentions)
+	}
+
+	// Edit обратно: возвращаем @B → снова один mention.
+	code, raw = doReq(t, http.MethodPatch, "/api/v1/messages/"+msg.ID, a.AccessToken, map[string]any{
+		"body": "снова @" + b.User.Username,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("edit (restore): %d %s", code, string(raw))
+	}
+	mustJSON(t, raw, &edited)
+	if len(edited.Mentions) != 1 || edited.Mentions[0] != b.User.ID {
+		t.Fatalf("mentions after restore: expected [%s], got %v", b.User.ID, edited.Mentions)
+	}
+
+	// list возвращает mentions в выдаче.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/channels/"+chID+"/messages", a.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list: %d %s", code, string(raw))
+	}
+	var list struct {
+		Items []struct {
+			ID       string   `json:"id"`
+			Mentions []string `json:"mentions"`
+		} `json:"items"`
+	}
+	mustJSON(t, raw, &list)
+	var found bool
+	for _, it := range list.Items {
+		if it.ID == msg.ID {
+			found = true
+			if len(it.Mentions) != 1 || it.Mentions[0] != b.User.ID {
+				t.Fatalf("list mentions: got %v", it.Mentions)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("message not in list")
+	}
+
+	_ = c
 }
 
 func testMessageCRUD(t *testing.T) {

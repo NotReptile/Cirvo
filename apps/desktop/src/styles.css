@@ -226,6 +226,43 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .reply-bar b { color: var(--text); }
 .reply-bar .reply-cancel { margin-left: auto; padding: 2px 8px; }
+.mention {
+  color: #b4c2ff;
+  background: rgba(88, 101, 242, 0.18);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-weight: 500;
+}
+.mention.mention-self {
+  background: rgba(250, 166, 26, 0.22);
+  color: #ffd980;
+}
+
+.mention-popup {
+  position: relative;
+  margin: 0 20px;
+  background: #2b2d31;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 10;
+}
+.mention-popup[hidden] { display: none; }
+.mention-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.mention-item.selected,
+.mention-item:hover { background: rgba(88, 101, 242, 0.22); }
+.mention-item .mention-name { color: var(--text); }
+.mention-item .mention-sub { color: var(--muted); font-size: 12px; }
+
 .message.highlight { animation: jump-highlight 1.2s ease; }
 @keyframes jump-highlight {
   0%, 30% { background: rgba(88, 101, 242, 0.18); }

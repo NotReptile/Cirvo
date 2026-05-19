@@ -71,6 +71,12 @@ interface Message {
   reactions?: Record<string, ReactionAgg>;
   attachments?: Attachment[];
   replyTo?: ReplySnippet;
+  mentions?: string[];
+}
+
+interface MentionAutocomplete {
+  query: string;
+  selectIndex: number;
 }
 
 interface Invite {
@@ -130,6 +136,7 @@ interface AppState {
   voiceSnapshot: VoiceSnapshot | null;
   voicePeek: VoicePeek | null;
   replyingTo: ReplySnippet | null;
+  mentionAutocomplete: MentionAutocomplete | null;
 }
 
 interface VoicePeekParticipant {
@@ -171,7 +178,8 @@ const state: AppState = {
   callSnapshot: null,
   voiceSnapshot: null,
   voicePeek: null,
-  replyingTo: null
+  replyingTo: null,
+  mentionAutocomplete: null
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -849,6 +857,7 @@ function renderChannelView(channel: Channel): string {
     </div>
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     ${renderReplyBar()}
+    <div id="mention-popup" class="mention-popup" hidden></div>
     <form id="send-form" class="send-form">
       <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файл">
         📎
@@ -1076,6 +1085,38 @@ function renderReplyBar(): string {
   </div>`;
 }
 
+// MENTION_RE_GLOBAL — синхронен с backend mentionRe: `@<slug>`, slug по
+// правилу `[a-z0-9_]{3,32}`. Префикс — начало строки или не-словарный
+// символ, чтобы не матчить email'ы (`hi@user`).
+const MENTION_RE_GLOBAL = /(^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})/g;
+
+function renderBodyWithMentions(body: string): string {
+  // Идём по матчам и аккуратно склеиваем escape'нутые куски, чтобы
+  // не сломать XSS-защиту. Невалидные slug'и и неучастники воркспейса
+  // просто остаются обычным текстом — бэк уже отсёк их при сохранении,
+  // подсветка по факту наличия в state.members.
+  const knownUsernames = new Map(state.members.map((m) => [m.username, m]));
+  const me = state.me?.username;
+  let result = "";
+  let lastIndex = 0;
+  MENTION_RE_GLOBAL.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = MENTION_RE_GLOBAL.exec(body)) !== null) {
+    const [, prefix, slug] = match;
+    const start = match.index + prefix.length;
+    result += escapeHtml(body.slice(lastIndex, start));
+    if (knownUsernames.has(slug)) {
+      const isMe = me === slug;
+      result += `<span class="mention${isMe ? " mention-self" : ""}">@${escapeHtml(slug)}</span>`;
+    } else {
+      result += escapeHtml("@" + slug);
+    }
+    lastIndex = start + 1 + slug.length;
+  }
+  result += escapeHtml(body.slice(lastIndex));
+  return result;
+}
+
 function renderMessage(m: Message): string {
   const isMine = state.me?.id === m.authorId;
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
@@ -1114,7 +1155,7 @@ function renderMessage(m: Message): string {
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">🗑</button>` : ""}
         </span>
       </div>
-      ${m.body ? `<div class="message-body">${escapeHtml(m.body)}</div>` : ""}
+      ${m.body ? `<div class="message-body">${renderBodyWithMentions(m.body)}</div>` : ""}
       ${
         m.attachments && m.attachments.length > 0
           ? `<div class="attachments">${m.attachments.map((a) => renderAttachment(a)).join("")}</div>`
@@ -1768,6 +1809,54 @@ function attachShellHandlers(): void {
     })();
   });
 
+  // mention-автокомплит: ловим `@<prefix>` перед каретой и показываем
+  // popup. Все обновления — direct DOM, чтобы не дёргать render() и не
+  // терять фокус/курсор в input'е (см. техдолг про инкрементальный апдейт).
+  const composerInput = rootEl.querySelector<HTMLInputElement>('#send-form input[name="body"]');
+  const mentionPopup = rootEl.querySelector<HTMLDivElement>("#mention-popup");
+  if (composerInput && mentionPopup) {
+    composerInput.addEventListener("input", () => updateMentionPopup(composerInput, mentionPopup));
+    composerInput.addEventListener("click", () => updateMentionPopup(composerInput, mentionPopup));
+    composerInput.addEventListener("keyup", (ev) => {
+      // ArrowLeft/Right двигают каретку — пересчитаем токен. Стрелки
+      // вверх/вниз и Enter обрабатываются на keydown ниже.
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowRight" || ev.key === "Home" || ev.key === "End") {
+        updateMentionPopup(composerInput, mentionPopup);
+      }
+    });
+    composerInput.addEventListener("keydown", (ev) => {
+      if (!state.mentionAutocomplete || mentionPopup.hidden) return;
+      const matches = filterMentionMatches(state.mentionAutocomplete.query);
+      if (matches.length === 0) return;
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        state.mentionAutocomplete.selectIndex = (state.mentionAutocomplete.selectIndex + 1) % matches.length;
+        renderMentionPopupContent(mentionPopup, matches, state.mentionAutocomplete.selectIndex);
+      } else if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        state.mentionAutocomplete.selectIndex =
+          (state.mentionAutocomplete.selectIndex - 1 + matches.length) % matches.length;
+        renderMentionPopupContent(mentionPopup, matches, state.mentionAutocomplete.selectIndex);
+      } else if (ev.key === "Enter" || ev.key === "Tab") {
+        ev.preventDefault();
+        applyMentionPick(composerInput, mentionPopup, matches[state.mentionAutocomplete.selectIndex].username);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        hideMentionPopup(mentionPopup);
+      }
+    });
+    composerInput.addEventListener("blur", () => {
+      // Микро-задержка чтобы клик по popup успел отработать раньше скрытия.
+      setTimeout(() => hideMentionPopup(mentionPopup), 120);
+    });
+    mentionPopup.addEventListener("mousedown", (ev) => {
+      const target = (ev.target as HTMLElement).closest<HTMLElement>("[data-mention-username]");
+      if (!target) return;
+      ev.preventDefault();
+      applyMentionPick(composerInput, mentionPopup, target.dataset.mentionUsername!);
+    });
+  }
+
   rootEl.querySelector<HTMLFormElement>("#send-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
@@ -1843,6 +1932,79 @@ function attachShellHandlers(): void {
 
   const list = rootEl.querySelector<HTMLDivElement>("#message-list");
   if (list) list.scrollTop = list.scrollHeight;
+}
+
+// ---- mention popup ---------------------------------------------------------
+
+const MENTION_TOKEN_RE = /(?:^|[^A-Za-z0-9_])@([a-z0-9_]{0,32})$/;
+
+function filterMentionMatches(query: string): Member[] {
+  const q = query.toLowerCase();
+  const meId = state.me?.id;
+  const out: Member[] = [];
+  for (const m of state.members) {
+    if (m.userId === meId) continue;
+    if (!m.username.startsWith(q)) continue;
+    out.push(m);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function updateMentionPopup(input: HTMLInputElement, popup: HTMLDivElement): void {
+  const caret = input.selectionStart ?? input.value.length;
+  const head = input.value.slice(0, caret);
+  const m = head.match(MENTION_TOKEN_RE);
+  if (!m) {
+    hideMentionPopup(popup);
+    return;
+  }
+  const query = m[1];
+  const matches = filterMentionMatches(query);
+  if (matches.length === 0) {
+    hideMentionPopup(popup);
+    return;
+  }
+  const prevIndex = state.mentionAutocomplete?.selectIndex ?? 0;
+  const selectIndex = Math.min(prevIndex, matches.length - 1);
+  state.mentionAutocomplete = { query, selectIndex };
+  renderMentionPopupContent(popup, matches, selectIndex);
+  popup.hidden = false;
+}
+
+function renderMentionPopupContent(popup: HTMLDivElement, matches: Member[], selectIndex: number): void {
+  popup.innerHTML = matches
+    .map(
+      (m, i) => `<div class="mention-item${i === selectIndex ? " selected" : ""}" data-mention-username="${escapeHtml(m.username)}">
+        <span class="mention-name">${escapeHtml(m.displayName || m.username)}</span>
+        <span class="mention-sub">@${escapeHtml(m.username)}</span>
+      </div>`
+    )
+    .join("");
+}
+
+function hideMentionPopup(popup: HTMLDivElement): void {
+  popup.hidden = true;
+  popup.innerHTML = "";
+  state.mentionAutocomplete = null;
+}
+
+function applyMentionPick(input: HTMLInputElement, popup: HTMLDivElement, username: string): void {
+  const caret = input.selectionStart ?? input.value.length;
+  const head = input.value.slice(0, caret);
+  const tail = input.value.slice(caret);
+  const m = head.match(MENTION_TOKEN_RE);
+  if (!m) return;
+  // Сохраняем разделитель перед `@` (или пустоту, если start of line).
+  const prefixLen = m[0].length - 1 - m[1].length;
+  const startOfToken = head.length - m[0].length + prefixLen;
+  const replacement = "@" + username + " ";
+  const newValue = input.value.slice(0, startOfToken) + replacement + tail;
+  input.value = newValue;
+  const newCaret = startOfToken + replacement.length;
+  input.setSelectionRange(newCaret, newCaret);
+  hideMentionPopup(popup);
+  input.focus();
 }
 
 function describeError(err: unknown): string {

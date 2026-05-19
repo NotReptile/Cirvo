@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -30,7 +31,14 @@ const (
 	maxBodyChars       = 8000
 	maxEmojiLen        = 64
 	replySnippetMaxLen = 120
+	maxMentionsPerMsg  = 20
 )
+
+// mentionRe — `@<slug>`, slug по правилу users.username:
+// `[a-z0-9_]{3,32}`. Не матчит email'ы (перед @ есть word-char) — `\B`
+// гарантирует, что `@` это начало токена. Совпадает с case-sensitive,
+// usernames в БД хранятся lowercase.
+var mentionRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})`)
 
 // messageSelectColumns — общий список колонок для list/loadOne, чтобы
 // scanMessageWithReactions работал одинаково. $N плейсхолдеры:
@@ -71,7 +79,12 @@ const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body,
             )
             from messages p where p.id = m.reply_to_message_id
           )
-        end as reply_to`
+        end as reply_to,
+        coalesce(
+          (select jsonb_agg(user_id::text order by user_id)
+           from message_mentions where message_id = m.id),
+          '[]'::jsonb
+        ) as mentions`
 
 type Module struct {
 	db        *postgres.Pool
@@ -131,6 +144,7 @@ type messageView struct {
 	Reactions       map[string]reactionAgg `json:"reactions"`
 	Attachments     []attachmentView       `json:"attachments"`
 	ReplyTo         *replySnippetView      `json:"replyTo,omitempty"`
+	Mentions        []string               `json:"mentions"`
 }
 
 type createRequest struct {
@@ -371,6 +385,23 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
+		ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "mentions lookup failed")
+			return
+		}
+		for _, uid := range ids {
+			if _, err := tx.Exec(r.Context(),
+				`insert into message_mentions (message_id, user_id) values ($1, $2) on conflict do nothing`,
+				messageID, uid,
+			); err != nil {
+				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not save mention")
+				return
+			}
+		}
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
@@ -383,6 +414,65 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	m.publish("message.created", scope.WorkspaceID, channelID, view)
 	sharedhttp.WriteJSON(w, http.StatusCreated, view)
+}
+
+// parseMentionSlugs тянет из body уникальные `@<username>` (lowercased
+// usernames по правилу `[a-z0-9_]{3,32}`), сохраняя порядок появления.
+// Лимит maxMentionsPerMsg обрезает спам — лишние просто игнорим.
+func parseMentionSlugs(body string) []string {
+	if body == "" {
+		return nil
+	}
+	matches := mentionRe.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		slug := m[1]
+		if _, dup := seen[slug]; dup {
+			continue
+		}
+		seen[slug] = struct{}{}
+		out = append(out, slug)
+		if len(out) >= maxMentionsPerMsg {
+			break
+		}
+	}
+	return out
+}
+
+// resolveMentionTargets резолвит slug'и в user_id'ы, ограничиваясь
+// участниками воркспейса канала. Чужие slug'и/опечатки молча отсекаются —
+// пользователь увидит, что подсветки нет, но сообщение всё равно уйдёт.
+type mentionQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func resolveMentionTargets(ctx context.Context, q mentionQuerier, workspaceID uuid.UUID, slugs []string) ([]uuid.UUID, error) {
+	if len(slugs) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx,
+		`select u.id from users u
+		 join workspace_members wm on wm.user_id = u.id
+		 where wm.workspace_id = $1 and u.username = any($2)`,
+		workspaceID, slugs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]uuid.UUID, 0, len(slugs))
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 func parseAttachmentIDs(raw []string) ([]uuid.UUID, error) {
@@ -460,16 +550,52 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
-	_, err = m.db.Exec(r.Context(),
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	if _, err := tx.Exec(r.Context(),
 		`update messages set body = $1, edited_at = $2 where id = $3`,
 		req.Body, now, messageID,
-	)
-	if err != nil {
+	); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update message")
 		return
 	}
 
-	view, err := m.loadMessage(r.Context(), messageID)
+	// Mentions перестраиваются с нуля — это проще и устойчивее к правкам
+	// (юзер мог удалить или дописать @username).
+	if _, err := tx.Exec(r.Context(),
+		`delete from message_mentions where message_id = $1`, messageID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not refresh mentions")
+		return
+	}
+	if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
+		ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "mentions lookup failed")
+			return
+		}
+		for _, uid := range ids {
+			if _, err := tx.Exec(r.Context(),
+				`insert into message_mentions (message_id, user_id) values ($1, $2) on conflict do nothing`,
+				messageID, uid,
+			); err != nil {
+				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not save mention")
+				return
+			}
+		}
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
+		return
+	}
+
+	view, err := m.loadMessageView(r.Context(), messageID, userID)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload message")
 		return
@@ -756,8 +882,9 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		reactionsJSON     []byte
 		attachmentsJSON   []byte
 		replyJSON         []byte
+		mentionsJSON      []byte
 	)
-	if err := row.Scan(&mid, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON); err != nil {
+	if err := row.Scan(&mid, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -775,6 +902,10 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 			reply = &snippet
 		}
 	}
+	mentions := []string{}
+	if len(mentionsJSON) > 0 {
+		_ = json.Unmarshal(mentionsJSON, &mentions)
+	}
 	return messageView{
 		ID:              mid.String(),
 		ChannelID:       chID.String(),
@@ -786,34 +917,7 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		Reactions:       reactions,
 		Attachments:     attachments,
 		ReplyTo:         reply,
-	}, nil
-}
-
-func (m *Module) loadMessage(ctx context.Context, id uuid.UUID) (messageView, error) {
-	var (
-		chID, authID uuid.UUID
-		body, cmid   string
-		created      time.Time
-		edited       *time.Time
-		deleted      *time.Time
-	)
-	err := m.db.QueryRow(ctx,
-		`select channel_id, author_user_id, body, coalesce(client_message_id, ''), created_at, edited_at, deleted_at
-		 from messages where id = $1`,
-		id,
-	).Scan(&chID, &authID, &body, &cmid, &created, &edited, &deleted)
-	if err != nil {
-		return messageView{}, err
-	}
-	return messageView{
-		ID:              id.String(),
-		ChannelID:       chID.String(),
-		AuthorID:        authID.String(),
-		Body:            body,
-		ClientMessageID: cmid,
-		CreatedAt:       created,
-		EditedAt:        edited,
-		DeletedAt:       deleted,
+		Mentions:        mentions,
 	}, nil
 }
 
@@ -842,8 +946,9 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
 		replyJSON        []byte
+		mentionsJSON     []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -861,6 +966,10 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 			reply = &snippet
 		}
 	}
+	mentions := []string{}
+	if len(mentionsJSON) > 0 {
+		_ = json.Unmarshal(mentionsJSON, &mentions)
+	}
 	return messageView{
 		ID:              id.String(),
 		ChannelID:       chID.String(),
@@ -872,6 +981,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		Reactions:       reactions,
 		Attachments:     attachments,
 		ReplyTo:         reply,
+		Mentions:        mentions,
 	}, nil
 }
 
