@@ -1089,32 +1089,70 @@ function renderReplyBar(): string {
 // правилу `[a-z0-9_]{3,32}`. Префикс — начало строки или не-словарный
 // символ, чтобы не матчить email'ы (`hi@user`).
 const MENTION_RE_GLOBAL = /(^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})/g;
+const FENCED_RE = /```([\s\S]*?)```/g;
+const INLINE_CODE_RE = /`([^`\n]+)`/g;
+const URL_RE = /\bhttps?:\/\/[^\s<>`]+/g;
+const BOLD_RE = /\*\*([^*\n]+?)\*\*/g;
+const ITALIC_RE = /(^|[^A-Za-z0-9_])_([^_\n]+?)_(?=[^A-Za-z0-9_]|$)/g;
 
-function renderBodyWithMentions(body: string): string {
-  // Идём по матчам и аккуратно склеиваем escape'нутые куски, чтобы
-  // не сломать XSS-защиту. Невалидные slug'и и неучастники воркспейса
-  // просто остаются обычным текстом — бэк уже отсёк их при сохранении,
-  // подсветка по факту наличия в state.members.
+// renderBody — C.3 markdown + C.2 mentions + autolinks. Безопасно:
+// весь пользовательский текст проходит через escapeHtml, разметка
+// добавляется через известный набор тегов; динамический href строится
+// только из URL, прошедших URL_RE (http/https) и тоже escape'ится.
+function renderBody(body: string): string {
+  const placeholders: string[] = [];
+  const stash = (html: string): string => {
+    const token = `${placeholders.length}`;
+    placeholders.push(html);
+    return token;
+  };
+
+  // 1) Fenced code blocks — самый высокий приоритет, чтобы внутри
+  //    не интерпретировались **, _, бэктики и т.д.
+  let text = body.replace(FENCED_RE, (_, raw: string) => {
+    const stripped = raw.replace(/^\n/, "").replace(/\n$/, "");
+    return stash(`<pre class="md-code-block"><code>${escapeHtml(stripped)}</code></pre>`);
+  });
+
+  // 2) Inline code.
+  text = text.replace(INLINE_CODE_RE, (_, raw: string) =>
+    stash(`<code class="md-code">${escapeHtml(raw)}</code>`)
+  );
+
+  // 3) URL autolink. Хвостовые пунктуации (.,!?;:)) отрезаем, чтобы
+  //    «загляни http://x.com.» не съело точку.
+  text = text.replace(URL_RE, (url: string) => {
+    let trimmed = url;
+    let trail = "";
+    while (trimmed.length > 0 && /[.,!?;:)\]]/.test(trimmed[trimmed.length - 1])) {
+      trail = trimmed[trimmed.length - 1] + trail;
+      trimmed = trimmed.slice(0, -1);
+    }
+    if (trimmed.length === 0) return url;
+    const safe = escapeHtml(trimmed);
+    return stash(`<a href="${safe}" target="_blank" rel="noopener noreferrer nofollow">${safe}</a>`) + trail;
+  });
+
+  // 4) Mentions.
   const knownUsernames = new Map(state.members.map((m) => [m.username, m]));
   const me = state.me?.username;
-  let result = "";
-  let lastIndex = 0;
-  MENTION_RE_GLOBAL.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = MENTION_RE_GLOBAL.exec(body)) !== null) {
-    const [, prefix, slug] = match;
-    const start = match.index + prefix.length;
-    result += escapeHtml(body.slice(lastIndex, start));
-    if (knownUsernames.has(slug)) {
-      const isMe = me === slug;
-      result += `<span class="mention${isMe ? " mention-self" : ""}">@${escapeHtml(slug)}</span>`;
-    } else {
-      result += escapeHtml("@" + slug);
-    }
-    lastIndex = start + 1 + slug.length;
-  }
-  result += escapeHtml(body.slice(lastIndex));
-  return result;
+  text = text.replace(MENTION_RE_GLOBAL, (full: string, prefix: string, slug: string) => {
+    if (!knownUsernames.has(slug)) return full;
+    const isMe = me === slug;
+    return prefix + stash(`<span class="mention${isMe ? " mention-self" : ""}">@${escapeHtml(slug)}</span>`);
+  });
+
+  // 5) Эскейпим всё оставшееся. Плейсхолдеры (N) состоят
+  //    только из управляющего символа и цифр — escapeHtml их не трогает.
+  text = escapeHtml(text);
+
+  // 6) Bold / italic поверх уже escape'нутого текста. `*` и `_` в
+  //    escapeHtml не входят, поэтому регулярки видят их как есть.
+  text = text.replace(BOLD_RE, "<strong>$1</strong>");
+  text = text.replace(ITALIC_RE, "$1<em>$2</em>");
+
+  // 7) Возврат плейсхолдеров.
+  return text.replace(/(\d+)/g, (_, idx: string) => placeholders[Number(idx)] ?? "");
 }
 
 function renderMessage(m: Message): string {
@@ -1155,7 +1193,7 @@ function renderMessage(m: Message): string {
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">🗑</button>` : ""}
         </span>
       </div>
-      ${m.body ? `<div class="message-body">${renderBodyWithMentions(m.body)}</div>` : ""}
+      ${m.body ? `<div class="message-body">${renderBody(m.body)}</div>` : ""}
       ${
         m.attachments && m.attachments.length > 0
           ? `<div class="attachments">${m.attachments.map((a) => renderAttachment(a)).join("")}</div>`
