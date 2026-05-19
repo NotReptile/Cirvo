@@ -1335,3 +1335,87 @@ input:focus { outline: none; border-color: var(--accent); }
   align-items: center;
   gap: 8px;
 }
+
+/* Onboarding (first launch, production shell only) */
+.onboarding-screen {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  background: radial-gradient(circle at 30% 20%, #1c2030 0%, var(--bg) 70%);
+  padding: 24px;
+}
+.onboarding-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 36px 32px;
+  width: 420px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.onboarding-logo {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+.onboarding-card h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.onboarding-hint {
+  margin: 0;
+  color: var(--text-mute);
+  line-height: 1.45;
+  font-size: 13px;
+}
+.onboarding-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onboarding-form label {
+  font-size: 12px;
+  color: var(--text-mute);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.onboarding-error {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.onboarding-footer {
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.auth-server-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.auth-server-strip code {
+  color: var(--text);
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+.auth-switch-server {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 4px 8px;
+}

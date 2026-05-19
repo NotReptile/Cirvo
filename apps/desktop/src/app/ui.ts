@@ -3,6 +3,7 @@ import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelMan
 import type { ApiError, HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { icon } from "./icons";
+import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
@@ -1029,9 +1030,24 @@ function renderAuth(): void {
           ${state.authError ? `<div class="auth-error">${escapeHtml(state.authError)}</div>` : ""}
           <button type="submit" class="primary">Продолжить</button>
         </form>
+        ${isProductionShell() && getStoredServerUrl() ? `
+          <div class="auth-server-strip">
+            <span>Сервер: <code>${escapeHtml(getStoredServerUrl() ?? "")}</code></span>
+            <button type="button" class="ghost auth-switch-server">Сменить</button>
+          </div>
+        ` : ""}
       </div>
     </div>
   `;
+  const switchBtn = rootEl.querySelector<HTMLButtonElement>(".auth-switch-server");
+  if (switchBtn) {
+    switchBtn.addEventListener("click", () => {
+      if (!confirm("Отключиться от текущего сервера и ввести новый адрес? Локальные токены будут удалены.")) return;
+      try { localStorage.removeItem("rucord:tokens"); } catch {}
+      clearStoredServerUrl();
+      window.location.reload();
+    });
+  }
   const form = rootEl.querySelector<HTMLFormElement>("#auth-form");
   const tabs = rootEl.querySelectorAll<HTMLButtonElement>(".auth-tab");
   if (!form) return;

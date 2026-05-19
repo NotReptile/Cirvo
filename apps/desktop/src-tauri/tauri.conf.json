@@ -16,7 +16,10 @@
         "title": "RuCord",
         "width": 1280,
         "height": 800,
-        "resizable": true
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false
       }
     ],
     "security": {
@@ -26,12 +29,24 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "SocialNetworking",
+    "shortDescription": "RuCord — self-host чат и голос",
+    "longDescription": "RuCord — self-host чат и голос для дружеских кружков и небольших сообществ.",
+    "copyright": "© RuCord",
+    "publisher": "RuCord",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.png"
     ],
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.png",
+        "installMode": "perMachine"
+      }
+    },
     "android": {
       "minSdkVersion": 24
     },

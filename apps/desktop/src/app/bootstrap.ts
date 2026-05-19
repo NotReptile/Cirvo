@@ -2,6 +2,8 @@ import { CallManager } from "../call/callManager";
 import { VoiceChannelManager } from "../call/voiceChannelManager";
 import { HttpClient } from "../network/httpClient";
 import { RealtimeClient } from "../realtime/realtimeClient";
+import { renderOnboarding } from "./onboarding";
+import { deriveRealtimeUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import { renderApp } from "./ui";
 
 function readApiBaseUrl(): string {
@@ -17,8 +19,23 @@ function readRealtimeUrl(): string {
 }
 
 export function bootstrapDesktopApp(container: HTMLElement): void {
-  const http = new HttpClient(readApiBaseUrl());
-  const realtime = new RealtimeClient(readRealtimeUrl());
+  if (isProductionShell()) {
+    const stored = getStoredServerUrl();
+    if (!stored) {
+      renderOnboarding(container, (url) => {
+        startApp(container, url, deriveRealtimeUrl(url));
+      });
+      return;
+    }
+    startApp(container, stored, deriveRealtimeUrl(stored));
+    return;
+  }
+  startApp(container, readApiBaseUrl(), readRealtimeUrl());
+}
+
+function startApp(container: HTMLElement, apiBaseUrl: string, realtimeUrl: string): void {
+  const http = new HttpClient(apiBaseUrl);
+  const realtime = new RealtimeClient(realtimeUrl);
 
   const callManager = new CallManager(http, realtime);
   const voiceManager = new VoiceChannelManager(http, realtime);
