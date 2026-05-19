@@ -37,6 +37,8 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/channels/{channelId}/members", m.handleListMembers)
 	router.Protected("POST /api/v1/channels/{channelId}/members", m.handleAddMember)
 	router.Protected("DELETE /api/v1/channels/{channelId}/members/{userId}", m.handleRemoveMember)
+	router.Protected("GET /api/v1/channels/{channelId}/permissions", m.handleGetPermissions)
+	router.Protected("PUT /api/v1/channels/{channelId}/permissions", m.handleUpdatePermissions)
 }
 
 type channelView struct {

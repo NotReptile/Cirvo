@@ -113,7 +113,47 @@ interface AuditEntry {
   createdAt: string;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | null;
+
+// D.4 — per-channel permission overrides.
+interface RoleOverride {
+  roleCode: string;
+  granted: string[];
+  denied: string[];
+}
+
+interface ChannelPermissionsView {
+  channelId: string;
+  actions: string[];
+  roles: string[];
+  overrides: RoleOverride[];
+}
+
+interface ChannelSettingsState {
+  channelId: string | null;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  data: ChannelPermissionsView | null;
+  // Локальная карта (roleCode → action → "inherit" | "grant" | "deny").
+  // Меняем её, при сохранении сворачиваем в overrides[].
+  draft: Record<string, Record<string, "inherit" | "grant" | "deny">>;
+}
+
+const ACTION_LABELS_RU: Record<string, string> = {
+  "message.write": "Писать сообщения",
+  "message.react": "Ставить реакции",
+  "message.attach": "Прикреплять файлы",
+  "message.mention": "Упоминать @username",
+  "channel.manage_members": "Управлять участниками",
+  "channel.update": "Изменять канал"
+};
+
+const ROLE_LABELS_RU: Record<string, string> = {
+  admin: "Админ",
+  moderator: "Модератор",
+  member: "Участник"
+};
 
 // D.2 — Admin panel.
 type AdminTab = "settings" | "users" | "metrics";
@@ -259,6 +299,8 @@ interface AppState {
   notificationsLoading: boolean;
   // D.2: admin panel
   admin: AdminState;
+  // D.4: channel permission overrides
+  channelSettings: ChannelSettingsState;
 }
 
 interface VoicePeekParticipant {
@@ -328,6 +370,14 @@ const state: AppState = {
     error: null,
     retentionRunning: false,
     retentionLast: null
+  },
+  channelSettings: {
+    channelId: null,
+    loading: false,
+    saving: false,
+    error: null,
+    data: null,
+    draft: {}
   }
 };
 
@@ -1342,12 +1392,15 @@ function renderChannelView(channel: Channel): string {
     return renderVoiceChannelView(channel);
   }
   const canSend = channel.kind === "text";
+  const ws = state.workspaces.find((w) => w.id === channel.workspaceId);
+  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
   return `
     <header class="channel-header">
       <div>
         <h2>${channel.isPrivate ? "🔒" : "#"} ${escapeHtml(channel.name)}</h2>
         ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
       </div>
+      ${canManage ? `<button id="open-channel-settings" class="ghost" title="Настройки канала" aria-label="Настройки канала">⚙</button>` : ""}
     </header>
     ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
       <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
@@ -1859,6 +1912,7 @@ function renderModal(): string {
   if (state.modal === "search") return renderSearchModal();
   if (state.modal === "notifications") return renderNotificationsModal();
   if (state.modal === "admin") return renderAdminModal();
+  if (state.modal === "channelSettings") return renderChannelSettingsModal();
   return "";
 }
 
@@ -2128,6 +2182,23 @@ function attachShellHandlers(): void {
   });
 
   attachAdminHandlers();
+
+  rootEl.querySelector<HTMLButtonElement>("#open-channel-settings")?.addEventListener("click", () => {
+    if (!state.selectedChannelId) return;
+    state.modal = "channelSettings";
+    state.channelSettings = {
+      channelId: state.selectedChannelId,
+      loading: true,
+      saving: false,
+      error: null,
+      data: null,
+      draft: {}
+    };
+    render();
+    void loadChannelPermissions();
+  });
+
+  attachChannelSettingsHandlers();
 
   rootEl.querySelector<HTMLButtonElement>("#notif-mark-all")?.addEventListener("click", () => {
     void markAllNotificationsRead();
@@ -3230,6 +3301,170 @@ async function runAdminUserAction(userId: string, action: string): Promise<void>
     await loadAdminUsers();
   } catch (err) {
     state.admin.error = describeError(err);
+    render();
+  }
+}
+
+// ============================================================
+// D.4 — Channel permission overrides
+// ============================================================
+
+function renderChannelSettingsModal(): string {
+  const cs = state.channelSettings;
+  const channel = state.channels.find((c) => c.id === cs.channelId);
+  const title = channel
+    ? `Настройки · ${channel.isPrivate ? "🔒" : "#"} ${escapeHtml(channel.name)}`
+    : "Настройки канала";
+  const body = (() => {
+    if (cs.loading) return `<div class="search-empty">Загрузка…</div>`;
+    if (!cs.data) return `<div class="search-empty">Нет данных</div>`;
+    return renderChannelPermissionsTable();
+  })();
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide channel-settings-modal" role="dialog">
+        <div class="modal-header">
+          <h3>${title}</h3>
+          <div class="modal-header-actions">
+            <button class="ghost modal-close-btn" data-modal-close>✕</button>
+          </div>
+        </div>
+        ${cs.error ? `<div class="admin-error">${escapeHtml(cs.error)}</div>` : ""}
+        <div class="modal-body">${body}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderChannelPermissionsTable(): string {
+  const cs = state.channelSettings;
+  if (!cs.data) return "";
+  const { actions, roles } = cs.data;
+  const cs2 = cs;
+  const head = `<tr>
+    <th class="perm-action-col">Действие</th>
+    ${roles.map((r) => `<th>${escapeHtml(ROLE_LABELS_RU[r] ?? r)}</th>`).join("")}
+  </tr>`;
+  const body = actions.map((a) => {
+    const label = ACTION_LABELS_RU[a] ?? a;
+    const cells = roles.map((role) => {
+      const value = cs2.draft[role]?.[a] ?? "inherit";
+      return `
+        <td>
+          <select class="perm-select" data-role="${role}" data-action="${escapeHtml(a)}">
+            <option value="inherit" ${value === "inherit" ? "selected" : ""}>Наследовать</option>
+            <option value="grant" ${value === "grant" ? "selected" : ""}>Разрешить</option>
+            <option value="deny" ${value === "deny" ? "selected" : ""}>Запретить</option>
+          </select>
+        </td>
+      `;
+    }).join("");
+    return `<tr><td class="perm-action-col">${escapeHtml(label)}</td>${cells}</tr>`;
+  }).join("");
+  return `
+    <div class="perm-help">
+      «Наследовать» оставляет право от workspace-роли. «Разрешить» даёт право,
+      даже если базовая роль его не имеет. «Запретить» отнимает.
+      Owner не подчиняется overrides.
+    </div>
+    <table class="perm-table">
+      <thead>${head}</thead>
+      <tbody>${body}</tbody>
+    </table>
+    <div class="admin-actions">
+      <button id="channel-perm-save" class="primary" ${cs.saving ? "disabled" : ""}>
+        ${cs.saving ? "Сохраняю…" : "Сохранить"}
+      </button>
+    </div>
+  `;
+}
+
+async function loadChannelPermissions(): Promise<void> {
+  const cs = state.channelSettings;
+  if (!cs.channelId) return;
+  try {
+    const data = await httpClient.get<ChannelPermissionsView>(`/api/v1/channels/${cs.channelId}/permissions`);
+    state.channelSettings.data = data;
+    state.channelSettings.draft = buildDraftFromOverrides(data);
+    state.channelSettings.loading = false;
+    state.channelSettings.error = null;
+  } catch (err) {
+    state.channelSettings.loading = false;
+    state.channelSettings.error = describeError(err);
+  }
+  render();
+}
+
+function buildDraftFromOverrides(data: ChannelPermissionsView): Record<string, Record<string, "inherit" | "grant" | "deny">> {
+  const draft: Record<string, Record<string, "inherit" | "grant" | "deny">> = {};
+  for (const role of data.roles) {
+    draft[role] = {};
+    for (const action of data.actions) {
+      draft[role][action] = "inherit";
+    }
+  }
+  for (const ov of data.overrides) {
+    if (!draft[ov.roleCode]) continue;
+    for (const a of ov.granted) draft[ov.roleCode][a] = "grant";
+    for (const a of ov.denied) draft[ov.roleCode][a] = "deny";
+  }
+  return draft;
+}
+
+function draftToOverrides(): RoleOverride[] {
+  const out: RoleOverride[] = [];
+  const draft = state.channelSettings.draft;
+  for (const role of Object.keys(draft)) {
+    const granted: string[] = [];
+    const denied: string[] = [];
+    for (const action of Object.keys(draft[role])) {
+      const v = draft[role][action];
+      if (v === "grant") granted.push(action);
+      else if (v === "deny") denied.push(action);
+    }
+    if (granted.length === 0 && denied.length === 0) continue;
+    out.push({ roleCode: role, granted, denied });
+  }
+  return out;
+}
+
+function attachChannelSettingsHandlers(): void {
+  // <select> меняем напрямую в state.channelSettings.draft без render(),
+  // чтобы фокус и позиция скролла в модалке не дёргались.
+  rootEl.querySelectorAll<HTMLSelectElement>(".perm-select").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const role = sel.dataset.role;
+      const action = sel.dataset.action;
+      if (!role || !action) return;
+      const value = sel.value as "inherit" | "grant" | "deny";
+      if (!state.channelSettings.draft[role]) state.channelSettings.draft[role] = {};
+      state.channelSettings.draft[role][action] = value;
+    });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#channel-perm-save")?.addEventListener("click", () => {
+    void saveChannelPermissions();
+  });
+}
+
+async function saveChannelPermissions(): Promise<void> {
+  const cs = state.channelSettings;
+  if (!cs.channelId) return;
+  state.channelSettings.saving = true;
+  state.channelSettings.error = null;
+  render();
+  try {
+    const data = await httpClient.put<ChannelPermissionsView>(
+      `/api/v1/channels/${cs.channelId}/permissions`,
+      { overrides: draftToOverrides() }
+    );
+    state.channelSettings.data = data;
+    state.channelSettings.draft = buildDraftFromOverrides(data);
+    state.status = "Права канала сохранены";
+  } catch (err) {
+    state.channelSettings.error = describeError(err);
+  } finally {
+    state.channelSettings.saving = false;
     render();
   }
 }

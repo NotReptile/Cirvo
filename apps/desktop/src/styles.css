@@ -1297,3 +1297,41 @@ input:focus { outline: none; border-color: var(--accent); }
   border-radius: 4px;
   border-left: 3px solid var(--accent, #5b8def);
 }
+
+/* D.4 — channel permission overrides */
+.channel-settings-modal { width: 720px; max-width: 95vw; }
+.perm-help {
+  font-size: 12px;
+  color: var(--muted, #888);
+  padding: 8px 12px;
+  background: rgba(91, 141, 239, 0.08);
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+.perm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.perm-table th,
+.perm-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  text-align: center;
+}
+.perm-table th { font-size: 11px; text-transform: uppercase; color: var(--muted, #888); }
+.perm-action-col {
+  text-align: left !important;
+  width: 40%;
+}
+.perm-select {
+  padding: 4px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.channel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}

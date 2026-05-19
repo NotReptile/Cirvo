@@ -220,6 +220,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("server_settings", testServerSettings)
 	t.Run("admin_panel", testAdminPanel)
 	t.Run("retention_sweep", testRetentionSweep)
+	t.Run("channel_overrides", testChannelOverrides)
 }
 
 // drainNotificationJobs прогоняет все pending-задачи из notification_jobs
@@ -1492,4 +1493,93 @@ func testRetentionSweep(t *testing.T) {
 	// Откатываем retention в 0, чтобы не дёргать остальные тесты при повторном прогоне.
 	doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken,
 		map[string]any{"messageRetentionDays": 0})
+}
+
+// testChannelOverrides — D.4. Per-channel permission overrides:
+// (1) обычный member не может править permissions (403);
+// (2) deny message.write блокирует POST сообщения от member'а;
+// (3) очищение override возвращает право.
+func testChannelOverrides(t *testing.T) {
+	owner := registerFresh(t)
+	member := registerFresh(t)
+
+	wsID := createWorkspace(t, owner.AccessToken)
+	chID := createTextChannel(t, owner.AccessToken, wsID)
+
+	// Member вступает через инвайт.
+	code, raw := doReq(t, http.MethodPost, "/api/v1/workspaces/"+wsID+"/invites", owner.AccessToken,
+		map[string]any{"maxUses": 10})
+	if code != http.StatusCreated {
+		t.Fatalf("invite: %d %s", code, string(raw))
+	}
+	var inv struct{ Code string `json:"code"` }
+	mustJSON(t, raw, &inv)
+	code, _ = doReq(t, http.MethodPost, "/api/v1/invites/"+inv.Code+"/accept", member.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d", code)
+	}
+
+	// Sanity: member может писать.
+	code, _ = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", member.AccessToken,
+		map[string]any{"body": "до запрета", "clientMessageId": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("initial post: expected 201, got %d", code)
+	}
+
+	// Member не вправе менять permissions канала.
+	code, _ = doReq(t, http.MethodPut, "/api/v1/channels/"+chID+"/permissions", member.AccessToken,
+		map[string]any{"overrides": []any{}})
+	if code != http.StatusForbidden {
+		t.Fatalf("member PUT: expected 403, got %d", code)
+	}
+
+	// Owner запрещает message.write для роли member.
+	code, raw = doReq(t, http.MethodPut, "/api/v1/channels/"+chID+"/permissions", owner.AccessToken,
+		map[string]any{
+			"overrides": []map[string]any{
+				{"roleCode": "member", "granted": []string{}, "denied": []string{"message.write"}},
+			},
+		})
+	if code != http.StatusOK {
+		t.Fatalf("owner PUT deny: %d %s", code, string(raw))
+	}
+
+	// Member теперь получает 403 на post.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", member.AccessToken,
+		map[string]any{"body": "после запрета", "clientMessageId": uuid.NewString()})
+	if code != http.StatusForbidden {
+		t.Fatalf("denied post: expected 403, got %d %s", code, string(raw))
+	}
+
+	// Owner — не подчиняется override'у, пишет нормально.
+	code, _ = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", owner.AccessToken,
+		map[string]any{"body": "owner всё ещё пишет", "clientMessageId": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("owner write under deny: %d", code)
+	}
+
+	// Сбрасываем override (пустой массив).
+	code, _ = doReq(t, http.MethodPut, "/api/v1/channels/"+chID+"/permissions", owner.AccessToken,
+		map[string]any{"overrides": []any{}})
+	if code != http.StatusOK {
+		t.Fatalf("clear overrides: %d", code)
+	}
+
+	// Member снова может писать.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", member.AccessToken,
+		map[string]any{"body": "после разбана", "clientMessageId": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("restored post: %d %s", code, string(raw))
+	}
+
+	// Невалидный action в granted → 400.
+	code, _ = doReq(t, http.MethodPut, "/api/v1/channels/"+chID+"/permissions", owner.AccessToken,
+		map[string]any{
+			"overrides": []map[string]any{
+				{"roleCode": "member", "granted": []string{"made.up.action"}, "denied": []string{}},
+			},
+		})
+	if code != http.StatusBadRequest {
+		t.Fatalf("invalid action: expected 400, got %d", code)
+	}
 }

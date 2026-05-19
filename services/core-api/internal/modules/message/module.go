@@ -275,6 +275,12 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel does not accept messages")
 		return
 	}
+	// D.4 — per-channel overrides: deny message.write блокирует отправку
+	// даже для участника, у которого есть базовое право от роли.
+	if !permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageWrite) {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "writing is disabled in this channel")
+		return
+	}
 
 	var req createRequest
 	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
@@ -289,6 +295,13 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Body == "" && len(attachmentUUIDs) == 0 {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "body or attachments are required")
+		return
+	}
+	// D.4 — deny message.attach запрещает прикреплять файлы (сообщения
+	// без вложений всё ещё проходят).
+	if len(attachmentUUIDs) > 0 &&
+		!permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageAttach) {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "attachments are disabled in this channel")
 		return
 	}
 	if limit := m.bodyLimit(r); limit > 0 && len(req.Body) > limit {
@@ -406,20 +419,27 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var mentionIDs []uuid.UUID
-	if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
-		ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
-		if err != nil {
-			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "mentions lookup failed")
-			return
-		}
-		mentionIDs = ids
-		for _, uid := range ids {
-			if _, err := tx.Exec(r.Context(),
-				`insert into message_mentions (message_id, user_id) values ($1, $2) on conflict do nothing`,
-				messageID, uid,
-			); err != nil {
-				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not save mention")
+	// D.4 — если message.mention deny'нут в канале, mentions молча
+	// игнорируются: парсинг пропускается, ничего не пишется в
+	// message_mentions, notifications не enqueue'ятся. UI клиент
+	// тоже не подсветит — без записи в mentions[].
+	mentionsAllowed := permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageMention)
+	if mentionsAllowed {
+		if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
+			ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
+			if err != nil {
+				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "mentions lookup failed")
 				return
+			}
+			mentionIDs = ids
+			for _, uid := range ids {
+				if _, err := tx.Exec(r.Context(),
+					`insert into message_mentions (message_id, user_id) values ($1, $2) on conflict do nothing`,
+					messageID, uid,
+				); err != nil {
+					sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not save mention")
+					return
+				}
 			}
 		}
 	}
@@ -639,19 +659,21 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not refresh mentions")
 		return
 	}
-	if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
-		ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
-		if err != nil {
-			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "mentions lookup failed")
-			return
-		}
-		for _, uid := range ids {
-			if _, err := tx.Exec(r.Context(),
-				`insert into message_mentions (message_id, user_id) values ($1, $2) on conflict do nothing`,
-				messageID, uid,
-			); err != nil {
-				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not save mention")
+	if permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageMention) {
+		if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
+			ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
+			if err != nil {
+				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "mentions lookup failed")
 				return
+			}
+			for _, uid := range ids {
+				if _, err := tx.Exec(r.Context(),
+					`insert into message_mentions (message_id, user_id) values ($1, $2) on conflict do nothing`,
+					messageID, uid,
+				); err != nil {
+					sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not save mention")
+					return
+				}
 			}
 		}
 	}
@@ -752,6 +774,10 @@ func (m *Module) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 
 	channelID, scope, ok := m.resolveMessageScope(r.Context(), w, r, messageID, userID)
 	if !ok {
+		return
+	}
+	if !permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageReact) {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "reactions are disabled in this channel")
 		return
 	}
 
