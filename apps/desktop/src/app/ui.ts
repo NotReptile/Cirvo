@@ -52,6 +52,13 @@ interface PendingUpload {
   url: string;
 }
 
+interface ReplySnippet {
+  messageId: string;
+  authorId: string;
+  body: string;
+  deleted?: boolean;
+}
+
 interface Message {
   id: string;
   channelId: string;
@@ -63,6 +70,7 @@ interface Message {
   clientMessageId?: string;
   reactions?: Record<string, ReactionAgg>;
   attachments?: Attachment[];
+  replyTo?: ReplySnippet;
 }
 
 interface Invite {
@@ -121,6 +129,7 @@ interface AppState {
   callSnapshot: CallSnapshot | null;
   voiceSnapshot: VoiceSnapshot | null;
   voicePeek: VoicePeek | null;
+  replyingTo: ReplySnippet | null;
 }
 
 interface VoicePeekParticipant {
@@ -161,7 +170,8 @@ const state: AppState = {
   uploadInFlight: false,
   callSnapshot: null,
   voiceSnapshot: null,
-  voicePeek: null
+  voicePeek: null,
+  replyingTo: null
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -275,6 +285,7 @@ async function selectChannel(id: string): Promise<void> {
   state.editingMessageId = null;
   state.pickerForMessageId = null;
   state.voicePeek = null;
+  state.replyingTo = null;
   render();
   const ch = state.channels.find((c) => c.id === id);
   if (ch?.kind === "voice") {
@@ -837,6 +848,7 @@ function renderChannelView(channel: Channel): string {
       ${state.messages.map((m) => renderMessage(m)).join("")}
     </div>
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
+    ${renderReplyBar()}
     <form id="send-form" class="send-form">
       <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файл">
         📎
@@ -1031,6 +1043,39 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function renderReplySnippet(reply: ReplySnippet | undefined): string {
+  if (!reply) return "";
+  if (reply.deleted) {
+    return `<div class="reply-snippet deleted">
+      <span class="reply-arrow">↩</span>
+      <span class="muted">исходное сообщение удалено</span>
+    </div>`;
+  }
+  const author = describePeer(reply.authorId);
+  return `<div class="reply-snippet" data-jump-id="${escapeHtml(reply.messageId)}" title="Перейти к исходному">
+    <span class="reply-arrow">↩</span>
+    <span class="reply-author">${escapeHtml(author)}</span>
+    <span class="reply-body">${escapeHtml(reply.body)}</span>
+  </div>`;
+}
+
+function renderReplyBar(): string {
+  const r = state.replyingTo;
+  if (!r) return "";
+  if (r.deleted) {
+    return `<div class="reply-bar">
+      <span class="muted">Отвечаем на удалённое сообщение</span>
+      <button class="ghost reply-cancel" title="Отменить ответ">✕</button>
+    </div>`;
+  }
+  const author = describePeer(r.authorId);
+  return `<div class="reply-bar">
+    <span class="reply-arrow">↩</span>
+    <span>В ответ <b>${escapeHtml(author)}</b>: ${escapeHtml(r.body)}</span>
+    <button class="ghost reply-cancel" title="Отменить ответ">✕</button>
+  </div>`;
+}
+
 function renderMessage(m: Message): string {
   const isMine = state.me?.id === m.authorId;
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
@@ -1058,11 +1103,13 @@ function renderMessage(m: Message): string {
 
   return `
     <div class="message" data-id="${m.id}">
+      ${renderReplySnippet(m.replyTo)}
       <div class="message-meta">
         <span class="author">${escapeHtml(describePeer(m.authorId))}${isMine ? " · вы" : ""}</span>
         <span class="timestamp">${formatTime(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">😊</button>
+          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">↩</button>
           ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">✎</button>` : ""}
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">🗑</button>` : ""}
         </span>
@@ -1731,13 +1778,16 @@ function attachShellHandlers(): void {
     if (!body && attachmentIds.length === 0) return;
     input.value = "";
     const pendingSnapshot = state.pendingUploads;
+    const replyingSnapshot = state.replyingTo;
     state.pendingUploads = [];
+    state.replyingTo = null;
     render();
     try {
       const created = await httpClient.post<Message>(`/api/v1/channels/${state.selectedChannelId}/messages`, {
         body,
         clientMessageId: crypto.randomUUID(),
-        attachmentIds
+        attachmentIds,
+        replyToMessageId: replyingSnapshot?.messageId ?? undefined
       });
       if (created && created.id && !state.messages.some((m) => m.id === created.id)) {
         state.messages = [
@@ -1750,8 +1800,45 @@ function attachShellHandlers(): void {
       state.status = describeError(err);
       input.value = body;
       state.pendingUploads = pendingSnapshot;
+      state.replyingTo = replyingSnapshot;
       render();
     }
+  });
+
+  // «Ответить» в action-bar сообщения
+  rootEl.querySelectorAll<HTMLButtonElement>(".action-reply").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.id;
+      if (!id) return;
+      const target = state.messages.find((m) => m.id === id);
+      if (!target) return;
+      state.replyingTo = {
+        messageId: target.id,
+        authorId: target.authorId,
+        body: target.body.slice(0, 120)
+      };
+      render();
+      // Возвращаем фокус в композер.
+      rootEl.querySelector<HTMLInputElement>('#send-form input[name="body"]')?.focus();
+    });
+  });
+  rootEl.querySelector<HTMLButtonElement>(".reply-cancel")?.addEventListener("click", () => {
+    state.replyingTo = null;
+    render();
+  });
+
+  // Клик на reply-snippet — прыжок к исходному сообщению (если оно в DOM).
+  rootEl.querySelectorAll<HTMLElement>(".reply-snippet[data-jump-id]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.jumpId;
+      if (!id) return;
+      const target = rootEl.querySelector<HTMLElement>(`.message[data-id="${id}"]`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.add("highlight");
+        setTimeout(() => target.classList.remove("highlight"), 1200);
+      }
+    });
   });
 
   const list = rootEl.querySelector<HTMLDivElement>("#message-list");

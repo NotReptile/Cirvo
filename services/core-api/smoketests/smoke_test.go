@@ -208,6 +208,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("attachment_upload", testAttachmentUpload)
 	t.Run("voice_channel", testVoiceChannel)
 	t.Run("call_lifecycle", testCallLifecycle)
+	t.Run("message_reply", testMessageReply)
 }
 
 func testAuthFlow(t *testing.T) {
@@ -463,6 +464,87 @@ func testCallLifecycle(t *testing.T) {
 	})
 	if code != http.StatusForbidden {
 		t.Fatalf("call start to stranger: expected 403, got %d %s", code, string(raw))
+	}
+}
+
+func testMessageReply(t *testing.T) {
+	tk := registerFresh(t)
+	wsID := createWorkspace(t, tk.AccessToken)
+	chID := createTextChannel(t, tk.AccessToken, wsID)
+	otherCh := createTextChannel(t, tk.AccessToken, wsID)
+
+	// родительское сообщение
+	code, raw := doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", tk.AccessToken, map[string]any{
+		"body":            "оригинал — на этот текст будет ответ",
+		"clientMessageId": uuid.NewString(),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("parent: %d %s", code, string(raw))
+	}
+	var parent idView
+	mustJSON(t, raw, &parent)
+
+	// reply в том же канале — OK
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", tk.AccessToken, map[string]any{
+		"body":             "ответ",
+		"clientMessageId":  uuid.NewString(),
+		"replyToMessageId": parent.ID,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("reply: %d %s", code, string(raw))
+	}
+	var reply struct {
+		ID      string `json:"id"`
+		ReplyTo *struct {
+			MessageID string `json:"messageId"`
+			AuthorID  string `json:"authorId"`
+			Body      string `json:"body"`
+			Deleted   bool   `json:"deleted"`
+		} `json:"replyTo"`
+	}
+	mustJSON(t, raw, &reply)
+	if reply.ReplyTo == nil || reply.ReplyTo.MessageID != parent.ID {
+		t.Fatalf("reply: replyTo missing or wrong: %+v", reply.ReplyTo)
+	}
+	if reply.ReplyTo.AuthorID != tk.User.ID {
+		t.Fatalf("reply: author mismatch %s vs %s", reply.ReplyTo.AuthorID, tk.User.ID)
+	}
+	if !strings.HasPrefix(reply.ReplyTo.Body, "оригинал") {
+		t.Fatalf("reply: snippet body bad: %q", reply.ReplyTo.Body)
+	}
+
+	// reply на parent из другого канала — 400
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+otherCh+"/messages", tk.AccessToken, map[string]any{
+		"body":             "ответ из чужого канала",
+		"clientMessageId":  uuid.NewString(),
+		"replyToMessageId": parent.ID,
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("cross-channel reply: expected 400, got %d %s", code, string(raw))
+	}
+
+	// удалим parent, повторим reply — должно отказать (parent deleted)
+	code, raw = doReq(t, http.MethodDelete, "/api/v1/messages/"+parent.ID, tk.AccessToken, nil)
+	if code != http.StatusNoContent {
+		t.Fatalf("delete parent: %d %s", code, string(raw))
+	}
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", tk.AccessToken, map[string]any{
+		"body":             "ответ на удалённый",
+		"clientMessageId":  uuid.NewString(),
+		"replyToMessageId": parent.ID,
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("reply to deleted: expected 400, got %d %s", code, string(raw))
+	}
+
+	// несуществующий id — 400
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", tk.AccessToken, map[string]any{
+		"body":             "ответ в никуда",
+		"clientMessageId":  uuid.NewString(),
+		"replyToMessageId": uuid.NewString(),
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("reply to nonexistent: expected 400, got %d %s", code, string(raw))
 	}
 }
 

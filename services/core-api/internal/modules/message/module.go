@@ -25,11 +25,53 @@ import (
 )
 
 const (
-	defaultLimit = 50
-	maxLimit     = 200
-	maxBodyChars = 8000
-	maxEmojiLen  = 64
+	defaultLimit       = 50
+	maxLimit           = 200
+	maxBodyChars       = 8000
+	maxEmojiLen        = 64
+	replySnippetMaxLen = 120
 )
+
+// messageSelectColumns — общий список колонок для list/loadOne, чтобы
+// scanMessageWithReactions работал одинаково. $N плейсхолдеры:
+// $1 — viewer userID (для bool_or в reactions). Каждый вызов добавит
+// свои дополнительные параметры в where после этой константы.
+const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body,
+        coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
+        coalesce(
+          (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine))
+           from (
+             select emoji, count(*) as cnt, bool_or(user_id = $1) as mine
+             from message_reactions where message_id = m.id
+             group by emoji
+           ) r),
+          '{}'::jsonb
+        ) as reactions,
+        coalesce(
+          (select jsonb_agg(jsonb_build_object(
+             'id', mo.id,
+             'contentType', mo.content_type,
+             'sizeBytes', mo.size_bytes,
+             'filename', coalesce(mo.original_filename, ''),
+             'url', '/api/v1/media/' || mo.id::text
+           ) order by ma.position, mo.created_at)
+           from message_attachments ma
+           join media_objects mo on mo.id = ma.media_id
+           where ma.message_id = m.id),
+          '[]'::jsonb
+        ) as attachments,
+        case
+          when m.reply_to_message_id is null then null::jsonb
+          else (
+            select jsonb_build_object(
+              'messageId', p.id,
+              'authorId', p.author_user_id,
+              'body', substring(p.body for 120),
+              'deleted', p.deleted_at is not null
+            )
+            from messages p where p.id = m.reply_to_message_id
+          )
+        end as reply_to`
 
 type Module struct {
 	db        *postgres.Pool
@@ -65,6 +107,18 @@ type attachmentView struct {
 	URL         string `json:"url"`
 }
 
+// replySnippetView — компактная цитата для рендера в message-card.
+// body обрезается на сервере (120 символов), чтобы клиент не подгружал
+// весь parent message только ради превью. deleted=true когда parent
+// удалён (на FK on delete set null reply_to_message_id обнуляется, но
+// если в момент чтения parent уже soft-deleted — показываем плашку).
+type replySnippetView struct {
+	MessageID string `json:"messageId"`
+	AuthorID  string `json:"authorId"`
+	Body      string `json:"body"`
+	Deleted   bool   `json:"deleted,omitempty"`
+}
+
 type messageView struct {
 	ID              string                 `json:"id"`
 	ChannelID       string                 `json:"channelId"`
@@ -76,12 +130,14 @@ type messageView struct {
 	DeletedAt       *time.Time             `json:"deletedAt,omitempty"`
 	Reactions       map[string]reactionAgg `json:"reactions"`
 	Attachments     []attachmentView       `json:"attachments"`
+	ReplyTo         *replySnippetView      `json:"replyTo,omitempty"`
 }
 
 type createRequest struct {
-	Body            string   `json:"body"`
-	ClientMessageID string   `json:"clientMessageId"`
-	AttachmentIDs   []string `json:"attachmentIds"`
+	Body              string   `json:"body"`
+	ClientMessageID   string   `json:"clientMessageId"`
+	AttachmentIDs     []string `json:"attachmentIds"`
+	ReplyToMessageID  string   `json:"replyToMessageId,omitempty"`
 }
 
 type editRequest struct {
@@ -139,35 +195,12 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := m.db.Query(r.Context(),
-		`select m.id, m.channel_id, m.author_user_id, m.body,
-		        coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
-		        coalesce(
-		          (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine))
-		           from (
-		             select emoji, count(*) as cnt, bool_or(user_id = $4) as mine
-		             from message_reactions where message_id = m.id
-		             group by emoji
-		           ) r),
-		          '{}'::jsonb
-		        ) as reactions,
-		        coalesce(
-		          (select jsonb_agg(jsonb_build_object(
-		             'id', mo.id,
-		             'contentType', mo.content_type,
-		             'sizeBytes', mo.size_bytes,
-		             'filename', coalesce(mo.original_filename, ''),
-		             'url', '/api/v1/media/' || mo.id::text
-		           ) order by ma.position, mo.created_at)
-		           from message_attachments ma
-		           join media_objects mo on mo.id = ma.media_id
-		           where ma.message_id = m.id),
-		          '[]'::jsonb
-		        ) as attachments
+		`select `+messageSelectColumns+`
 		 from messages m
-		 where m.channel_id = $1 and m.deleted_at is null and m.created_at < $2
+		 where m.channel_id = $2 and m.deleted_at is null and m.created_at < $3
 		 order by m.created_at desc
-		 limit $3`,
-		channelID, before, limit, userID,
+		 limit $4`,
+		userID, channelID, before, limit,
 	)
 	if err != nil {
 		m.logger.Error("list messages query failed", "error", err, "channelId", channelID)
@@ -234,6 +267,41 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// reply_to: parent должен жить в том же канале и не быть удалён.
+	// Иначе reply теряет смысл (или это попытка процитировать сообщение
+	// из приватного канала, к которому юзер не имеет доступа).
+	var replyToID *uuid.UUID
+	if req.ReplyToMessageID != "" {
+		pid, err := uuid.Parse(req.ReplyToMessageID)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid replyToMessageId")
+			return
+		}
+		var parentChannel uuid.UUID
+		var parentDeleted *time.Time
+		err = m.db.QueryRow(r.Context(),
+			`select channel_id, deleted_at from messages where id = $1`,
+			pid,
+		).Scan(&parentChannel, &parentDeleted)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "reply target not found")
+				return
+			}
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "reply lookup failed")
+			return
+		}
+		if parentChannel != channelID {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "reply target is in another channel")
+			return
+		}
+		if parentDeleted != nil {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "reply target is deleted")
+			return
+		}
+		replyToID = &pid
+	}
+
 	if req.ClientMessageID != "" {
 		var existingID uuid.UUID
 		err := m.db.QueryRow(r.Context(),
@@ -263,9 +331,9 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	messageID := uuid.New()
 	now := time.Now().UTC()
 	_, err = tx.Exec(r.Context(),
-		`insert into messages (id, channel_id, author_user_id, body, client_message_id, created_at)
-		 values ($1, $2, $3, $4, nullif($5, ''), $6)`,
-		messageID, channelID, userID, req.Body, req.ClientMessageID, now,
+		`insert into messages (id, channel_id, author_user_id, body, client_message_id, created_at, reply_to_message_id)
+		 values ($1, $2, $3, $4, nullif($5, ''), $6, $7)`,
+		messageID, channelID, userID, req.Body, req.ClientMessageID, now, replyToID,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "SQLSTATE 23505") {
@@ -676,32 +744,9 @@ func (m *Module) resolveMessageScope(ctx context.Context, w http.ResponseWriter,
 
 func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (messageView, error) {
 	row := m.db.QueryRow(ctx,
-		`select m.id, m.channel_id, m.author_user_id, m.body,
-		        coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
-		        coalesce(
-		          (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine))
-		           from (
-		             select emoji, count(*) as cnt, bool_or(user_id = $2) as mine
-		             from message_reactions where message_id = m.id
-		             group by emoji
-		           ) r),
-		          '{}'::jsonb
-		        ) as reactions,
-		        coalesce(
-		          (select jsonb_agg(jsonb_build_object(
-		             'id', mo.id,
-		             'contentType', mo.content_type,
-		             'sizeBytes', mo.size_bytes,
-		             'filename', coalesce(mo.original_filename, ''),
-		             'url', '/api/v1/media/' || mo.id::text
-		           ) order by ma.position, mo.created_at)
-		           from message_attachments ma
-		           join media_objects mo on mo.id = ma.media_id
-		           where ma.message_id = m.id),
-		          '[]'::jsonb
-		        ) as attachments
-		 from messages m where m.id = $1`,
-		id, viewerID,
+		`select `+messageSelectColumns+`
+		 from messages m where m.id = $2`,
+		viewerID, id,
 	)
 	var (
 		mid, chID, authID uuid.UUID
@@ -710,8 +755,9 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		edited            *time.Time
 		reactionsJSON     []byte
 		attachmentsJSON   []byte
+		replyJSON         []byte
 	)
-	if err := row.Scan(&mid, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON); err != nil {
+	if err := row.Scan(&mid, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -721,6 +767,13 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 	attachments := []attachmentView{}
 	if len(attachmentsJSON) > 0 {
 		_ = json.Unmarshal(attachmentsJSON, &attachments)
+	}
+	var reply *replySnippetView
+	if len(replyJSON) > 0 && string(replyJSON) != "null" {
+		var snippet replySnippetView
+		if json.Unmarshal(replyJSON, &snippet) == nil {
+			reply = &snippet
+		}
 	}
 	return messageView{
 		ID:              mid.String(),
@@ -732,6 +785,7 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		EditedAt:        edited,
 		Reactions:       reactions,
 		Attachments:     attachments,
+		ReplyTo:         reply,
 	}, nil
 }
 
@@ -787,8 +841,9 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		edited           *time.Time
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
+		replyJSON        []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -798,6 +853,13 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 	attachments := []attachmentView{}
 	if len(attachmentsJSON) > 0 {
 		_ = json.Unmarshal(attachmentsJSON, &attachments)
+	}
+	var reply *replySnippetView
+	if len(replyJSON) > 0 && string(replyJSON) != "null" {
+		var snippet replySnippetView
+		if json.Unmarshal(replyJSON, &snippet) == nil {
+			reply = &snippet
+		}
 	}
 	return messageView{
 		ID:              id.String(),
@@ -809,6 +871,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		EditedAt:        edited,
 		Reactions:       reactions,
 		Attachments:     attachments,
+		ReplyTo:         reply,
 	}, nil
 }
 
