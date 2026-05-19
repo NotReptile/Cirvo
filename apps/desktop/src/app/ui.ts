@@ -2,6 +2,7 @@ import type { CallManager, CallSnapshot } from "../call/callManager";
 import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelManager";
 import type { ApiError, HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
+import { icon } from "./icons";
 
 interface Me {
   id: string;
@@ -592,6 +593,7 @@ function renderShell(): void {
         ${state.selectedWorkspaceId ? renderMembersButton() : ""}
         ${state.selectedWorkspaceId && canModerate ? renderAuditButton() : ""}
         ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}
+        ${renderVoiceStrip()}
       </aside>
       <main class="content">
         ${selectedChannel ? renderChannelView(selectedChannel) : renderEmpty()}
@@ -609,33 +611,15 @@ function renderCallOverlay(): string {
   const snap = state.callSnapshot;
   if (!snap) return "";
   const peerName = describePeer(snap.peerUserId);
-  const muteLabel = snap.muted ? "🔇 Включить микрофон" : "🎙 Заглушить";
-  const durationLabel = snap.startedAt ? formatDuration(Date.now() - snap.startedAt) : "";
-  let body = "";
-  let footer = "";
-  switch (snap.state) {
-    case "incoming":
-      body = `<div class="call-status">Входящий звонок от <b>${escapeHtml(peerName)}</b></div>`;
-      footer = `
-        <button class="call-accept" id="call-accept">Принять</button>
-        <button class="call-reject" id="call-reject">Отклонить</button>
-      `;
-      break;
-    case "outgoing":
-      body = `<div class="call-status">Звоним <b>${escapeHtml(peerName)}</b>…</div>`;
-      footer = `<button class="call-reject" id="call-hangup">Отменить</button>`;
-      break;
-    case "connecting":
-      body = `<div class="call-status">Подключение к <b>${escapeHtml(peerName)}</b>…</div>`;
-      footer = `<button class="call-reject" id="call-hangup">Завершить</button>`;
-      break;
-    case "active": {
-      const cameraLabel = snap.cameraOn ? "📷 Выключить камеру" : "📹 Включить камеру";
-      const screenLabel = snap.screenSharing ? "🛑 Прекратить демо" : "🖥 Поделиться экраном";
-      body = `
-        <div class="call-status">В разговоре с <b>${escapeHtml(peerName)}</b></div>
-        <div class="call-timer" id="call-timer">${escapeHtml(durationLabel)}</div>
-        <div class="call-video-grid">
+  const avatar = peerName.slice(0, 1).toUpperCase();
+  const duration = snap.startedAt ? formatDuration(Date.now() - snap.startedAt) : "";
+
+  // Incoming/outgoing/connecting/ended — компактная карточка справа снизу.
+  // Active — full-width bar вдоль нижней грани с tiles над ним.
+  if (snap.state === "active") {
+    return `
+      <div class="call-video-overlay" role="dialog">
+        <div class="call-video-stack">
           <div class="call-video-tile remote">
             <video data-call-remote="1" autoplay playsinline></video>
           </div>
@@ -643,28 +627,71 @@ function renderCallOverlay(): string {
             <video data-call-self="1" autoplay playsinline muted></video>
           </div>
         </div>
-      `;
+      </div>
+      <div class="call-bar" role="region" aria-label="активный звонок">
+        <div class="call-bar-info">
+          <div class="call-bar-avatar">${escapeHtml(avatar)}</div>
+          <div class="call-bar-name">
+            <div class="call-bar-title">${escapeHtml(peerName)}</div>
+            <div class="call-bar-timer" id="call-timer">${escapeHtml(duration)}</div>
+          </div>
+        </div>
+        <div class="call-bar-actions">
+          ${callIconButton("call-mute", snap.muted ? "mic-off" : "mic", snap.muted ? "Включить микрофон" : "Заглушить", snap.muted ? "danger" : "")}
+          ${callIconButton("call-camera", snap.cameraOn ? "camera-off" : "camera", snap.cameraOn ? "Выключить камеру" : "Включить камеру", "", snap.screenSharing)}
+          ${callIconButton("call-screen", snap.screenSharing ? "screen-off" : "screen", snap.screenSharing ? "Прекратить демо" : "Поделиться экраном", snap.screenSharing ? "active" : "")}
+          ${callIconButton("call-hangup", "phone-off", "Завершить", "hangup")}
+        </div>
+      </div>
+    `;
+  }
+
+  let title = "";
+  let extra = "";
+  let footer = "";
+  switch (snap.state) {
+    case "incoming":
+      title = `Входящий звонок`;
+      extra = `от <b>${escapeHtml(peerName)}</b>`;
       footer = `
-        <button class="ghost" id="call-mute">${muteLabel}</button>
-        <button class="ghost" id="call-camera" ${snap.screenSharing ? "disabled title='Сначала прекрати демо экрана'" : ""}>${cameraLabel}</button>
-        <button class="ghost" id="call-screen">${screenLabel}</button>
-        <button class="call-reject" id="call-hangup">Завершить</button>
+        <button class="call-accept" id="call-accept">${icon("phone-incoming")} Принять</button>
+        <button class="call-reject" id="call-reject">${icon("phone-off")} Отклонить</button>
       `;
       break;
-    }
+    case "outgoing":
+      title = `Звоним…`;
+      extra = escapeHtml(peerName);
+      footer = `<button class="call-reject" id="call-hangup">${icon("phone-off")} Отменить</button>`;
+      break;
+    case "connecting":
+      title = `Подключение…`;
+      extra = escapeHtml(peerName);
+      footer = `<button class="call-reject" id="call-hangup">${icon("phone-off")} Завершить</button>`;
+      break;
     case "ended":
-      body = `<div class="call-status">Звонок завершён${snap.endedReason ? ` · ${escapeHtml(snap.endedReason)}` : ""}</div>`;
+      title = `Звонок завершён`;
+      extra = snap.endedReason ? escapeHtml(snap.endedReason) : "";
       footer = "";
       break;
   }
   return `
     <div class="call-overlay" role="dialog">
       <div class="call-card">
-        <div class="call-body">${body}</div>
-        <div class="call-footer">${footer}</div>
+        <div class="call-card-body">
+          <div class="call-bar-avatar">${escapeHtml(avatar)}</div>
+          <div>
+            <div class="call-status">${escapeHtml(title)}</div>
+            <div class="call-card-extra">${extra}</div>
+          </div>
+        </div>
+        ${footer ? `<div class="call-footer">${footer}</div>` : ""}
       </div>
     </div>
   `;
+}
+
+function callIconButton(id: string, iconName: Parameters<typeof icon>[0], title: string, mod = "", disabled = false): string {
+  return `<button id="${id}" class="call-icon-btn ${mod}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${disabled ? "disabled" : ""}>${icon(iconName, { size: 20 })}</button>`;
 }
 
 function describePeer(userId: string | null): string {
@@ -865,14 +892,14 @@ function renderVoiceChannelView(channel: Channel): string {
 
   const actions = joined
     ? `
-      <button id="voice-mute" class="ghost">${muted ? "🔇 Включить микро" : "🎙 Заглушить"}</button>
-      <button id="voice-camera" class="ghost" ${screenOn ? "disabled title='Сначала прекрати демо экрана'" : ""}>${cameraOn ? "📷 Выключить камеру" : "📹 Включить камеру"}</button>
-      <button id="voice-screen" class="ghost">${screenOn ? "🛑 Прекратить демо" : "🖥 Поделиться экраном"}</button>
-      <button id="voice-leave" ${leaving ? "disabled" : ""}>${leaving ? "Выхожу…" : "Выйти"}</button>
+      ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? "Включить микрофон" : "Заглушить", muted ? "danger" : "")}
+      ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? "Выключить камеру" : "Включить камеру", "", screenOn)}
+      ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? "Прекратить демо" : "Поделиться экраном", screenOn ? "active" : "")}
+      ${callIconButton("voice-leave", "log-out", leaving ? "Выхожу…" : "Выйти", "hangup", leaving)}
     `
     : `
       <button id="voice-join" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
-        ${joining ? "Подключаюсь…" : "Войти в голосовой"}
+        ${icon("phone-outgoing", { size: 16 })} ${joining ? "Подключаюсь…" : "Войти в голосовой"}
       </button>
       ${busyOther ? `<div class="muted">Сейчас в другом voice-канале. Сначала выйди оттуда.</div>` : ""}
     `;
@@ -891,6 +918,47 @@ function renderVoiceChannelView(channel: Channel): string {
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
       </div>
       <div class="voice-room-actions">${actions}</div>
+    </div>
+  `;
+}
+
+// Persistent strip: когда юзер в voice-канале, в sidebar снизу видим
+// «в #X» с участниками и быстрыми контролами — даже когда смотрим
+// другой канал. Discord-like.
+function renderVoiceStrip(): string {
+  const voice = state.voiceSnapshot;
+  if (!voice || !voice.channelId) return "";
+  const channel = state.channels.find((c) => c.id === voice.channelId);
+  const channelName = channel?.name ?? voice.channelId.slice(0, 8);
+  const muted = voice.muted;
+  const cameraOn = voice.cameraOn;
+  const screenOn = voice.screenSharing;
+  const leaving = voice.state === "leaving";
+
+  const participants = voice.participants
+    .map((p) => {
+      const name = p.displayName?.trim() || p.username || p.userId.slice(0, 8);
+      const isSelf = p.sessionId === voice.selfSessionId;
+      return `<li class="voice-strip-participant${isSelf ? " self" : ""}">
+        <span class="voice-dot"></span>
+        <span>${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
+      </li>`;
+    })
+    .join("");
+
+  return `
+    <div class="voice-strip">
+      <div class="voice-strip-header" data-voice-jump="${voice.channelId}">
+        ${icon("users", { size: 14 })}
+        <span class="voice-strip-channel">${escapeHtml(channelName)}</span>
+      </div>
+      <ul class="voice-strip-list">${participants}</ul>
+      <div class="voice-strip-actions">
+        ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? "Включить микрофон" : "Заглушить", muted ? "danger" : "")}
+        ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? "Выключить камеру" : "Включить камеру", "", screenOn)}
+        ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? "Прекратить демо" : "Поделиться экраном", screenOn ? "active" : "")}
+        ${callIconButton("voice-leave", "log-out", leaving ? "Выхожу…" : "Выйти", "hangup", leaving)}
+      </div>
     </div>
   `;
 }
@@ -1320,27 +1388,40 @@ function attachShellHandlers(): void {
       render();
     }
   });
-  rootEl.querySelector<HTMLButtonElement>("#voice-leave")?.addEventListener("click", () => {
-    void voiceMgr.leave();
-  });
-  rootEl.querySelector<HTMLButtonElement>("#voice-mute")?.addEventListener("click", () => {
-    voiceMgr.toggleMute();
-  });
-  rootEl.querySelector<HTMLButtonElement>("#voice-camera")?.addEventListener("click", async () => {
-    try {
-      await voiceMgr.toggleCamera();
-    } catch (err) {
-      state.status = describeError(err);
-      render();
-    }
-  });
-  rootEl.querySelector<HTMLButtonElement>("#voice-screen")?.addEventListener("click", async () => {
-    try {
-      await voiceMgr.toggleScreenShare();
-    } catch (err) {
-      state.status = describeError(err);
-      render();
-    }
+  // voice-кнопки могут существовать одновременно в room (content) и в
+  // strip (sidebar) — навешиваем хэндлер на все.
+  for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-mute")) {
+    btn.addEventListener("click", () => voiceMgr.toggleMute());
+  }
+  for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-camera")) {
+    btn.addEventListener("click", async () => {
+      try {
+        await voiceMgr.toggleCamera();
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
+  }
+  for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-screen")) {
+    btn.addEventListener("click", async () => {
+      try {
+        await voiceMgr.toggleScreenShare();
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
+  }
+  for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-leave")) {
+    btn.addEventListener("click", () => {
+      void voiceMgr.leave();
+    });
+  }
+  rootEl.querySelector<HTMLElement>("[data-voice-jump]")?.addEventListener("click", (e) => {
+    const target = e.currentTarget as HTMLElement;
+    const chId = target.dataset.voiceJump;
+    if (chId && chId !== state.selectedChannelId) void selectChannel(chId);
   });
 
   syncCallTimer();
