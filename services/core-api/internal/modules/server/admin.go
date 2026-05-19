@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	"github.com/NotReptile/RuCord/libs/shared-go/retention"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
@@ -371,4 +372,42 @@ func (m *Module) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		view.StorageQuotaUsedRatio = float64(view.StorageBytes) / float64(snap.StorageQuotaBytes)
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+// handleRetentionRun — D.3. Синхронно прогоняет retention.Sweep по текущим
+// server_settings. Тот же код, что воркер крутит по таймеру; здесь —
+// ручной триггер из админ-панели. Возвращает Stats клиенту, чтобы UI
+// показал «удалено N сообщений / M файлов / K байт». Аудит пишется до
+// sweep'а, чтобы actor существовал в момент записи (если root удалит
+// сам себя через массовую чистку — маловероятно, но).
+func (m *Module) handleRetentionRun(w http.ResponseWriter, r *http.Request) {
+	actorID, ok := m.requireRoot(w, r)
+	if !ok {
+		return
+	}
+	settings, err := retention.LoadSettings(r.Context(), m.db)
+	if err != nil {
+		m.logger.Error("retention: load settings failed", "error", err)
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not load settings")
+		return
+	}
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:    actorID,
+		Action:     auditlog.ActionRetentionSweep,
+		TargetType: "server",
+		TargetID:   "retention",
+	})
+	stats, err := retention.Sweep(r.Context(), m.logger, m.db, m.store, settings)
+	if err != nil {
+		m.logger.Error("retention sweep failed", "error", err)
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "sweep failed")
+		return
+	}
+	m.logger.Info("retention sweep (manual)",
+		"actor", actorID,
+		"messages_deleted", stats.MessagesDeleted,
+		"media_deleted", stats.MediaDeleted,
+		"bytes_freed", stats.BytesFreed,
+	)
+	sharedhttp.WriteJSON(w, http.StatusOK, stats)
 }

@@ -25,6 +25,7 @@ const (
 	ActionUserUnbanned         = "user.unbanned"
 	ActionUserDeleted          = "user.deleted"
 	ActionServerSettingsUpdate = "server.settings.updated"
+	ActionRetentionSweep       = "server.retention.sweep"
 )
 
 // Entry describes a single audit log entry to be persisted.

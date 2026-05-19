@@ -219,6 +219,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("notifications", testNotifications)
 	t.Run("server_settings", testServerSettings)
 	t.Run("admin_panel", testAdminPanel)
+	t.Run("retention_sweep", testRetentionSweep)
 }
 
 // drainNotificationJobs прогоняет все pending-задачи из notification_jobs
@@ -1404,4 +1405,91 @@ func testAdminPanel(t *testing.T) {
 	if m.UserCount <= 0 || m.DatabaseSizeBytes <= 0 {
 		t.Fatalf("metrics zero: %+v", m)
 	}
+}
+
+// testRetentionSweep — D.3. Прогоняем ручной POST /server/retention/run:
+// (1) старое сообщение удаляется по message_retention_days; (2) свежее —
+// остаётся; (3) non-root → 404.
+func testRetentionSweep(t *testing.T) {
+	root := registerFresh(t)
+	regular := registerFresh(t)
+
+	ctx := context.Background()
+	if _, err := dbPool.Exec(ctx,
+		`update users set is_root = (id = $1) where id in ($1, $2)`,
+		root.User.ID, regular.User.ID); err != nil {
+		t.Fatalf("promote root: %v", err)
+	}
+
+	// non-root → 404
+	code, _ := doReq(t, http.MethodPost, "/api/v1/server/retention/run", regular.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("regular sweep: expected 404, got %d", code)
+	}
+
+	// Создаём ws + канал + два сообщения, одно «состарим» в БД на 60 дней.
+	wsID := createWorkspace(t, root.AccessToken)
+	chID := createTextChannel(t, root.AccessToken, wsID)
+
+	code, raw := doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", root.AccessToken,
+		map[string]any{"body": "старое", "clientMessageId": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("post old: %d %s", code, string(raw))
+	}
+	var oldMsg struct{ ID string `json:"id"` }
+	mustJSON(t, raw, &oldMsg)
+
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", root.AccessToken,
+		map[string]any{"body": "новое", "clientMessageId": uuid.NewString()})
+	if code != http.StatusCreated {
+		t.Fatalf("post new: %d %s", code, string(raw))
+	}
+	var newMsg struct{ ID string `json:"id"` }
+	mustJSON(t, raw, &newMsg)
+
+	if _, err := dbPool.Exec(ctx,
+		`update messages set created_at = now() - interval '60 days' where id = $1`, oldMsg.ID); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	// Ставим retention=30 дней через PUT (попутно инвалидирует кеш Provider'а).
+	code, _ = doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken,
+		map[string]any{"messageRetentionDays": 30})
+	if code != http.StatusOK {
+		t.Fatalf("set retention: %d", code)
+	}
+
+	// Запускаем sweep.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/server/retention/run", root.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("sweep: %d %s", code, string(raw))
+	}
+	var stats struct {
+		MessagesDeleted int64 `json:"messagesDeleted"`
+	}
+	mustJSON(t, raw, &stats)
+	if stats.MessagesDeleted < 1 {
+		t.Fatalf("expected at least 1 message deleted, got %d", stats.MessagesDeleted)
+	}
+
+	// Старое — отсутствует, новое — на месте.
+	var exists bool
+	if err := dbPool.QueryRow(ctx,
+		`select exists(select 1 from messages where id = $1)`, oldMsg.ID).Scan(&exists); err != nil {
+		t.Fatalf("check old: %v", err)
+	}
+	if exists {
+		t.Fatalf("old message should be deleted")
+	}
+	if err := dbPool.QueryRow(ctx,
+		`select exists(select 1 from messages where id = $1)`, newMsg.ID).Scan(&exists); err != nil {
+		t.Fatalf("check new: %v", err)
+	}
+	if !exists {
+		t.Fatalf("new message should still be there")
+	}
+
+	// Откатываем retention в 0, чтобы не дёргать остальные тесты при повторном прогоне.
+	doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken,
+		map[string]any{"messageRetentionDays": 0})
 }

@@ -158,6 +158,12 @@ interface ServerMetrics {
   storageQuotaUsedRatio?: number;
 }
 
+interface RetentionStats {
+  messagesDeleted: number;
+  mediaDeleted: number;
+  bytesFreed: number;
+}
+
 interface AdminState {
   tab: AdminTab;
   settings: ServerSettings | null;
@@ -171,6 +177,8 @@ interface AdminState {
   metrics: ServerMetrics | null;
   metricsLoading: boolean;
   error: string | null;
+  retentionRunning: boolean;
+  retentionLast: RetentionStats | null;
 }
 
 // C.8: in-app уведомления.
@@ -317,7 +325,9 @@ const state: AppState = {
     usersTotal: 0,
     metrics: null,
     metricsLoading: false,
-    error: null
+    error: null,
+    retentionRunning: false,
+    retentionLast: null
   }
 };
 
@@ -3028,7 +3038,16 @@ function renderAdminMetrics(): string {
     </div>
     <div class="admin-actions">
       <button id="admin-metrics-refresh" class="ghost">Обновить</button>
+      <button id="admin-retention-run" class="ghost" ${a.retentionRunning ? "disabled" : ""}>
+        ${a.retentionRunning ? "Чищу…" : "Запустить очистку"}
+      </button>
     </div>
+    ${a.retentionLast ? `
+      <div class="admin-meta admin-retention-result">
+        Удалено: ${a.retentionLast.messagesDeleted} сообщ., ${a.retentionLast.mediaDeleted} файлов
+        (${formatBytesLarge(a.retentionLast.bytesFreed)})
+      </div>
+    ` : ""}
   `;
 }
 
@@ -3173,6 +3192,26 @@ function attachAdminHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#admin-metrics-refresh")?.addEventListener("click", () => {
     void loadAdminMetrics();
   });
+
+  rootEl.querySelector<HTMLButtonElement>("#admin-retention-run")?.addEventListener("click", () => {
+    if (!window.confirm("Запустить очистку по retention-политике? Старые сообщения и orphan-файлы будут удалены безвозвратно.")) return;
+    void runRetentionSweep();
+  });
+}
+
+async function runRetentionSweep(): Promise<void> {
+  state.admin.retentionRunning = true;
+  state.admin.error = null;
+  render();
+  try {
+    state.admin.retentionLast = await httpClient.post<RetentionStats>("/api/v1/server/retention/run", {});
+    await loadAdminMetrics();
+  } catch (err) {
+    state.admin.error = describeError(err);
+  } finally {
+    state.admin.retentionRunning = false;
+    render();
+  }
 }
 
 async function runAdminUserAction(userId: string, action: string): Promise<void> {

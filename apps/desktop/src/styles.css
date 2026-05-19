@@ -1288,3 +1288,12 @@ input:focus { outline: none; border-color: var(--accent); }
   color: var(--muted, #888);
   margin-top: 4px;
 }
+
+/* D.3 — retention result chip */
+.admin-retention-result {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: rgba(91, 141, 239, 0.10);
+  border-radius: 4px;
+  border-left: 3px solid var(--accent, #5b8def);
+}

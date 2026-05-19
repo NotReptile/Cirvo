@@ -11,6 +11,7 @@ import (
 	"time"
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
@@ -21,11 +22,12 @@ import (
 type Module struct {
 	db       *postgres.Pool
 	settings *serversettings.Provider
+	store    *objectstore.Client
 	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, settings *serversettings.Provider, logger *slog.Logger) *Module {
-	return &Module{db: db, settings: settings, logger: logger}
+func NewModule(db *postgres.Pool, settings *serversettings.Provider, store *objectstore.Client, logger *slog.Logger) *Module {
+	return &Module{db: db, settings: settings, store: store, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -36,6 +38,7 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("POST /api/v1/server/users/{userId}/unban", m.handleUnbanUser)
 	router.Protected("DELETE /api/v1/server/users/{userId}", m.handleDeleteUser)
 	router.Protected("GET /api/v1/server/metrics", m.handleMetrics)
+	router.Protected("POST /api/v1/server/retention/run", m.handleRetentionRun)
 }
 
 type settingsView struct {
