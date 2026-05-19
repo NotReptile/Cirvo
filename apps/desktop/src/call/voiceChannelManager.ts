@@ -372,8 +372,30 @@ export class VoiceChannelManager {
     // Caller — impolite (polite=false). Он не уступает в коллизии.
     const peer = this.createPeer(other.sessionId, callId, /*polite*/ false);
     this.peers.set(other.sessionId, peer);
-    // addTrack уже отработали в createPeer; onnegotiationneeded
-    // самостоятельно создаст и отправит initial offer.
+    // onnegotiationneeded на свежесозданном PC после synchronous addTrack
+    // не всегда стреляет надёжно (зависит от браузера/таймингов) — особенно
+    // при re-join, когда создаётся новый PC поверх свежеуничтоженного.
+    // Явно триггерим initial offer через setLocalDescription() без аргумента
+    // (в современных браузерах он сам собирает корректный offer/answer на
+    // основе текущего state). Последующие renegotiate'ы (camera/screen
+    // toggle) уже обрабатывает onnegotiationneeded.
+    try {
+      peer.makingOffer = true;
+      await peer.pc.setLocalDescription();
+      if (peer.pc.localDescription) {
+        this.realtime.send("voice.offer", {
+          call_id: callId,
+          target_session_id: other.sessionId,
+          target_user_id: other.userId,
+          channel_id: this.snapshot.channelId ?? "",
+          sdp: peer.pc.localDescription
+        });
+      }
+    } catch {
+      /* ignore — peer мог уже быть закрыт race'ом */
+    } finally {
+      peer.makingOffer = false;
+    }
   }
 
   private createPeer(peerSessionId: string, callId: string, polite: boolean): PeerEntry {
@@ -531,7 +553,16 @@ export class VoiceChannelManager {
   private handleVoiceJoined(p: VoiceEventPayload | undefined): void {
     if (!p || p.channelId !== this.snapshot.channelId) return;
     if (p.sessionId === this.snapshot.selfSessionId) return;
-    if (this.snapshot.participants.some((x) => x.sessionId === p.sessionId)) return;
+    // Если этот session_id уже числится участником — это re-join
+    // (например, юзер leave/join подряд, или мы пропустили voice.left
+    // из-за race в шине). Уничтожаем устаревший peer и пересоздаём
+    // запись — иначе новый offer от него прилетит и `known`-фильтр
+    // ниже его пустит, но handleOffer попадёт в наш СТАРЫЙ peer
+    // (signalingState!=stable, polite=false → ignoreOffer), и audio
+    // не пойдёт.
+    if (this.peers.has(p.sessionId)) {
+      this.destroyPeer(p.sessionId);
+    }
     const next: VoiceParticipant = {
       userId: p.userId,
       sessionId: p.sessionId,
@@ -539,7 +570,8 @@ export class VoiceChannelManager {
       displayName: p.displayName,
       joinedAt: p.joinedAt ?? new Date().toISOString()
     };
-    this.update({ participants: [...this.snapshot.participants, next] });
+    const without = this.snapshot.participants.filter((x) => x.sessionId !== p.sessionId);
+    this.update({ participants: [...without, next] });
     // Новый участник сам сделает offer нам — ничего больше не делаем.
   }
 
