@@ -210,6 +210,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("call_lifecycle", testCallLifecycle)
 	t.Run("message_reply", testMessageReply)
 	t.Run("message_mentions", testMessageMentions)
+	t.Run("unread_counts", testUnreadCounts)
 }
 
 func testAuthFlow(t *testing.T) {
@@ -645,6 +646,102 @@ func testMessageMentions(t *testing.T) {
 	}
 
 	_ = c
+}
+
+func testUnreadCounts(t *testing.T) {
+	a := registerFresh(t)
+	wsID := createWorkspace(t, a.AccessToken)
+	chID := createTextChannel(t, a.AccessToken, wsID)
+
+	// B принимает инвайт в воркспейс A.
+	b := registerFresh(t)
+	code, raw := doReq(t, http.MethodPost, "/api/v1/workspaces/"+wsID+"/invites", a.AccessToken, map[string]any{"maxUses": 10})
+	if code != http.StatusCreated {
+		t.Fatalf("invite: %d %s", code, string(raw))
+	}
+	var inv struct {
+		Code string `json:"code"`
+	}
+	mustJSON(t, raw, &inv)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/invites/"+inv.Code+"/accept", b.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("accept: %d %s", code, string(raw))
+	}
+
+	type unreadResp struct {
+		Items []struct {
+			ChannelID   string `json:"channelId"`
+			UnreadCount int    `json:"unreadCount"`
+		} `json:"items"`
+	}
+	getUnread := func(token, ch string) int {
+		c, r := doReq(t, http.MethodGet, "/api/v1/workspaces/"+wsID+"/unread", token, nil)
+		if c != http.StatusOK {
+			t.Fatalf("unread: %d %s", c, string(r))
+		}
+		var ur unreadResp
+		mustJSON(t, r, &ur)
+		for _, it := range ur.Items {
+			if it.ChannelID == ch {
+				return it.UnreadCount
+			}
+		}
+		t.Fatalf("channel %s not in unread response", ch)
+		return -1
+	}
+
+	// A пишет 3 сообщения; B их ещё не читал.
+	var lastID string
+	for i := 0; i < 3; i++ {
+		c, r := doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", a.AccessToken, map[string]any{
+			"body":            "msg",
+			"clientMessageId": uuid.NewString(),
+		})
+		if c != http.StatusCreated {
+			t.Fatalf("post: %d %s", c, string(r))
+		}
+		var m idView
+		mustJSON(t, r, &m)
+		lastID = m.ID
+	}
+
+	if got := getUnread(b.AccessToken, chID); got != 3 {
+		t.Fatalf("B unread before read: expected 3, got %d", got)
+	}
+	// Свои сообщения не считаются непрочитанными у автора.
+	if got := getUnread(a.AccessToken, chID); got != 0 {
+		t.Fatalf("A unread (own messages): expected 0, got %d", got)
+	}
+
+	// B отмечает прочитанным до последнего.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/read", b.AccessToken, map[string]any{
+		"messageId": lastID,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("mark read: %d %s", code, string(raw))
+	}
+	if got := getUnread(b.AccessToken, chID); got != 0 {
+		t.Fatalf("B unread after read: expected 0, got %d", got)
+	}
+
+	// A пишет ещё одно — B снова видит 1.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", a.AccessToken, map[string]any{
+		"body":            "fresh",
+		"clientMessageId": uuid.NewString(),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("fresh post: %d %s", code, string(raw))
+	}
+	if got := getUnread(b.AccessToken, chID); got != 1 {
+		t.Fatalf("B unread after fresh: expected 1, got %d", got)
+	}
+
+	// Чужой пользователь не имеет доступа к воркспейсу — 404.
+	stranger := registerFresh(t)
+	code, raw = doReq(t, http.MethodGet, "/api/v1/workspaces/"+wsID+"/unread", stranger.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("stranger unread: expected 404, got %d %s", code, string(raw))
+	}
 }
 
 func testMessageCRUD(t *testing.T) {

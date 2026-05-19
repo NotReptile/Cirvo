@@ -22,6 +22,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
@@ -105,6 +106,7 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("DELETE /api/v1/messages/{messageId}/reactions/{emoji}", m.handleRemoveReaction)
 	router.Protected("POST /api/v1/channels/{channelId}/read", m.handleMarkRead)
 	router.Protected("GET /api/v1/channels/{channelId}/read", m.handleGetRead)
+	router.Protected("GET /api/v1/workspaces/{workspaceId}/unread", m.handleListUnread)
 }
 
 type reactionAgg struct {
@@ -835,6 +837,73 @@ func (m *Module) handleGetRead(w http.ResponseWriter, r *http.Request) {
 		view.LastMessageID = lastMessageID.String()
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+// ---- unread aggregation -----------------------------------------------------
+
+type unreadView struct {
+	ChannelID   string     `json:"channelId"`
+	LastReadAt  *time.Time `json:"lastReadAt,omitempty"`
+	UnreadCount int        `json:"unreadCount"`
+}
+
+// handleListUnread — агрегированный счётчик непрочитанных по всем
+// видимым каналам воркспейса. Считаются только сообщения чужих
+// авторов и не soft-deleted, чтобы своя писанина не висела как
+// "новое" у тебя же. Приватные каналы фильтруются через
+// channel_members ровно как в channel.handleList.
+func (m *Module) handleListUnread(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUID(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	if !workspace.IsMember(r.Context(), m.db, workspaceID, userID) {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+
+	rows, err := m.db.Query(r.Context(),
+		`select c.id,
+		        r.last_read_at,
+		        (select count(*) from messages mm
+		          where mm.channel_id = c.id
+		            and mm.deleted_at is null
+		            and mm.author_user_id <> $2
+		            and mm.created_at > coalesce(r.last_read_at, 'epoch'::timestamptz)) as unread_count
+		 from channels c
+		 left join read_receipts r on r.channel_id = c.id and r.user_id = $2
+		 where c.workspace_id = $1
+		   and (c.is_private = false
+		        or exists (select 1 from channel_members cm where cm.channel_id = c.id and cm.user_id = $2))`,
+		workspaceID, userID,
+	)
+	if err != nil {
+		m.logger.Error("unread query failed", "error", err, "workspaceId", workspaceID)
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer rows.Close()
+
+	items := make([]unreadView, 0)
+	for rows.Next() {
+		var (
+			channelID  uuid.UUID
+			lastReadAt *time.Time
+			count      int
+		)
+		if err := rows.Scan(&channelID, &lastReadAt, &count); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
+			return
+		}
+		items = append(items, unreadView{
+			ChannelID:   channelID.String(),
+			LastReadAt:  lastReadAt,
+			UnreadCount: count,
+		})
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 // ---- helpers ----------------------------------------------------------------

@@ -143,6 +143,9 @@ interface AppState {
   messagesLoadingOlder: boolean;
   stickToBottom: boolean;              // юзер у нижней границы → autoscroll на новые
   restoreScrollBottom: number | null;  // one-shot: после render() восстановить «расстояние до низа»
+  // C.5: unread indicators
+  unread: Record<string, number>;                 // channelId → count
+  selectedChannelLastReadAt: string | null;       // фриз lastReadAt на момент входа — для divider'а
 }
 
 interface VoicePeekParticipant {
@@ -190,7 +193,9 @@ const state: AppState = {
   messagesHasMore: false,
   messagesLoadingOlder: false,
   stickToBottom: true,
-  restoreScrollBottom: null
+  restoreScrollBottom: null,
+  unread: {},
+  selectedChannelLastReadAt: null
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -286,11 +291,13 @@ async function selectWorkspace(id: string): Promise<void> {
   state.invitesOpen = false;
   state.invites = [];
   state.members = [];
+  state.unread = {};
   render();
   const data = await httpClient.get<{ items: Channel[] }>(`/api/v1/workspaces/${id}/channels`);
   state.channels = data.items ?? [];
   // Резолвинг authorId → имя в сообщениях. Не блокируем загрузку каналов.
   void loadMembers();
+  void loadUnread(id);
   if (state.channels.length > 0) {
     await selectChannel(state.channels[0].id);
   } else {
@@ -310,6 +317,7 @@ async function selectChannel(id: string): Promise<void> {
   state.messagesLoadingOlder = false;
   state.stickToBottom = true;
   state.restoreScrollBottom = null;
+  state.selectedChannelLastReadAt = null;
   render();
   const ch = state.channels.find((c) => c.id === id);
   if (ch?.kind === "voice") {
@@ -327,15 +335,54 @@ async function selectChannel(id: string): Promise<void> {
     }
     return;
   }
-  const data = await httpClient.get<{ items: Message[]; nextCursor?: string }>(
-    `/api/v1/channels/${id}/messages?limit=50`
-  );
+  // Параллельно: read-receipt (для divider'а) и сами сообщения.
+  // lastReadAt фризим ДО mark-as-read, чтобы divider остался виден.
+  const [readState, data] = await Promise.all([
+    httpClient
+      .get<{ lastReadAt?: string }>(`/api/v1/channels/${id}/read`)
+      .catch(() => ({} as { lastReadAt?: string })),
+    httpClient.get<{ items: Message[]; nextCursor?: string }>(`/api/v1/channels/${id}/messages?limit=50`)
+  ]);
   if (state.selectedChannelId !== id) return; // юзер уже сменил канал
   state.messages = (data.items ?? []).slice().reverse();
   state.messagesCursor = data.nextCursor || null;
   state.messagesHasMore = !!data.nextCursor;
   state.stickToBottom = true;
+  state.selectedChannelLastReadAt = readState.lastReadAt ?? null;
+  state.unread[id] = 0;
   render();
+  // Авто-отметка прочитанным: последнее сообщение текущей выборки
+  // (если оно не моё — иначе незачем). Не ждём ответа.
+  const last = state.messages[state.messages.length - 1];
+  if (last && last.authorId !== state.me?.id) {
+    void markChannelRead(id, last.id);
+  }
+}
+
+async function loadUnread(workspaceId: string): Promise<void> {
+  try {
+    const data = await httpClient.get<{ items: { channelId: string; unreadCount: number }[] }>(
+      `/api/v1/workspaces/${workspaceId}/unread`
+    );
+    if (state.selectedWorkspaceId !== workspaceId) return;
+    const map: Record<string, number> = {};
+    for (const it of data.items ?? []) {
+      // Активный канал считается прочитанным, не надо мигать badge'м на нём.
+      map[it.channelId] = it.channelId === state.selectedChannelId ? 0 : it.unreadCount;
+    }
+    state.unread = map;
+    render();
+  } catch (err) {
+    state.status = describeError(err);
+  }
+}
+
+async function markChannelRead(channelId: string, messageId: string): Promise<void> {
+  try {
+    await httpClient.post(`/api/v1/channels/${channelId}/read`, { messageId });
+  } catch {
+    // молча — read-receipt не критичен
+  }
 }
 
 async function loadOlderMessages(channelId: string, list: HTMLDivElement): Promise<void> {
@@ -429,12 +476,34 @@ async function loadMembers(): Promise<void> {
 }
 
 function handleRealtimeEvent(event: RealtimeEvent): void {
+  // C.5: события для не-активных каналов обрабатываем отдельно (unread).
+  if (event.channelId && event.channelId !== state.selectedChannelId) {
+    if (event.event === "message.created") {
+      const msg = event.payload as Message;
+      if (msg.authorId !== state.me?.id) {
+        state.unread[event.channelId] = (state.unread[event.channelId] ?? 0) + 1;
+        render();
+      }
+    } else if (event.event === "channel.read") {
+      const p = event.payload as { userId: string; channelId: string };
+      if (p.userId === state.me?.id) {
+        state.unread[p.channelId] = 0;
+        render();
+      }
+    }
+    return;
+  }
   if (event.channelId !== state.selectedChannelId) return;
   switch (event.event) {
     case "message.created": {
       const msg = event.payload as Message;
       if (state.messages.some((m) => m.id === msg.id)) return;
       state.messages = [...state.messages, { ...msg, reactions: msg.reactions ?? {} }];
+      // Активный канал + юзер у низа → отмечаем прочитанным (своё сообщение
+      // тоже двигает курсор, чтобы при возврате не висел divider от старого).
+      if (state.stickToBottom && state.selectedChannelId) {
+        void markChannelRead(state.selectedChannelId, msg.id);
+      }
       render();
       break;
     }
@@ -829,14 +898,23 @@ function renderChannelsBlock(): string {
     <div class="section-title">Каналы</div>
     <ul class="channel-list">
       ${state.channels
-        .map(
-          (ch) => `
-        <li class="${ch.id === state.selectedChannelId ? "active" : ""}" data-ch="${ch.id}">
+        .map((ch) => {
+          const unread = state.unread[ch.id] ?? 0;
+          const cls = [
+            ch.id === state.selectedChannelId ? "active" : "",
+            unread > 0 ? "has-unread" : ""
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const badge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : "";
+          return `
+        <li class="${cls}" data-ch="${ch.id}">
           <span class="channel-prefix">${channelPrefix(ch)}</span>
-          <span>${escapeHtml(ch.name)}</span>
+          <span class="channel-name">${escapeHtml(ch.name)}</span>
+          ${badge}
         </li>
-      `
-        )
+      `;
+        })
         .join("")}
     </ul>
     <form id="create-channel" class="inline-form">
@@ -915,8 +993,9 @@ function renderChannelView(channel: Channel): string {
       </div>
     </header>
     <div id="message-list" class="message-list">
-      ${state.messages.map((m) => renderMessage(m)).join("")}
+      ${renderMessagesWithDivider()}
     </div>
+    ${renderJumpToUnread()}
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     ${renderReplyBar()}
     <div id="mention-popup" class="mention-popup" hidden></div>
@@ -1145,6 +1224,49 @@ function renderReplyBar(): string {
     <span>В ответ <b>${escapeHtml(author)}</b>: ${escapeHtml(r.body)}</span>
     <button class="ghost reply-cancel" title="Отменить ответ">✕</button>
   </div>`;
+}
+
+// C.5: pill "↓ N новых" — показываем когда юзер не у низа и есть
+// новые сообщения в этом канале (есть divider). Клик скроллит к
+// divider'у, в крайнем случае — к низу. Реализовано через
+// stickToBottom: если юзер пин'нут к низу, скрываем.
+function renderJumpToUnread(): string {
+  if (state.stickToBottom) return "";
+  const cutoff = state.selectedChannelLastReadAt ? Date.parse(state.selectedChannelLastReadAt) : NaN;
+  if (Number.isNaN(cutoff)) return "";
+  const newCount = state.messages.filter(
+    (m) => Date.parse(m.createdAt) > cutoff && m.authorId !== state.me?.id
+  ).length;
+  if (newCount === 0) return "";
+  return `<button id="jump-to-unread" class="jump-to-unread">↓ ${newCount} ${pluralizeNew(newCount)}</button>`;
+}
+
+function pluralizeNew(n: number): string {
+  return n % 10 === 1 && n % 100 !== 11 ? "новое" : "новых";
+}
+
+// C.5: рендер с разделителем "Новые сообщения" перед первым
+// сообщением, чей createdAt позже зафиксированного lastReadAt.
+// lastReadAt фризим в selectChannel, чтобы divider не «уплыл» когда
+// мы автомаркаем канал прочитанным после загрузки.
+function renderMessagesWithDivider(): string {
+  const cutoff = state.selectedChannelLastReadAt ? Date.parse(state.selectedChannelLastReadAt) : NaN;
+  let dividerInserted = false;
+  return state.messages
+    .map((m) => {
+      let prefix = "";
+      if (
+        !dividerInserted &&
+        !Number.isNaN(cutoff) &&
+        Date.parse(m.createdAt) > cutoff &&
+        m.authorId !== state.me?.id
+      ) {
+        prefix = `<div class="new-messages-divider"><span>Новые сообщения</span></div>`;
+        dividerInserted = true;
+      }
+      return prefix + renderMessage(m);
+    })
+    .join("");
 }
 
 // MENTION_RE_GLOBAL — синхронен с backend mentionRe: `@<slug>`, slug по
@@ -2029,6 +2151,16 @@ function attachShellHandlers(): void {
         setTimeout(() => target.classList.remove("highlight"), 1200);
       }
     });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#jump-to-unread")?.addEventListener("click", () => {
+    const divider = rootEl.querySelector<HTMLElement>(".new-messages-divider");
+    if (divider) {
+      divider.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      const list = rootEl.querySelector<HTMLDivElement>("#message-list");
+      if (list) list.scrollTop = list.scrollHeight;
+    }
   });
 
   const list = rootEl.querySelector<HTMLDivElement>("#message-list");

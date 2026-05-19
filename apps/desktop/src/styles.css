@@ -144,6 +144,62 @@ input:focus { outline: none; border-color: var(--accent); }
 .workspace-list li:hover, .channel-list li:hover { background: var(--bg-elev-2); color: var(--text); }
 .workspace-list li.active, .channel-list li.active { background: var(--accent); color: white; }
 
+/* C.5: unread channel state */
+.channel-list li.has-unread:not(.active) {
+  color: var(--text);
+  font-weight: 600;
+}
+.channel-list li .channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.unread-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: #ed4245;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.channel-list li.active .unread-badge { background: rgba(255, 255, 255, 0.25); }
+
+.new-messages-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+  color: #ed4245;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.new-messages-divider::before,
+.new-messages-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(237, 66, 69, 0.4);
+}
+
+.jump-to-unread {
+  position: absolute;
+  right: 16px;
+  bottom: 76px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 16px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+.jump-to-unread:hover { filter: brightness(1.1); }
+
 .ws-badge {
   width: 24px; height: 24px;
   border-radius: 6px;
@@ -165,6 +221,7 @@ input:focus { outline: none; border-color: var(--accent); }
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  position: relative; /* C.5: якорь для .jump-to-unread */
 }
 .empty { flex: 1; display: grid; place-items: center; color: var(--text-mute); }
 
