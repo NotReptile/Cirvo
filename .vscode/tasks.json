@@ -49,11 +49,6 @@
       "problemMatcher": []
     },
     {
-      "label": "Run Backend",
-      "dependsOn": ["core-api", "realtime", "worker"],
-      "dependsOrder": "parallel"
-    },
-    {
       "label": "tauri dev",
       "type": "shell",
       "command": "Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"freed port 1420 (pid $_)\" } catch {} }; Set-Location apps/desktop; npm run tauri dev",
@@ -62,8 +57,13 @@
       "problemMatcher": []
     },
     {
+      "label": "Run Desktop Services",
+      "dependsOn": ["core-api", "realtime", "worker", "tauri dev"],
+      "dependsOrder": "parallel"
+    },
+    {
       "label": "Run Desktop",
-      "dependsOn": ["migrate", "Run Backend", "tauri dev"],
+      "dependsOn": ["migrate", "Run Desktop Services"],
       "dependsOrder": "sequence"
     },
     {
