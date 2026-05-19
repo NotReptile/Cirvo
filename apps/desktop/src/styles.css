@@ -636,6 +636,29 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .pending-remove { padding: 0 6px; font-size: 12px; }
 
+.drop-zone {
+  position: absolute;
+  inset: 12px;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  pointer-events: none; /* события ловим на .content, оверлей не должен забирать их */
+  backdrop-filter: blur(2px);
+}
+.drop-zone[hidden] { display: none; }
+.drop-zone-inner {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-elev);
+  padding: 12px 20px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
 .attachments {
   display: flex;
   flex-direction: column;

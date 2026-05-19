@@ -4,6 +4,9 @@ import type { ApiError, HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { icon } from "./icons";
 
+// Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
+const MAX_ATTACHMENTS = 10;
+
 interface Me {
   id: string;
   email: string;
@@ -992,6 +995,9 @@ function renderChannelView(channel: Channel): string {
         ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
       </div>
     </header>
+    ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
+      <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
+    </div>` : ""}
     <div id="message-list" class="message-list">
       ${renderMessagesWithDivider()}
     </div>
@@ -1000,9 +1006,9 @@ function renderChannelView(channel: Channel): string {
     ${renderReplyBar()}
     <div id="mention-popup" class="mention-popup" hidden></div>
     <form id="send-form" class="send-form">
-      <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файл">
+      <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
         📎
-        <input type="file" id="attach-input" hidden ${canSend ? "" : "disabled"} />
+        <input type="file" id="attach-input" multiple hidden ${canSend ? "" : "disabled"} />
       </label>
       <input
         name="body"
@@ -1147,6 +1153,83 @@ function attachVoiceVideoStreams(): void {
   for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-call-remote]")) {
     if (el.srcObject !== callRemote) el.srcObject = callRemote;
   }
+}
+
+async function uploadFiles(files: File[]): Promise<void> {
+  if (files.length === 0) return;
+  const slotsLeft = MAX_ATTACHMENTS - state.pendingUploads.length;
+  if (slotsLeft <= 0) {
+    state.status = `Достигнут лимит вложений (${MAX_ATTACHMENTS}).`;
+    render();
+    return;
+  }
+  let truncated = false;
+  if (files.length > slotsLeft) {
+    files = files.slice(0, slotsLeft);
+    truncated = true;
+  }
+  state.uploadInFlight = true;
+  render();
+  const results = await Promise.allSettled(
+    files.map((f) => httpClient.uploadFile<PendingUpload>("/api/v1/uploads", f))
+  );
+  const uploaded: PendingUpload[] = [];
+  let firstError: unknown = null;
+  for (const r of results) {
+    if (r.status === "fulfilled") uploaded.push(r.value);
+    else if (firstError === null) firstError = r.reason;
+  }
+  if (uploaded.length > 0) {
+    state.pendingUploads = [...state.pendingUploads, ...uploaded];
+  }
+  if (firstError) {
+    state.status = describeError(firstError);
+  } else if (truncated) {
+    state.status = `Часть файлов отброшена — лимит ${MAX_ATTACHMENTS} вложений.`;
+  }
+  state.uploadInFlight = false;
+  render();
+}
+
+function attachDropZoneHandlers(): void {
+  const content = rootEl.querySelector<HTMLElement>("main.content");
+  const zone = rootEl.querySelector<HTMLDivElement>("#drop-zone");
+  if (!content || !zone) return;
+  let depth = 0;
+  const show = () => { zone.hidden = false; };
+  const hide = () => { depth = 0; zone.hidden = true; };
+  content.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth++;
+    show();
+  });
+  content.addEventListener("dragover", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  content.addEventListener("dragleave", (e) => {
+    if (!hasFiles(e)) return;
+    depth--;
+    if (depth <= 0) hide();
+  });
+  content.addEventListener("drop", async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    hide();
+    const files = e.dataTransfer ? Array.from(e.dataTransfer.files) : [];
+    if (files.length > 0) await uploadFiles(files);
+  });
+}
+
+function hasFiles(e: DragEvent): boolean {
+  const types = e.dataTransfer?.types;
+  if (!types) return false;
+  for (let i = 0; i < types.length; i++) {
+    if (types[i] === "Files") return true;
+  }
+  return false;
 }
 
 function renderPendingUploads(): string {
@@ -1966,21 +2049,13 @@ function attachShellHandlers(): void {
 
   rootEl.querySelector<HTMLInputElement>("#attach-input")?.addEventListener("change", async (e) => {
     const target = e.currentTarget as HTMLInputElement;
-    const file = target.files && target.files[0];
+    const files = target.files ? Array.from(target.files) : [];
     target.value = "";
-    if (!file) return;
-    state.uploadInFlight = true;
-    render();
-    try {
-      const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
-      state.pendingUploads = [...state.pendingUploads, uploaded];
-    } catch (err) {
-      state.status = describeError(err);
-    } finally {
-      state.uploadInFlight = false;
-      render();
-    }
+    if (files.length === 0) return;
+    await uploadFiles(files);
   });
+
+  attachDropZoneHandlers();
 
   rootEl.querySelectorAll<HTMLButtonElement>(".pending-remove").forEach((btn) => {
     btn.addEventListener("click", () => {
