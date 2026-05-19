@@ -13,6 +13,7 @@ vendor/
 .env.local
 .env.*.local
 apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
 services/**/bin/
 *.exe
 *.test
