@@ -5,6 +5,10 @@ description = "RuCord desktop shell"
 authors = ["RuCord"]
 edition = "2021"
 
+[lib]
+name = "rucord_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
