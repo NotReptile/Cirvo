@@ -10,6 +10,8 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 type Container struct {
@@ -20,5 +22,6 @@ type Container struct {
 	Publisher   *realtimebus.Publisher
 	ObjectStore *objectstore.Client
 	Limiter     *ratelimit.Limiter
+	Settings    *serversettings.Provider
 	CORS        func(http.Handler) http.Handler
 }

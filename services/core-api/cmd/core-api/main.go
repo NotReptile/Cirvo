@@ -23,6 +23,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/app"
 	"github.com/NotReptile/RuCord/services/core-api/internal/bootstrap"
 	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 const version = "0.1.0"
@@ -68,6 +69,7 @@ func main() {
 	}
 
 	limiter := ratelimit.New(redisClient.Client)
+	settings := serversettings.NewProvider(db)
 
 	container := deps.Container{
 		Logger:      logger,
@@ -77,6 +79,7 @@ func main() {
 		Publisher:   publisher,
 		ObjectStore: objectStore,
 		Limiter:     limiter,
+		Settings:    settings,
 		CORS:        sharedhttp.CORS(parseCORSOrigins(os.Getenv("RUCORD_CORS_ORIGINS"))),
 	}
 

@@ -17,15 +17,17 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 type Module struct {
-	db     *postgres.Pool
-	logger *slog.Logger
+	db       *postgres.Pool
+	settings *serversettings.Provider
+	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, logger *slog.Logger) *Module {
-	return &Module{db: db, logger: logger}
+func NewModule(db *postgres.Pool, settings *serversettings.Provider, logger *slog.Logger) *Module {
+	return &Module{db: db, settings: settings, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -149,6 +151,19 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" || len(req.Name) > 64 {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "name must be 1-64 chars")
 		return
+	}
+
+	// D.1: лимит каналов на воркспейс.
+	if m.settings != nil {
+		snap := m.settings.Get(r.Context())
+		if snap.MaxChannelsPerWorkspace > 0 {
+			var n int
+			if err := m.db.QueryRow(r.Context(),
+				`select count(*) from channels where workspace_id = $1`, workspaceID).Scan(&n); err == nil && n >= snap.MaxChannelsPerWorkspace {
+				sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "channel limit reached for this workspace")
+				return
+			}
+		}
 	}
 
 	tx, err := m.db.Begin(r.Context())

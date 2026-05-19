@@ -103,8 +103,8 @@ func Run(ctx context.Context, db *postgres.Pool, logger *slog.Logger, cfg Config
 	channelID := uuid.New()
 
 	if _, err := tx.Exec(ctx,
-		`insert into users (id, email, username, display_name, password_hash, created_at, updated_at)
-		 values ($1, $2, $3, nullif($4, ''), $5, $6, $6)`,
+		`insert into users (id, email, username, display_name, password_hash, is_root, created_at, updated_at)
+		 values ($1, $2, $3, nullif($4, ''), $5, true, $6, $6)`,
 		userID, cfg.Email, cfg.Username, cfg.DisplayName, hash, now,
 	); err != nil {
 		return fmt.Errorf("insert user: %w", err)

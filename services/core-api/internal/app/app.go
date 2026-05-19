@@ -15,6 +15,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/profile"
+	servermod "github.com/NotReptile/RuCord/services/core-api/internal/modules/server"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/system"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/voice"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
@@ -48,18 +49,19 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 
 	server.registerBaseRoutes()
 	server.registerModules(
-		auth.NewModule(container.DB, container.JWT, container.Limiter, container.Logger),
+		auth.NewModule(container.DB, container.JWT, container.Limiter, container.Settings, container.Logger),
 		call.NewModule(container.DB, container.Publisher, container.Logger),
 		profile.NewModule(container.DB, container.Logger),
-		workspace.NewModule(container.DB, container.Logger),
-		channel.NewModule(container.DB, container.Logger),
-		message.NewModule(container.DB, container.Publisher, container.Logger),
+		workspace.NewModule(container.DB, container.Settings, container.Logger),
+		channel.NewModule(container.DB, container.Settings, container.Logger),
+		message.NewModule(container.DB, container.Publisher, container.Settings, container.Logger),
 		notification.NewModule(container.DB, container.Logger),
-		attachment.NewModule(container.DB, container.ObjectStore, container.Limiter, container.Logger),
+		attachment.NewModule(container.DB, container.ObjectStore, container.Limiter, container.Settings, container.Logger),
 		invite.NewModule(container.DB, container.Limiter, container.Logger),
 		voice.NewModule(container.DB, container.Publisher, container.Logger),
 		audit.NewModule(container.DB),
 		ice.NewModule(),
+		servermod.NewModule(container.DB, container.Settings, container.Logger),
 		system.NewModule(),
 	)
 

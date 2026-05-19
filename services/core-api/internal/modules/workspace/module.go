@@ -18,6 +18,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 const (
@@ -30,12 +31,13 @@ const (
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 type Module struct {
-	db     *postgres.Pool
-	logger *slog.Logger
+	db       *postgres.Pool
+	settings *serversettings.Provider
+	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, logger *slog.Logger) *Module {
-	return &Module{db: db, logger: logger}
+func NewModule(db *postgres.Pool, settings *serversettings.Provider, logger *slog.Logger) *Module {
+	return &Module{db: db, settings: settings, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -107,6 +109,18 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Name == "" || len(req.Name) > 128 {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "name must be 1-128 chars")
 		return
+	}
+
+	// D.1: server-wide лимит на общее число воркспейсов.
+	if m.settings != nil {
+		snap := m.settings.Get(r.Context())
+		if snap.MaxWorkspaces > 0 {
+			var n int
+			if err := m.db.QueryRow(r.Context(), `select count(*) from workspaces`).Scan(&n); err == nil && n >= snap.MaxWorkspaces {
+				sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "workspace limit reached on this server")
+				return
+			}
+		}
 	}
 
 	tx, err := m.db.Begin(r.Context())

@@ -25,6 +25,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 const (
@@ -91,11 +92,21 @@ const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body,
 type Module struct {
 	db        *postgres.Pool
 	publisher *realtimebus.Publisher
+	settings  *serversettings.Provider
 	logger    *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, logger *slog.Logger) *Module {
-	return &Module{db: db, publisher: publisher, logger: logger}
+func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, settings *serversettings.Provider, logger *slog.Logger) *Module {
+	return &Module{db: db, publisher: publisher, settings: settings, logger: logger}
+}
+
+// bodyLimit возвращает текущий лимит тела сообщения в байтах. 0 = безлимит.
+// При отсутствии Provider (старые тесты) — fallback на исторический maxBodyChars.
+func (m *Module) bodyLimit(r *http.Request) int {
+	if m.settings == nil {
+		return maxBodyChars
+	}
+	return m.settings.Get(r.Context()).MaxMessageBytes
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -280,7 +291,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "body or attachments are required")
 		return
 	}
-	if len(req.Body) > maxBodyChars {
+	if limit := m.bodyLimit(r); limit > 0 && len(req.Body) > limit {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "body too long")
 		return
 	}
@@ -568,7 +579,7 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "body must not be empty")
 		return
 	}
-	if len(req.Body) > maxBodyChars {
+	if limit := m.bodyLimit(r); limit > 0 && len(req.Body) > limit {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "body too long")
 		return
 	}

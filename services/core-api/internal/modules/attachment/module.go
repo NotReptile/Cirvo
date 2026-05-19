@@ -22,6 +22,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 const (
@@ -40,14 +41,15 @@ var (
 var safeFilenameRE = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 type Module struct {
-	db      *postgres.Pool
-	store   *objectstore.Client
-	limiter *ratelimit.Limiter
-	logger  *slog.Logger
+	db       *postgres.Pool
+	store    *objectstore.Client
+	limiter  *ratelimit.Limiter
+	settings *serversettings.Provider
+	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, store *objectstore.Client, limiter *ratelimit.Limiter, logger *slog.Logger) *Module {
-	return &Module{db: db, store: store, limiter: limiter, logger: logger}
+func NewModule(db *postgres.Pool, store *objectstore.Client, limiter *ratelimit.Limiter, settings *serversettings.Provider, logger *slog.Logger) *Module {
+	return &Module{db: db, store: store, limiter: limiter, settings: settings, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -81,7 +83,15 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := authctx.MustUserID(r.Context())
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes+4096)
+	// D.1: размер аплоада берётся из server_settings.max_attachment_bytes.
+	// 0 / отсутствие Provider'а — fallback на исторический maxUploadBytes.
+	uploadLimit := int64(maxUploadBytes)
+	if m.settings != nil {
+		if v := m.settings.Get(r.Context()).MaxAttachmentBytes; v > 0 {
+			uploadLimit = v
+		}
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, uploadLimit+4096)
 	if err := r.ParseMultipartForm(streamCopyBuf); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed multipart body")
 		return
@@ -92,7 +102,7 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	if header.Size <= 0 || header.Size > maxUploadBytes {
+	if header.Size <= 0 || header.Size > uploadLimit {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "file too large or empty")
 		return
 	}

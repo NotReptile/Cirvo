@@ -38,6 +38,7 @@ import (
 
 	"github.com/NotReptile/RuCord/services/core-api/internal/app"
 	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 var (
@@ -97,6 +98,7 @@ func TestMain(m *testing.M) {
 			Publisher:   realtimebus.NewPublisher(redisClient),
 			ObjectStore: objectStore,
 			Limiter:     ratelimit.New(redisClient.Client),
+			Settings:    serversettings.NewProvider(db),
 			CORS:        sharedhttp.CORS([]string{"http://localhost"}),
 		}
 		server := app.NewServer("core-api", "smoke", container)
@@ -215,6 +217,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("unread_counts", testUnreadCounts)
 	t.Run("message_search", testMessageSearch)
 	t.Run("notifications", testNotifications)
+	t.Run("server_settings", testServerSettings)
 }
 
 // drainNotificationJobs прогоняет все pending-задачи из notification_jobs
@@ -1180,6 +1183,81 @@ func testAttachmentUpload(t *testing.T) {
 	code, raw = doReq(t, http.MethodGet, "/api/v1/media/"+up.ID, stranger.AccessToken, nil)
 	if code != http.StatusNotFound {
 		t.Fatalf("download as stranger: expected 404, got %d %s", code, string(raw))
+	}
+}
+
+// testServerSettings — D.1. Проверяем root-only доступ, GET/PUT и что
+// сниженный max_message_bytes действительно ловит сообщение в handleCreate.
+func testServerSettings(t *testing.T) {
+	root := registerFresh(t)
+	regular := registerFresh(t)
+
+	// Принудительно делаем root'ом — в shared smoke-БД мог уже жить
+	// другой root от прошлого теста / bootstrap. is_root остаётся
+	// у первого юзера; чтобы детерминированно проверить ручки, явно
+	// промоутим обоих в нужное состояние через прямой UPDATE.
+	ctx := context.Background()
+	if _, err := dbPool.Exec(ctx, `update users set is_root = (id = $1) where id in ($1, $2)`,
+		root.User.ID, regular.User.ID); err != nil {
+		t.Fatalf("promote root: %v", err)
+	}
+
+	// regular: GET → 404 (не палим существование ручки).
+	code, raw := doReq(t, http.MethodGet, "/api/v1/server/settings", regular.AccessToken, nil)
+	if code != http.StatusNotFound {
+		t.Fatalf("non-root GET: expected 404, got %d %s", code, string(raw))
+	}
+	code, raw = doReq(t, http.MethodPut, "/api/v1/server/settings", regular.AccessToken, map[string]any{"maxUsers": 999})
+	if code != http.StatusNotFound {
+		t.Fatalf("non-root PUT: expected 404, got %d %s", code, string(raw))
+	}
+
+	// root: GET → 200, defaults применены (max_message_bytes=8000 из миграции).
+	code, raw = doReq(t, http.MethodGet, "/api/v1/server/settings", root.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("root GET: expected 200, got %d %s", code, string(raw))
+	}
+	var view struct {
+		MaxMessageBytes  int  `json:"maxMessageBytes"`
+		RegistrationOpen bool `json:"registrationOpen"`
+	}
+	mustJSON(t, raw, &view)
+	if view.MaxMessageBytes <= 0 {
+		t.Fatalf("default maxMessageBytes should be positive, got %d", view.MaxMessageBytes)
+	}
+
+	// root: PUT — снижаем лимит до 5 байт, чтобы любое содержательное
+	// сообщение упёрлось в проверку.
+	code, raw = doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken, map[string]any{"maxMessageBytes": 5})
+	if code != http.StatusOK {
+		t.Fatalf("root PUT: expected 200, got %d %s", code, string(raw))
+	}
+	mustJSON(t, raw, &view)
+	if view.MaxMessageBytes != 5 {
+		t.Fatalf("PUT didn't persist: maxMessageBytes=%d", view.MaxMessageBytes)
+	}
+
+	// Provider кешируется TTL=30s — для smoke надо обойти. invalidate уже
+	// произошёл при PUT, так что следующий запрос увидит новое значение.
+	wsID := createWorkspace(t, root.AccessToken)
+	chID := createTextChannel(t, root.AccessToken, wsID)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", root.AccessToken,
+		map[string]any{"body": "way too long body"})
+	if code != http.StatusBadRequest {
+		t.Fatalf("message with body over limit: expected 400, got %d %s", code, string(raw))
+	}
+
+	// Возвращаем разумный лимит, чтобы не сломать другие тесты при
+	// повторном прогоне (smoke не чистит БД между запусками локально).
+	code, raw = doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken, map[string]any{"maxMessageBytes": 8000})
+	if code != http.StatusOK {
+		t.Fatalf("root PUT restore: %d %s", code, string(raw))
+	}
+
+	// Валидация: отрицательное значение → 400.
+	code, raw = doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken, map[string]any{"maxUsers": -1})
+	if code != http.StatusBadRequest {
+		t.Fatalf("negative maxUsers: expected 400, got %d %s", code, string(raw))
 	}
 }
 

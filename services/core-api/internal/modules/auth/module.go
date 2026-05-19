@@ -22,6 +22,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
 // Лимиты anti brute-force на auth-эндпоинтах. Считаются per-IP (за Caddy —
@@ -41,14 +42,15 @@ const (
 var usernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
 
 type Module struct {
-	db      *postgres.Pool
-	jwt     *jwtauth.Issuer
-	limiter *ratelimit.Limiter
-	logger  *slog.Logger
+	db       *postgres.Pool
+	jwt      *jwtauth.Issuer
+	limiter  *ratelimit.Limiter
+	settings *serversettings.Provider
+	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, jwt *jwtauth.Issuer, limiter *ratelimit.Limiter, logger *slog.Logger) *Module {
-	return &Module{db: db, jwt: jwt, limiter: limiter, logger: logger}
+func NewModule(db *postgres.Pool, jwt *jwtauth.Issuer, limiter *ratelimit.Limiter, settings *serversettings.Provider, logger *slog.Logger) *Module {
+	return &Module{db: db, jwt: jwt, limiter: limiter, settings: settings, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -96,6 +98,25 @@ type userView struct {
 }
 
 func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
+	// D.1: server-wide лимиты. registration_open=false — закрытый инстанс
+	// (но bootstrap'у env всё ещё разрешит создать первого пользователя,
+	// до миграции это поле умолчанием true). max_users=0 — без лимита.
+	if m.settings != nil {
+		snap := m.settings.Get(r.Context())
+		if !snap.RegistrationOpen {
+			// 403, не 404 — admin-аудитория должна понимать причину.
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "registration is closed on this server")
+			return
+		}
+		if snap.MaxUsers > 0 {
+			var n int
+			if err := m.db.QueryRow(r.Context(), `select count(*) from users`).Scan(&n); err == nil && n >= snap.MaxUsers {
+				sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "user limit reached on this server")
+				return
+			}
+		}
+	}
+
 	var req registerRequest
 	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
@@ -134,9 +155,14 @@ func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
+	// Первый зарегистрированный = root-owner инстанса (если bootstrap
+	// через env не запускали). Проверяем под транзакцией, чтобы не было
+	// race с одновременным insert.
 	_, err = tx.Exec(r.Context(),
-		`insert into users (id, email, username, display_name, password_hash, created_at, updated_at)
-		 values ($1, $2, $3, nullif($4, ''), $5, $6, $6)`,
+		`insert into users (id, email, username, display_name, password_hash, is_root, created_at, updated_at)
+		 values ($1, $2, $3, nullif($4, ''), $5,
+		         not exists (select 1 from users where is_root = true),
+		         $6, $6)`,
 		userID, req.Email, req.Username, req.DisplayName, passwordHash, now,
 	)
 	if err != nil {
