@@ -137,6 +137,12 @@ interface AppState {
   voicePeek: VoicePeek | null;
   replyingTo: ReplySnippet | null;
   mentionAutocomplete: MentionAutocomplete | null;
+  // C.4: smart scroll + lazy pagination
+  messagesCursor: string | null;       // следующий before= для подгрузки старых
+  messagesHasMore: boolean;
+  messagesLoadingOlder: boolean;
+  stickToBottom: boolean;              // юзер у нижней границы → autoscroll на новые
+  restoreScrollBottom: number | null;  // one-shot: после render() восстановить «расстояние до низа»
 }
 
 interface VoicePeekParticipant {
@@ -179,7 +185,12 @@ const state: AppState = {
   voiceSnapshot: null,
   voicePeek: null,
   replyingTo: null,
-  mentionAutocomplete: null
+  mentionAutocomplete: null,
+  messagesCursor: null,
+  messagesHasMore: false,
+  messagesLoadingOlder: false,
+  stickToBottom: true,
+  restoreScrollBottom: null
 };
 
 const mediaBlobCache = new Map<string, string>();
@@ -294,6 +305,11 @@ async function selectChannel(id: string): Promise<void> {
   state.pickerForMessageId = null;
   state.voicePeek = null;
   state.replyingTo = null;
+  state.messagesCursor = null;
+  state.messagesHasMore = false;
+  state.messagesLoadingOlder = false;
+  state.stickToBottom = true;
+  state.restoreScrollBottom = null;
   render();
   const ch = state.channels.find((c) => c.id === id);
   if (ch?.kind === "voice") {
@@ -311,9 +327,46 @@ async function selectChannel(id: string): Promise<void> {
     }
     return;
   }
-  const data = await httpClient.get<{ items: Message[] }>(`/api/v1/channels/${id}/messages?limit=50`);
+  const data = await httpClient.get<{ items: Message[]; nextCursor?: string }>(
+    `/api/v1/channels/${id}/messages?limit=50`
+  );
+  if (state.selectedChannelId !== id) return; // юзер уже сменил канал
   state.messages = (data.items ?? []).slice().reverse();
+  state.messagesCursor = data.nextCursor || null;
+  state.messagesHasMore = !!data.nextCursor;
+  state.stickToBottom = true;
   render();
+}
+
+async function loadOlderMessages(channelId: string, list: HTMLDivElement): Promise<void> {
+  if (state.messagesLoadingOlder || !state.messagesCursor) return;
+  const cursor = state.messagesCursor;
+  // Сохраняем расстояние от низа списка ДО prepend — после ре-рендера
+  // выставим scrollTop так, чтобы видимая «нижняя граница» осталась той же.
+  const savedBottomOffset = list.scrollHeight - list.scrollTop - list.clientHeight;
+  state.messagesLoadingOlder = true;
+  try {
+    const data = await httpClient.get<{ items: Message[]; nextCursor?: string }>(
+      `/api/v1/channels/${channelId}/messages?limit=50&before=${encodeURIComponent(cursor)}`
+    );
+    if (state.selectedChannelId !== channelId) return;
+    const older = (data.items ?? []).slice().reverse();
+    if (older.length === 0) {
+      state.messagesHasMore = false;
+      state.messagesCursor = null;
+      return;
+    }
+    state.messages = [...older, ...state.messages];
+    state.messagesCursor = data.nextCursor || null;
+    state.messagesHasMore = !!data.nextCursor;
+    state.restoreScrollBottom = savedBottomOffset;
+    state.stickToBottom = false;
+    render();
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    state.messagesLoadingOlder = false;
+  }
 }
 
 async function loadInvites(): Promise<void> {
@@ -474,6 +527,15 @@ function render(): void {
   if (!httpClient.getTokens()) {
     renderAuth();
     return;
+  }
+  // C.4: фиксируем bottom-offset ДО уничтожения старого message-list,
+  // чтобы после re-render позиция чтения не уехала. Если значение уже
+  // задано (loadOlderMessages с pre-prepend высотой) — не перетираем.
+  if (!state.stickToBottom && state.restoreScrollBottom === null) {
+    const oldList = rootEl.querySelector<HTMLDivElement>("#message-list");
+    if (oldList) {
+      state.restoreScrollBottom = oldList.scrollHeight - oldList.scrollTop - oldList.clientHeight;
+    }
   }
   renderShell();
 }
@@ -1908,6 +1970,7 @@ function attachShellHandlers(): void {
     const replyingSnapshot = state.replyingTo;
     state.pendingUploads = [];
     state.replyingTo = null;
+    state.stickToBottom = true; // отправил — едем вниз показать свой месседж
     render();
     try {
       const created = await httpClient.post<Message>(`/api/v1/channels/${state.selectedChannelId}/messages`, {
@@ -1969,7 +2032,33 @@ function attachShellHandlers(): void {
   });
 
   const list = rootEl.querySelector<HTMLDivElement>("#message-list");
-  if (list) list.scrollTop = list.scrollHeight;
+  if (list) {
+    // C.4: восстановление позиции либо приклеивание к низу.
+    if (state.restoreScrollBottom !== null) {
+      list.scrollTop = list.scrollHeight - list.clientHeight - state.restoreScrollBottom;
+      state.restoreScrollBottom = null;
+    } else if (state.stickToBottom) {
+      list.scrollTop = list.scrollHeight;
+    }
+    // После выставления scrollTop вешаем listener — иначе наш же
+    // программный скролл триггерит пересчёт stickToBottom от нулевой высоты.
+    list.addEventListener("scroll", onMessageListScroll);
+  }
+}
+
+function onMessageListScroll(e: Event): void {
+  const list = e.currentTarget as HTMLDivElement;
+  const bottomDistance = list.scrollHeight - list.scrollTop - list.clientHeight;
+  state.stickToBottom = bottomDistance < 80;
+  // Подгружаем старые когда юзер близок к верху и есть что грузить.
+  if (
+    list.scrollTop < 200 &&
+    state.messagesHasMore &&
+    !state.messagesLoadingOlder &&
+    state.selectedChannelId
+  ) {
+    void loadOlderMessages(state.selectedChannelId, list);
+  }
 }
 
 // ---- mention popup ---------------------------------------------------------
