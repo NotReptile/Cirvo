@@ -14,6 +14,8 @@ const (
 	ActionWorkspaceCreated     = "workspace.created"
 	ActionWorkspaceMemberAdded = "workspace.member.added"
 	ActionChannelCreated       = "channel.created"
+	ActionChannelUpdated       = "channel.updated"
+	ActionChannelDeleted       = "channel.deleted"
 	ActionChannelMemberAdded   = "channel.member.added"
 	ActionChannelMemberRemoved = "channel.member.removed"
 	ActionMessageDeleted       = "message.deleted"

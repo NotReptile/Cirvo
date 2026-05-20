@@ -1,6 +1,8 @@
 package channel
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
@@ -21,24 +24,45 @@ import (
 )
 
 type Module struct {
-	db       *postgres.Pool
-	settings *serversettings.Provider
-	logger   *slog.Logger
+	db        *postgres.Pool
+	settings  *serversettings.Provider
+	publisher *realtimebus.Publisher
+	logger    *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, settings *serversettings.Provider, logger *slog.Logger) *Module {
-	return &Module{db: db, settings: settings, logger: logger}
+func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, settings *serversettings.Provider, logger *slog.Logger) *Module {
+	return &Module{db: db, settings: settings, publisher: publisher, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/channels", m.handleList)
 	router.Protected("POST /api/v1/workspaces/{workspaceId}/channels", m.handleCreate)
 	router.Protected("GET /api/v1/channels/{channelId}", m.handleGet)
+	router.Protected("PATCH /api/v1/channels/{channelId}", m.handleUpdate)
+	router.Protected("DELETE /api/v1/channels/{channelId}", m.handleDelete)
 	router.Protected("GET /api/v1/channels/{channelId}/members", m.handleListMembers)
 	router.Protected("POST /api/v1/channels/{channelId}/members", m.handleAddMember)
 	router.Protected("DELETE /api/v1/channels/{channelId}/members/{userId}", m.handleRemoveMember)
 	router.Protected("GET /api/v1/channels/{channelId}/permissions", m.handleGetPermissions)
 	router.Protected("PUT /api/v1/channels/{channelId}/permissions", m.handleUpdatePermissions)
+}
+
+// publish — фан-аут в workspace, channelID опционально (для delete/update
+// шлём, чтобы клиенты могли сразу заматчить локальный state по id).
+func (m *Module) publish(eventName string, workspaceID uuid.UUID, channelID string, payload any) {
+	if m.publisher == nil {
+		return
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+		Event:       eventName,
+		WorkspaceID: workspaceID.String(),
+		ChannelID:   channelID,
+		Payload:     raw,
+	})
 }
 
 type channelView struct {
@@ -211,7 +235,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		TargetID:    channelID.String(),
 	})
 
-	sharedhttp.WriteJSON(w, http.StatusCreated, channelView{
+	view := channelView{
 		ID:          channelID.String(),
 		WorkspaceID: workspaceID.String(),
 		Kind:        req.Kind,
@@ -220,7 +244,154 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		IsPrivate:   req.IsPrivate,
 		Position:    0,
 		CreatedAt:   now,
+	}
+	m.publish("channel.created", workspaceID, channelID.String(), view)
+	sharedhttp.WriteJSON(w, http.StatusCreated, view)
+}
+
+type updateRequest struct {
+	Name      *string `json:"name"`
+	Topic     *string `json:"topic"`
+	IsPrivate *bool   `json:"isPrivate"`
+}
+
+// handleUpdate — PATCH /api/v1/channels/{id}. Изменяем name/topic/isPrivate.
+// kind менять нельзя: это поменяло бы UX-контракт (voice vs text), а
+// связанные с типом записи (channel_participants для voice) остались бы
+// неконсистентны.
+func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	channelID, ok := parseUUID(r, "channelId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid channel id")
+		return
+	}
+	scope, ok := Resolve(r.Context(), m.db, channelID, userID)
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
+		return
+	}
+	_, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, userID, permission.ChannelUpdate)
+	if !allowed {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
+		return
+	}
+
+	var req updateRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	if req.Name != nil {
+		trimmed := strings.TrimSpace(*req.Name)
+		if trimmed == "" || len(trimmed) > 64 {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "name must be 1-64 chars")
+			return
+		}
+		req.Name = &trimmed
+	}
+	if req.Topic != nil {
+		trimmed := strings.TrimSpace(*req.Topic)
+		if len(trimmed) > 256 {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "topic must be ≤256 chars")
+			return
+		}
+		req.Topic = &trimmed
+	}
+
+	now := time.Now().UTC()
+	_, err := m.db.Exec(r.Context(),
+		`update channels set
+		   name       = coalesce($2, name),
+		   topic      = case when $3::bool then nullif($4, '') else topic end,
+		   is_private = coalesce($5, is_private),
+		   updated_at = $6
+		 where id = $1`,
+		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+
+	// Тянем актуальный state обратно, чтобы и в response, и в realtime
+	// уехала одна и та же канонизированная версия (для clients без race'а
+	// между двумя одновременными PATCH'ами).
+	var v channelView
+	err = m.db.QueryRow(r.Context(),
+		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at
+		 from channels where id = $1`,
+		channelID,
+	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload channel")
+		return
+	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     userID,
+		WorkspaceID: scope.WorkspaceID,
+		Action:      auditlog.ActionChannelUpdated,
+		TargetType:  "channel",
+		TargetID:    channelID.String(),
 	})
+	m.publish("channel.updated", scope.WorkspaceID, channelID.String(), v)
+	sharedhttp.WriteJSON(w, http.StatusOK, v)
+}
+
+func derefString(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// handleDelete — каскад на messages/reactions/attachments-links/members
+// через существующие FK on delete cascade. media_objects остаются (orphan),
+// retention.Sweep заберёт их через час grace-периодом.
+func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	channelID, ok := parseUUID(r, "channelId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid channel id")
+		return
+	}
+	scope, ok := Resolve(r.Context(), m.db, channelID, userID)
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
+		return
+	}
+	_, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, userID, permission.ChannelDelete)
+	if !allowed {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role")
+		return
+	}
+
+	// Audit ДО delete, чтобы actor+target ссылки ещё были валидны на момент
+	// записи (consistent с server/admin.go delete user pattern).
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     userID,
+		WorkspaceID: scope.WorkspaceID,
+		Action:      auditlog.ActionChannelDeleted,
+		TargetType:  "channel",
+		TargetID:    channelID.String(),
+	})
+
+	tag, err := m.db.Exec(r.Context(), `delete from channels where id = $1`, channelID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not delete channel")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not found")
+		return
+	}
+
+	m.publish("channel.deleted", scope.WorkspaceID, channelID.String(), map[string]string{
+		"channelId":   channelID.String(),
+		"workspaceId": scope.WorkspaceID.String(),
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {

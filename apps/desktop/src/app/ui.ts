@@ -302,6 +302,9 @@ interface AppState {
   admin: AdminState;
   // D.4: channel permission overrides
   channelSettings: ChannelSettingsState;
+  // Контекстное меню канала: ПКМ на элементе списка → плавающее меню
+  // (Переименовать / Удалить / Скопировать ID). null = меню закрыто.
+  channelMenu: { channelId: string; x: number; y: number } | null;
 }
 
 interface VoicePeekParticipant {
@@ -379,7 +382,8 @@ const state: AppState = {
     error: null,
     data: null,
     draft: {}
-  }
+  },
+  channelMenu: null
 };
 
 // LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
@@ -901,6 +905,37 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     });
     return;
   }
+  // Каналы (create/update/delete) приходят с workspaceID-routing'ом и
+  // ChannelID, но могут адресовать любой канал воркспейса — обрабатываем
+  // ДО фильтра по selectedChannelId, чтобы пришедший в фон новый канал
+  // тоже попал в sidebar.
+  if (event.event === "channel.created") {
+    const ch = event.payload as Channel;
+    if (ch.workspaceId !== state.selectedWorkspaceId) return;
+    if (state.channels.some((c) => c.id === ch.id)) return;
+    state.channels = [...state.channels, ch];
+    render();
+    return;
+  }
+  if (event.event === "channel.updated") {
+    const ch = event.payload as Channel;
+    if (ch.workspaceId !== state.selectedWorkspaceId) return;
+    state.channels = state.channels.map((c) => (c.id === ch.id ? ch : c));
+    render();
+    return;
+  }
+  if (event.event === "channel.deleted") {
+    const p = event.payload as { channelId: string; workspaceId: string };
+    if (p.workspaceId !== state.selectedWorkspaceId) return;
+    state.channels = state.channels.filter((c) => c.id !== p.channelId);
+    if (state.selectedChannelId === p.channelId) {
+      state.selectedChannelId = null;
+      state.messages = [];
+    }
+    delete state.unread[p.channelId];
+    render();
+    return;
+  }
   // C.5: события для не-активных каналов обрабатываем отдельно (unread).
   if (event.channelId && event.channelId !== state.selectedChannelId) {
     if (event.event === "message.created") {
@@ -1290,10 +1325,29 @@ function renderShell(): void {
       ${state.status ? `<div class="status-bar">${escapeHtml(state.status)}</div>` : ""}
       ${renderModal()}
       ${renderCallOverlay()}
+      ${renderChannelMenu()}
     </div>
   `;
   attachShellHandlers();
   attachVoiceVideoStreams();
+}
+
+function renderChannelMenu(): string {
+  const menu = state.channelMenu;
+  if (!menu) return "";
+  const ch = state.channels.find((c) => c.id === menu.channelId);
+  if (!ch) return "";
+  const ws = state.workspaces.find((w) => w.id === ch.workspaceId);
+  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  return `
+    <div class="channel-menu-backdrop" data-channel-menu-close></div>
+    <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
+      <div class="channel-menu-header">${escapeHtml(channelPrefix(ch))} ${escapeHtml(ch.name)}</div>
+      ${canManage ? `<button class="channel-menu-item" data-channel-action="rename" data-id="${ch.id}">Переименовать</button>` : ""}
+      <button class="channel-menu-item" data-channel-action="copy-id" data-id="${ch.id}">Скопировать ID</button>
+      ${canManage ? `<button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">Удалить канал</button>` : ""}
+    </div>
+  `;
 }
 
 function renderCallOverlay(): string {
@@ -1391,6 +1445,8 @@ const AUDIT_ACTION_INFO: Record<string, { ru: string; icon: string }> = {
   "workspace.created": { ru: "создал воркспейс", icon: "🏠" },
   "workspace.member.added": { ru: "добавил участника", icon: "👥" },
   "channel.created": { ru: "создал канал", icon: "📁" },
+  "channel.updated": { ru: "изменил канал", icon: "✎" },
+  "channel.deleted": { ru: "удалил канал", icon: "🗑" },
   "channel.member.added": { ru: "добавил в канал", icon: "➕" },
   "channel.member.removed": { ru: "убрал из канала", icon: "➖" },
   "channel.permissions.updated": { ru: "обновил права канала", icon: "🔒" },
@@ -2652,6 +2708,82 @@ function attachShellHandlers(): void {
     li.addEventListener("click", () => {
       const id = li.dataset.ch;
       if (id && id !== state.selectedChannelId) void selectChannel(id);
+    });
+    li.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const id = li.dataset.ch;
+      if (!id) return;
+      // Меню рендерится absolute по координатам курсора; зажимаем по краям
+      // вьюпорта, чтобы не уехать за экран (ширина меню ~200px).
+      const x = Math.min(ev.clientX, window.innerWidth - 220);
+      const y = Math.min(ev.clientY, window.innerHeight - 160);
+      state.channelMenu = { channelId: id, x, y };
+      render();
+    });
+  });
+
+  rootEl.querySelector<HTMLElement>("[data-channel-menu-close]")?.addEventListener("click", () => {
+    state.channelMenu = null;
+    render();
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-channel-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.dataset.channelAction;
+      const id = btn.dataset.id;
+      if (!id || !action) return;
+      state.channelMenu = null;
+      const ch = state.channels.find((c) => c.id === id);
+      if (!ch) {
+        render();
+        return;
+      }
+      if (action === "copy-id") {
+        try {
+          await navigator.clipboard.writeText(id);
+          state.status = `ID канала #${ch.name} скопирован`;
+        } catch {
+          state.status = "Не удалось скопировать";
+        }
+        render();
+        return;
+      }
+      if (action === "rename") {
+        const next = window.prompt("Новое имя канала:", ch.name)?.trim();
+        if (!next || next === ch.name) {
+          render();
+          return;
+        }
+        try {
+          await httpClient.patch<Channel>(`/api/v1/channels/${id}`, { name: next });
+          // realtime channel.updated догонит локальный state, но если
+          // публикация не сработает (нет realtimebus в этой инстанции) —
+          // апдейтим оптимистично.
+          state.channels = state.channels.map((c) => (c.id === id ? { ...c, name: next } : c));
+        } catch (err) {
+          state.status = describeError(err);
+        }
+        render();
+        return;
+      }
+      if (action === "delete") {
+        if (!window.confirm(`Удалить канал #${ch.name}? История сообщений и вложения удалятся безвозвратно.`)) {
+          render();
+          return;
+        }
+        try {
+          await httpClient.del(`/api/v1/channels/${id}`);
+          state.channels = state.channels.filter((c) => c.id !== id);
+          if (state.selectedChannelId === id) {
+            state.selectedChannelId = null;
+            state.messages = [];
+          }
+        } catch (err) {
+          state.status = describeError(err);
+        }
+        render();
+        return;
+      }
     });
   });
 
