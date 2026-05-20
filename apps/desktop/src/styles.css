@@ -411,18 +411,36 @@ input:focus { outline: none; border-color: var(--accent); }
 .message {
   position: relative;
 }
+/* G.1.a: actions — overlay в правом верхнем углу сообщения, не в потоке.
+   Раньше .message-actions сидел inline в .message-meta и при hover пушил
+   .message-body вниз (кнопки выше шрифта meta). Discord-стиль: floating
+   панель с фоном, не влияет на layout. */
 .message-actions {
+  position: absolute;
+  top: -10px;
+  right: 12px;
   display: none;
-  gap: 4px;
-  margin-left: auto;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  z-index: 2;
 }
 .message:hover .message-actions {
   display: inline-flex;
 }
 .message-actions button {
-  padding: 2px 6px;
-  font-size: 11px;
+  padding: 3px 7px;
+  font-size: 13px;
   background: transparent;
+  border: 0;
+  border-radius: 4px;
+  line-height: 1;
+}
+.message-actions button:hover {
+  background: var(--bg);
 }
 
 .edit-form {

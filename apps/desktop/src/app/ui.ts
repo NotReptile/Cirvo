@@ -985,6 +985,61 @@ async function toggleReaction(messageId: string, emoji: string): Promise<void> {
   }
 }
 
+// G.2.a: список input/textarea, чьи value+selection+focus нужно сохранить
+// между ре-рендерами, чтобы фокус и набранный текст не терялись. Селекторы
+// уникальные в DOM на момент срабатывания render(). Не покрывает auth-форму:
+// её ре-рендеры триггерятся только переключением вкладки, что и должно
+// очищать поля.
+const PRESERVED_INPUT_SELECTORS = [
+  '#send-form input[name="body"]',
+  "#search-input",
+  "#admin-user-search"
+];
+
+interface InputSnapshot {
+  selector: string;
+  value: string;
+  selStart: number | null;
+  selEnd: number | null;
+  hadFocus: boolean;
+}
+
+function snapshotPreservedInputs(): InputSnapshot[] {
+  const out: InputSnapshot[] = [];
+  for (const sel of PRESERVED_INPUT_SELECTORS) {
+    const el = rootEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(sel);
+    if (!el) continue;
+    out.push({
+      selector: sel,
+      value: el.value,
+      selStart: el.selectionStart,
+      selEnd: el.selectionEnd,
+      hadFocus: document.activeElement === el
+    });
+  }
+  return out;
+}
+
+function restorePreservedInputs(snapshots: InputSnapshot[]): void {
+  for (const snap of snapshots) {
+    const el = rootEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(snap.selector);
+    if (!el) continue;
+    // Не затираем, если новый input уже содержит значение (например, программно
+    // очищенный composer после успешной отправки — там value="" намеренно).
+    if (snap.value && !el.value) {
+      el.value = snap.value;
+    }
+    if (snap.hadFocus) {
+      try {
+        el.focus({ preventScroll: true });
+        if (snap.selStart !== null && snap.selEnd !== null) {
+          el.setSelectionRange(snap.selStart, snap.selEnd);
+        }
+      } catch {}
+    }
+  }
+}
+
 function render(): void {
   if (!httpClient.getTokens()) {
     renderAuth();
@@ -999,7 +1054,9 @@ function render(): void {
       state.restoreScrollBottom = oldList.scrollHeight - oldList.scrollTop - oldList.clientHeight;
     }
   }
+  const inputSnap = snapshotPreservedInputs();
   renderShell();
+  restorePreservedInputs(inputSnap);
 }
 
 function renderAuth(): void {
@@ -2761,6 +2818,24 @@ function attachShellHandlers(): void {
       if (!target) return;
       ev.preventDefault();
       applyMentionPick(composerInput, mentionPopup, target.dataset.mentionUsername!);
+    });
+
+    // G.1.c: Ctrl+V вставка вложений из буфера. Любые file-items в
+    // clipboardData (картинка скриншота, скопированный файл из проводника) —
+    // прогоняем через uploadFiles. Текстовая вставка — стандартное поведение
+    // браузера, не трогаем (e.preventDefault не вызываем, если файлов нет).
+    composerInput.addEventListener("paste", (ev) => {
+      const items = ev.clipboardData?.items;
+      if (!items || items.length === 0) return;
+      const files: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind !== "file") continue;
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+      if (files.length === 0) return;
+      ev.preventDefault();
+      void uploadFiles(files);
     });
   }
 
