@@ -1040,6 +1040,38 @@ function restorePreservedInputs(snapshots: InputSnapshot[]): void {
   }
 }
 
+// Снимок уже загруженных image-слотов: data-media-url → innerHTML с <img>.
+// После innerHTML-перезаписи в renderShell() свежие .attach-image слоты
+// рендерятся как placeholder «Загрузка…», потом JS-loop ставит туда <img>
+// — отсюда мигание превью на каждый ре-рендер. Восстанавливаем innerHTML
+// сразу после renderShell(), чтобы browser не переразмечал и не
+// пере-декодировал картинку.
+function snapshotImageSlots(): Map<string, string> {
+  const out = new Map<string, string>();
+  const slots = rootEl.querySelectorAll<HTMLDivElement>(".attach-image[data-media-url]");
+  for (const slot of Array.from(slots)) {
+    const url = slot.dataset.mediaUrl;
+    if (!url) continue;
+    // Сохраняем только если внутри уже стоит готовый <img> — иначе нет смысла
+    // переносить placeholder, он и так нарисуется заново.
+    if (slot.querySelector("img")) {
+      out.set(url, slot.innerHTML);
+    }
+  }
+  return out;
+}
+
+function restoreImageSlots(snap: Map<string, string>): void {
+  if (snap.size === 0) return;
+  const slots = rootEl.querySelectorAll<HTMLDivElement>(".attach-image[data-media-url]");
+  for (const slot of Array.from(slots)) {
+    const url = slot.dataset.mediaUrl;
+    if (!url) continue;
+    const cached = snap.get(url);
+    if (cached) slot.innerHTML = cached;
+  }
+}
+
 function render(): void {
   if (!httpClient.getTokens()) {
     renderAuth();
@@ -1055,7 +1087,9 @@ function render(): void {
     }
   }
   const inputSnap = snapshotPreservedInputs();
+  const imageSnap = snapshotImageSlots();
   renderShell();
+  restoreImageSlots(imageSnap);
   restorePreservedInputs(inputSnap);
 }
 
@@ -2756,6 +2790,9 @@ function attachShellHandlers(): void {
   rootEl.querySelectorAll<HTMLDivElement>(".attach-image").forEach((slot) => {
     const url = slot.dataset.mediaUrl;
     if (!url) return;
+    // Если restoreImageSlots уже вернул сюда готовый <img> — не пересоздаём,
+    // иначе browser декодирует картинку заново и она мигает.
+    if (slot.querySelector("img")) return;
     const cached = mediaBlobCache.get(url);
     if (cached) {
       slot.innerHTML = `<img src="${cached}" alt="" />`;
@@ -2766,7 +2803,12 @@ function attachShellHandlers(): void {
         const blob = await httpClient.getBlob(url);
         const blobUrl = URL.createObjectURL(blob);
         mediaBlobCache.set(url, blobUrl);
-        slot.innerHTML = `<img src="${blobUrl}" alt="" />`;
+        // Между запросом и резолвом мог пройти ре-рендер — повторно
+        // выбираем slot по url, иначе пишем в осиротевший элемент.
+        const fresh = rootEl.querySelector<HTMLDivElement>(
+          `.attach-image[data-media-url="${CSS.escape(url)}"]`
+        );
+        (fresh ?? slot).innerHTML = `<img src="${blobUrl}" alt="" />`;
       } catch {
         slot.innerHTML = `<div class="attach-image-loader">Не удалось загрузить</div>`;
       }
