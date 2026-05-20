@@ -226,6 +226,7 @@ type memberView struct {
 	DisplayName string    `json:"displayName,omitempty"`
 	Role        string    `json:"role"`
 	JoinedAt    time.Time `json:"joinedAt"`
+	Online      bool      `json:"online"`
 }
 
 func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
@@ -240,8 +241,16 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// online — есть активная (не ревокированная) сессия с last_seen за
+	// последние 5 минут. Порог 5 минут совпадает с realtime presence-TTL.
 	rows, err := m.db.Query(r.Context(),
-		`select u.id, u.username, u.display_name, wm.role_code, wm.joined_at
+		`select u.id, u.username, u.display_name, wm.role_code, wm.joined_at,
+		        exists (
+		          select 1 from user_sessions s
+		          where s.user_id = u.id
+		            and s.revoked_at is null
+		            and s.last_seen_at > now() - interval '5 minutes'
+		        ) as online
 		 from workspace_members wm
 		 join users u on u.id = wm.user_id
 		 where wm.workspace_id = $1
@@ -262,12 +271,13 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 			displayName *string
 			role        string
 			joinedAt    time.Time
+			online      bool
 		)
-		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt); err != nil {
+		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &online); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
-		view := memberView{UserID: id.String(), Username: username, Role: role, JoinedAt: joinedAt}
+		view := memberView{UserID: id.String(), Username: username, Role: role, JoinedAt: joinedAt, Online: online}
 		if displayName != nil {
 			view.DisplayName = *displayName
 		}

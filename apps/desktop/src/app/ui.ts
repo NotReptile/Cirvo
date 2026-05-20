@@ -102,6 +102,7 @@ interface Member {
   displayName?: string;
   role: string;
   joinedAt: string;
+  online?: boolean;
 }
 
 interface AuditEntry {
@@ -312,6 +313,9 @@ interface AppState {
   voiceVolumes: Record<string, number>;
   // Popup управления громкостью: ПКМ на чужом voice-tile.
   voiceVolumeMenu: { key: string; label: string; x: number; y: number } | null;
+  // Правая панель участников (Discord-style). На широких экранах открыта
+  // по умолчанию, кнопка в channel-header сворачивает.
+  memberSidebarOpen: boolean;
 }
 
 interface VoicePeekParticipant {
@@ -392,7 +396,8 @@ const state: AppState = {
   },
   channelMenu: null,
   voiceVolumes: {},
-  voiceVolumeMenu: null
+  voiceVolumeMenu: null,
+  memberSidebarOpen: true
 };
 
 // LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
@@ -1280,7 +1285,7 @@ function renderShell(): void {
   const canModerate = !!selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
 
   rootEl.innerHTML = `
-    <div class="shell">
+    <div class="shell${selectedChannel && state.memberSidebarOpen ? " with-members" : ""}">
       <aside class="sidebar">
         <div class="sidebar-header">
           <button id="open-profile" class="user user-btn" title="Профиль">
@@ -1331,6 +1336,7 @@ function renderShell(): void {
       <main class="content">
         ${selectedChannel ? renderChannelView(selectedChannel) : renderEmpty()}
       </main>
+      ${selectedChannel && state.memberSidebarOpen ? renderMemberSidebar() : ""}
       ${state.status ? `<div class="status-bar">${escapeHtml(state.status)}</div>` : ""}
       ${renderModal()}
       ${renderCallOverlay()}
@@ -1366,6 +1372,51 @@ function renderVoiceVolumeMenu(): string {
       <div class="voice-volume-hint">Перетащи или нажми Reset чтобы вернуть 100%</div>
       <button class="channel-menu-item" data-voice-volume-reset>Reset до 100%</button>
     </div>
+  `;
+}
+
+// Цвета ролей (хардкод до миграции workspace_roles.color). Подсветка имени
+// в member-sidebar и в авторе сообщения; member — дефолтный текст.
+const ROLE_COLORS: Record<string, string> = {
+  owner: "#ed4245",
+  admin: "#5865f2",
+  moderator: "#3ba55c"
+};
+
+function renderMemberSidebar(): string {
+  if (state.membersLoading && state.members.length === 0) {
+    return `<aside class="member-sidebar"><div class="member-sidebar-empty">Загрузка…</div></aside>`;
+  }
+  const sorted = [...state.members].sort((a, b) => {
+    const an = a.displayName || a.username;
+    const bn = b.displayName || b.username;
+    return an.localeCompare(bn, "ru");
+  });
+  const online = sorted.filter((m) => m.online);
+  const offline = sorted.filter((m) => !m.online);
+  const renderItem = (m: Member) => {
+    const name = m.displayName || m.username;
+    const color = ROLE_COLORS[m.role];
+    const style = color ? ` style="color:${color};"` : "";
+    return `
+      <li class="member-sidebar-item${m.online ? "" : " offline"}" data-member-user="${escapeHtml(m.userId)}">
+        <span class="member-sidebar-avatar"><span class="dot${m.online ? "" : " off"}"></span>${escapeHtml(name.charAt(0).toUpperCase())}</span>
+        <span class="member-sidebar-name"${style}>${escapeHtml(name)}</span>
+      </li>
+    `;
+  };
+  return `
+    <aside class="member-sidebar">
+      ${online.length > 0 ? `
+        <div class="member-sidebar-group">В сети — ${online.length}</div>
+        <ul class="member-sidebar-list">${online.map(renderItem).join("")}</ul>
+      ` : ""}
+      ${offline.length > 0 ? `
+        <div class="member-sidebar-group">Не в сети — ${offline.length}</div>
+        <ul class="member-sidebar-list">${offline.map(renderItem).join("")}</ul>
+      ` : ""}
+      ${state.members.length === 0 ? `<div class="member-sidebar-empty">Никого нет</div>` : ""}
+    </aside>
   `;
 }
 
@@ -1548,6 +1599,16 @@ function describeAuditEntry(e: AuditEntry): AuditDescription {
   return { icon: "•", actor, verb: e.action, target, raw: true };
 }
 
+// Возвращает inline-style="color:..." если у участника есть role-цвет;
+// иначе пустая строка (наследует дефолтный --text). Тот же ROLE_COLORS,
+// что в member-sidebar — единый источник истины.
+function authorColorStyle(userId: string): string {
+  const m = state.members.find((x) => x.userId === userId);
+  if (!m) return "";
+  const color = ROLE_COLORS[m.role];
+  return color ? ` style="color:${color};"` : "";
+}
+
 function describePeer(userId: string | null): string {
   if (!userId) return "—";
   const member = state.members.find((m) => m.userId === userId);
@@ -1709,7 +1770,10 @@ function renderChannelView(channel: Channel): string {
         <h2>${channel.isPrivate ? "🔒" : "#"} ${escapeHtml(channel.name)}</h2>
         ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
       </div>
-      ${canManage ? `<button id="open-channel-settings" class="ghost" title="Настройки канала" aria-label="Настройки канала">⚙</button>` : ""}
+      <div class="channel-header-actions">
+        <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? "Скрыть участников" : "Показать участников"}" aria-label="Участники">👥</button>
+        ${canManage ? `<button id="open-channel-settings" class="ghost" title="Настройки канала" aria-label="Настройки канала">⚙</button>` : ""}
+      </div>
     </header>
     ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
       <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
@@ -2307,7 +2371,7 @@ function renderMessage(m: Message): string {
     return `
       <div class="message" data-id="${m.id}">
         <div class="message-meta">
-          <span class="author">${escapeHtml(describePeer(m.authorId))}</span>
+          <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(describePeer(m.authorId))}</span>
           <span class="timestamp">${formatTime(m.createdAt)}</span>
         </div>
         <form class="edit-form" data-edit-id="${m.id}">
@@ -2323,7 +2387,7 @@ function renderMessage(m: Message): string {
     <div class="message" data-id="${m.id}">
       ${renderReplySnippet(m.replyTo)}
       <div class="message-meta">
-        <span class="author">${escapeHtml(describePeer(m.authorId))}${isMine ? " · вы" : ""}</span>
+        <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(describePeer(m.authorId))}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}
         <span class="timestamp">${formatTime(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">😊</button>
@@ -2918,6 +2982,20 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLElement>("[data-channel-menu-close]")?.addEventListener("click", () => {
     state.channelMenu = null;
     render();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#toggle-member-sidebar")?.addEventListener("click", () => {
+    state.memberSidebarOpen = !state.memberSidebarOpen;
+    render();
+  });
+
+  // Клик по участнику в правой панели — открыть members-модалку
+  // (если придумается per-user детальный view, заменим на отдельную модалку).
+  rootEl.querySelectorAll<HTMLElement>(".member-sidebar-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      state.modal = "members";
+      render();
+    });
   });
 
   rootEl.querySelector<HTMLElement>("[data-voice-volume-close]")?.addEventListener("click", () => {
