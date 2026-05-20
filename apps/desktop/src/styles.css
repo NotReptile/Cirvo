@@ -260,6 +260,36 @@ input:focus { outline: none; border-color: var(--accent); }
 .channel-menu-item.danger { color: #f87171; }
 .channel-menu-item.danger:hover { background: rgba(248, 113, 113, 0.12); }
 
+/* Popup управления громкостью remote-участника (ПКМ на чужом voice-tile). */
+.voice-volume-menu {
+  position: fixed;
+  z-index: 81;
+  min-width: 240px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.voice-volume-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-mute);
+  padding: 0 2px;
+}
+.voice-volume-value { color: var(--text); font-variant-numeric: tabular-nums; }
+.voice-volume-slider { width: 100%; }
+.voice-volume-hint {
+  font-size: 10px;
+  color: var(--text-mute);
+  padding: 2px 2px 4px;
+}
+
 /* Создание воркспейса: имя + кнопка в одной строке, slug под disclosure. */
 .create-workspace-form { flex-direction: column; align-items: stretch; }
 .create-workspace-row { display: flex; gap: 6px; }

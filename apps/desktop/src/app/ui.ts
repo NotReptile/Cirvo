@@ -305,6 +305,13 @@ interface AppState {
   // Контекстное меню канала: ПКМ на элементе списка → плавающее меню
   // (Переименовать / Удалить / Скопировать ID). null = меню закрыто.
   channelMenu: { channelId: string; x: number; y: number } | null;
+  // Volume per-remote: ключ — sessionId участника voice-канала либо
+  // спец-ключ "call-remote" для 1-к-1 собеседника. Значение 0..1, при
+  // отсутствии ключа применяем 1 (default). Хранится в памяти, на
+  // refresh сбрасывается — соответствует ожиданию Discord.
+  voiceVolumes: Record<string, number>;
+  // Popup управления громкостью: ПКМ на чужом voice-tile.
+  voiceVolumeMenu: { key: string; label: string; x: number; y: number } | null;
 }
 
 interface VoicePeekParticipant {
@@ -383,7 +390,9 @@ const state: AppState = {
     data: null,
     draft: {}
   },
-  channelMenu: null
+  channelMenu: null,
+  voiceVolumes: {},
+  voiceVolumeMenu: null
 };
 
 // LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
@@ -1326,10 +1335,38 @@ function renderShell(): void {
       ${renderModal()}
       ${renderCallOverlay()}
       ${renderChannelMenu()}
+      ${renderVoiceVolumeMenu()}
     </div>
   `;
   attachShellHandlers();
   attachVoiceVideoStreams();
+}
+
+function renderVoiceVolumeMenu(): string {
+  const menu = state.voiceVolumeMenu;
+  if (!menu) return "";
+  const current = Math.round((state.voiceVolumes[menu.key] ?? 1) * 100);
+  return `
+    <div class="channel-menu-backdrop" data-voice-volume-close></div>
+    <div class="voice-volume-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
+      <div class="channel-menu-header">${escapeHtml(menu.label)}</div>
+      <label class="voice-volume-row">
+        <span class="voice-volume-label">Громкость</span>
+        <span class="voice-volume-value">${current}%</span>
+      </label>
+      <input
+        id="voice-volume-slider"
+        type="range"
+        min="0"
+        max="200"
+        step="1"
+        value="${current}"
+        class="voice-volume-slider"
+      />
+      <div class="voice-volume-hint">Перетащи или нажми Reset чтобы вернуть 100%</div>
+      <button class="channel-menu-item" data-voice-volume-reset>Reset до 100%</button>
+    </div>
+  `;
 }
 
 function renderChannelMenu(): string {
@@ -1823,6 +1860,7 @@ function attachVoiceVideoStreams(): void {
     if (!sid) continue;
     const stream = voiceMgr.getRemoteStream(sid);
     if (el.srcObject !== stream) el.srcObject = stream;
+    el.volume = state.voiceVolumes[sid] ?? 1;
   }
   const callLocal = callMgr.getLocalStream();
   const callRemote = callMgr.getRemoteStream();
@@ -1831,6 +1869,7 @@ function attachVoiceVideoStreams(): void {
   }
   for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-call-remote]")) {
     if (el.srcObject !== callRemote) el.srcObject = callRemote;
+    el.volume = state.voiceVolumes["call-remote"] ?? 1;
   }
   // Speaking-indicator: создаём/обновляем analyser-узлы для всех участников
   // (включая себя), drop'аем для тех, кого больше нет в DOM.
@@ -1850,6 +1889,37 @@ function attachVoiceTileFullscreen(): void {
       const wasFs = tile.classList.contains("fullscreen");
       for (const other of Array.from(tiles)) other.classList.remove("fullscreen");
       if (!wasFs) tile.classList.add("fullscreen");
+    });
+    // ПКМ на чужом тайле открывает volume-popup. На своём (self) и без
+    // данных peer'а — игнор.
+    tile.addEventListener("contextmenu", (ev) => {
+      if (tile.classList.contains("self")) return;
+      const video = tile.querySelector<HTMLVideoElement>("video[data-voice-peer]");
+      const sid = video?.dataset.voicePeer;
+      if (!sid) return;
+      ev.preventDefault();
+      const p = state.voiceSnapshot?.participants.find((x) => x.sessionId === sid);
+      const label = p ? (p.displayName || p.username || sid.slice(0, 8)) : "Участник";
+      const x = Math.min(ev.clientX, window.innerWidth - 280);
+      const y = Math.min(ev.clientY, window.innerHeight - 200);
+      state.voiceVolumeMenu = { key: sid, label, x, y };
+      render();
+    });
+  }
+  // Аналогично для 1-к-1 tile'а (call-video-tile с data-call-remote).
+  const callTiles = rootEl.querySelectorAll<HTMLDivElement>(".call-video-tile");
+  for (const tile of Array.from(callTiles)) {
+    if ((tile as HTMLElement & { _fsAttached?: boolean })._fsAttached) continue;
+    (tile as HTMLElement & { _fsAttached?: boolean })._fsAttached = true;
+    const video = tile.querySelector<HTMLVideoElement>("video[data-call-remote]");
+    if (!video) continue;
+    tile.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const peerName = state.callSnapshot ? describePeer(state.callSnapshot.peerUserId) : "Собеседник";
+      const x = Math.min(ev.clientX, window.innerWidth - 280);
+      const y = Math.min(ev.clientY, window.innerHeight - 200);
+      state.voiceVolumeMenu = { key: "call-remote", label: peerName, x, y };
+      render();
     });
   }
 }
@@ -2847,6 +2917,39 @@ function attachShellHandlers(): void {
 
   rootEl.querySelector<HTMLElement>("[data-channel-menu-close]")?.addEventListener("click", () => {
     state.channelMenu = null;
+    render();
+  });
+
+  rootEl.querySelector<HTMLElement>("[data-voice-volume-close]")?.addEventListener("click", () => {
+    state.voiceVolumeMenu = null;
+    render();
+  });
+
+  // Слайдер обновляет state и громкость <video> напрямую — без render(),
+  // иначе сам слайдер пересоздался бы на каждом движении и терял
+  // captured pointer (drag прервался бы).
+  const volSlider = rootEl.querySelector<HTMLInputElement>("#voice-volume-slider");
+  if (volSlider && state.voiceVolumeMenu) {
+    const key = state.voiceVolumeMenu.key;
+    const applyVolume = (raw: number) => {
+      const v = Math.max(0, Math.min(2, raw / 100));
+      state.voiceVolumes[key] = v;
+      const selector = key === "call-remote"
+        ? `video[data-call-remote]`
+        : `video[data-voice-peer="${CSS.escape(key)}"]`;
+      for (const el of rootEl.querySelectorAll<HTMLVideoElement>(selector)) {
+        el.volume = Math.min(1, v); // HTMLMediaElement.volume cap = 1.0
+      }
+      const valueEl = rootEl.querySelector<HTMLElement>(".voice-volume-value");
+      if (valueEl) valueEl.textContent = `${Math.round(v * 100)}%`;
+    };
+    volSlider.addEventListener("input", () => applyVolume(Number(volSlider.value)));
+  }
+  rootEl.querySelector<HTMLElement>("[data-voice-volume-reset]")?.addEventListener("click", () => {
+    if (!state.voiceVolumeMenu) return;
+    const key = state.voiceVolumeMenu.key;
+    delete state.voiceVolumes[key];
+    state.voiceVolumeMenu = null;
     render();
   });
 
