@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1016,6 +1017,33 @@ type searchResultView struct {
 	Highlight   string `json:"highlight"`
 }
 
+// buildPrefixTSQuery превращает пользовательский ввод в tsquery-строку с
+// prefix-семантикой: «Hel world» → «Hel:* & world:*». Это нужно, чтобы
+// search-as-you-type находил «Hello world» по запросу «Hel» — стандартный
+// websearch_to_tsquery превращает «Hel» в лексему «hel» и требует
+// точного совпадения с уже-проиндексированными лексемами («hello»).
+//
+// Очистка: оставляем только буквы и цифры (любая письменность), всё
+// остальное (кавычки, операторы, пунктуация) выбрасываем. Это намеренно:
+// в чате почти никто не пишет `"phrase" OR foo`, зато инъекция в
+// to_tsquery через спецсимволы (`!`, `&`, `|`, `(`, `)`, `:`) сломает
+// запрос. После очистки остаются безопасные токены, склеиваем через ` & `.
+// Пустая строка на выходе → вызывающий должен вернуть 400.
+func buildPrefixTSQuery(q string) string {
+	tokens := strings.FieldsFunc(q, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(tokens) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		// FieldsFunc уже дал нам только буквы+цифры, доп.очистка не нужна.
+		parts = append(parts, t+":*")
+	}
+	return strings.Join(parts, " & ")
+}
+
 // handleSearch — полнотекстовый поиск по messages.body в рамках одного
 // воркспейса. Фильтрация по видимым каналам (приватные через
 // channel_members), исключаются soft-deleted. Сортировка — по
@@ -1040,6 +1068,11 @@ func (m *Module) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if len([]rune(q)) < searchMinQueryLen {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "query too short")
+		return
+	}
+	tsq := buildPrefixTSQuery(q)
+	if tsq == "" {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "query has no searchable tokens")
 		return
 	}
 
@@ -1073,23 +1106,24 @@ func (m *Module) handleSearch(w http.ResponseWriter, r *http.Request) {
 		", MaxFragments=2, MaxWords=15, MinWords=5, ShortWord=2, HighlightAll=FALSE"
 
 	// $1 viewer (для reactions.mine в messageSelectColumns), $2 workspace,
-	// $3 q (websearch), $4 before, $5 limit, $6 headline options.
+	// $3 tsquery c prefix-семантикой (`hel:* & world:*`), $4 before,
+	// $5 limit, $6 headline options.
 	rows, err := m.db.Query(r.Context(),
 		`select `+messageSelectColumns+`,
 		        c.name,
-		        ts_headline('russian', m.body, websearch_to_tsquery('russian', $3), $6)
+		        ts_headline('russian', m.body, to_tsquery('russian', $3), $6)
 		 from messages m
 		 join channels c on c.id = m.channel_id
 		 where c.workspace_id = $2
 		   and m.deleted_at is null
-		   and m.search_vector @@ websearch_to_tsquery('russian', $3)
+		   and m.search_vector @@ to_tsquery('russian', $3)
 		   and (c.is_private = false
 		        or exists (select 1 from channel_members cm
 		                    where cm.channel_id = c.id and cm.user_id = $1))
 		   and m.created_at < $4
 		 order by m.created_at desc
 		 limit $5`,
-		userID, workspaceID, q, before, limit, headlineOpts,
+		userID, workspaceID, tsq, before, limit, headlineOpts,
 	)
 	if err != nil {
 		m.logger.Error("search query failed", "error", err, "workspaceId", workspaceID)

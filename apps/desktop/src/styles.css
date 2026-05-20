@@ -216,6 +216,25 @@ input:focus { outline: none; border-color: var(--accent); }
 .inline-form input { flex: 1; padding: 6px 8px; font-size: 12px; }
 .inline-form button { padding: 4px 10px; font-size: 12px; }
 
+/* Создание воркспейса: имя + кнопка в одной строке, slug под disclosure. */
+.create-workspace-form { flex-direction: column; align-items: stretch; }
+.create-workspace-row { display: flex; gap: 6px; }
+.create-workspace-row input { flex: 1; padding: 6px 8px; font-size: 12px; }
+.create-workspace-row button { padding: 4px 10px; font-size: 12px; }
+.create-workspace-advanced { font-size: 11px; color: var(--text-mute); }
+.create-workspace-advanced summary {
+  cursor: pointer;
+  padding: 2px 0;
+  user-select: none;
+}
+.create-workspace-advanced summary:hover { color: var(--text); }
+.create-workspace-advanced input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
 .content {
   display: flex;
   flex-direction: column;

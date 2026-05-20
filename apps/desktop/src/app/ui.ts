@@ -1231,10 +1231,15 @@ function renderShell(): void {
             )
             .join("")}
         </ul>
-        <form id="create-workspace" class="inline-form" data-slug-touched="false">
-          <input name="name" placeholder="Имя нового воркспейса" required />
-          <input name="slug" placeholder="slug (a-z, 0-9, -)" title="3–64 символа, строчные a-z, 0-9, -, не может начинаться/заканчиваться дефисом" required />
-          <button type="submit" title="Создать">+</button>
+        <form id="create-workspace" class="inline-form create-workspace-form" data-slug-touched="false">
+          <div class="create-workspace-row">
+            <input name="name" placeholder="Имя нового воркспейса" required />
+            <button type="submit" title="Создать">+</button>
+          </div>
+          <details class="create-workspace-advanced">
+            <summary>Адрес (генерируется автоматически)</summary>
+            <input name="slug" placeholder="a-z, 0-9, -" title="3–64 символа, строчные a-z, 0-9, -, не может начинаться/заканчиваться дефисом" />
+          </details>
         </form>
         <form id="accept-invite" class="inline-form">
           <input name="code" placeholder="Код инвайта" required />
