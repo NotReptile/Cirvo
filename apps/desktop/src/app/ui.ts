@@ -382,7 +382,39 @@ const state: AppState = {
   }
 };
 
-const mediaBlobCache = new Map<string, string>();
+// LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
+// миниатюр), значение — blob:-URL, созданный через URL.createObjectURL.
+// Без ограничения размера blob'ы утекают (раньше Map рос без верха, при
+// длинных сессиях на активном канале десятки MB неосвобождённых блобов).
+// Map в JS сохраняет порядок вставки → старая запись = первая в keys().
+// При hit'е перевставляем ключ, чтобы он стал «свежим». При выселении
+// зовём URL.revokeObjectURL, иначе Chrome держит blob в памяти.
+const MEDIA_BLOB_CACHE_MAX = 80;
+const mediaBlobStore = new Map<string, string>();
+
+const mediaBlobCache = {
+  get(key: string): string | undefined {
+    const val = mediaBlobStore.get(key);
+    if (val !== undefined) {
+      mediaBlobStore.delete(key);
+      mediaBlobStore.set(key, val);
+    }
+    return val;
+  },
+  set(key: string, val: string): void {
+    if (mediaBlobStore.has(key)) mediaBlobStore.delete(key);
+    mediaBlobStore.set(key, val);
+    while (mediaBlobStore.size > MEDIA_BLOB_CACHE_MAX) {
+      const oldestKey = mediaBlobStore.keys().next().value;
+      if (oldestKey === undefined) break;
+      const oldUrl = mediaBlobStore.get(oldestKey);
+      mediaBlobStore.delete(oldestKey);
+      if (oldUrl) {
+        try { URL.revokeObjectURL(oldUrl); } catch {}
+      }
+    }
+  }
+};
 
 let rootEl: HTMLElement;
 let httpClient: HttpClient;
@@ -1351,6 +1383,78 @@ function callIconButton(id: string, iconName: Parameters<typeof icon>[0], title:
   return `<button id="${id}" class="call-icon-btn ${mod}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${disabled ? "disabled" : ""}>${icon(iconName, { size: 20 })}</button>`;
 }
 
+// Маппинг action-кодов из internal/auditlog/auditlog.go в человекочитаемые
+// глаголы + иконку категории. Если код не известен (новый action, забыли
+// добавить) — fallback к сырому коду в describeAuditEntry, чтобы не
+// потерять видимость новой активности в логе.
+const AUDIT_ACTION_INFO: Record<string, { ru: string; icon: string }> = {
+  "workspace.created": { ru: "создал воркспейс", icon: "🏠" },
+  "workspace.member.added": { ru: "добавил участника", icon: "👥" },
+  "channel.created": { ru: "создал канал", icon: "📁" },
+  "channel.member.added": { ru: "добавил в канал", icon: "➕" },
+  "channel.member.removed": { ru: "убрал из канала", icon: "➖" },
+  "channel.permissions.updated": { ru: "обновил права канала", icon: "🔒" },
+  "message.deleted": { ru: "удалил сообщение", icon: "🗑" },
+  "invite.created": { ru: "создал инвайт", icon: "🔗" },
+  "invite.revoked": { ru: "отозвал инвайт", icon: "✖" },
+  "invite.used": { ru: "использовал инвайт", icon: "✓" },
+  "profile.updated": { ru: "обновил профиль", icon: "✎" },
+  "user.banned": { ru: "забанил пользователя", icon: "🚫" },
+  "user.unbanned": { ru: "разбанил пользователя", icon: "🔓" },
+  "user.deleted": { ru: "удалил пользователя", icon: "🗑" },
+  "server.settings.updated": { ru: "изменил настройки сервера", icon: "⚙" },
+  "server.retention.sweep": { ru: "запустил очистку", icon: "🧹" }
+};
+
+interface AuditDescription {
+  icon: string;
+  actor: string;
+  verb: string;
+  target: string;
+  raw: boolean;
+}
+
+function describeAuditEntry(e: AuditEntry): AuditDescription {
+  const info = AUDIT_ACTION_INFO[e.action];
+  const actor = e.actorId ? describePeer(e.actorId) : "система";
+
+  let target = "";
+  switch (e.targetType) {
+    case "user": {
+      target = describePeer(e.targetId);
+      break;
+    }
+    case "channel":
+    case "channel_member": {
+      const ch = state.channels.find((c) => c.id === e.targetId);
+      target = ch ? `#${ch.name}` : `канал ${shortId(e.targetId)}`;
+      break;
+    }
+    case "workspace": {
+      const ws = state.workspaces.find((w) => w.id === e.targetId);
+      target = ws ? ws.name : `воркспейс ${shortId(e.targetId)}`;
+      break;
+    }
+    case "message":
+      target = `сообщение ${shortId(e.targetId)}`;
+      break;
+    case "invite":
+      target = `инвайт ${shortId(e.targetId)}`;
+      break;
+    case "server_settings":
+    case "server":
+      target = "";
+      break;
+    default:
+      target = `${e.targetType} ${shortId(e.targetId)}`;
+  }
+
+  if (info) {
+    return { icon: info.icon, actor, verb: info.ru, target, raw: false };
+  }
+  return { icon: "•", actor, verb: e.action, target, raw: true };
+}
+
 function describePeer(userId: string | null): string {
   if (!userId) return "—";
   const member = state.members.find((m) => m.userId === userId);
@@ -2141,23 +2245,29 @@ function renderAuditModal(): string {
               ? `<div class="invites-empty">Загрузка…</div>`
               : state.auditEntries.length === 0
                 ? `<div class="invites-empty">Событий пока нет</div>`
-                : `<table class="audit-table">
-                    <thead><tr><th>Когда</th><th>Кто</th><th>Что</th><th>Цель</th></tr></thead>
-                    <tbody>
-                      ${state.auditEntries
-                        .map(
-                          (e) => `
-                        <tr>
-                          <td class="audit-time">${formatTime(e.createdAt)}</td>
-                          <td class="audit-actor">${e.actorId ? shortId(e.actorId) : "система"}</td>
-                          <td><code>${escapeHtml(e.action)}</code></td>
-                          <td class="audit-target">${escapeHtml(e.targetType)} · ${shortId(e.targetId)}</td>
-                        </tr>
-                      `
-                        )
-                        .join("")}
-                    </tbody>
-                  </table>`
+                : `<ul class="audit-list">
+                    ${state.auditEntries
+                      .map((e) => {
+                        const d = describeAuditEntry(e);
+                        const verbHtml = d.raw
+                          ? `<code>${escapeHtml(d.verb)}</code>`
+                          : escapeHtml(d.verb);
+                        return `
+                          <li class="audit-item${d.raw ? " audit-raw" : ""}">
+                            <span class="audit-icon" aria-hidden="true">${d.icon}</span>
+                            <div class="audit-body">
+                              <div class="audit-line">
+                                <span class="audit-actor">${escapeHtml(d.actor)}</span>
+                                <span class="audit-verb">${verbHtml}</span>
+                                ${d.target ? `<span class="audit-target">${escapeHtml(d.target)}</span>` : ""}
+                              </div>
+                              <div class="audit-time">${formatTime(e.createdAt)}</div>
+                            </div>
+                          </li>
+                        `;
+                      })
+                      .join("")}
+                  </ul>`
           }
         </div>
       </div>
@@ -2276,7 +2386,13 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#open-audit")?.addEventListener("click", async () => {
     state.modal = "audit";
     render();
-    await loadAudit();
+    // Members нужны для резолва UUID → displayName в журнале. Тянем
+    // параллельно с audit-ом, не блокируем основной запрос.
+    const needMembers = state.members.length === 0 && !state.membersLoading;
+    await Promise.all([
+      loadAudit(),
+      needMembers ? loadMembers() : Promise.resolve()
+    ]);
   });
 
   rootEl.querySelector<HTMLButtonElement>("#open-notifications")?.addEventListener("click", () => {

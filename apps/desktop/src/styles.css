@@ -622,22 +622,53 @@ input:focus { outline: none; border-color: var(--accent); }
 .role-moderator { background: rgba(46, 204, 113, 0.25); color: #5fd49a; }
 .member-kick { padding: 2px 8px; }
 
-.audit-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
+/* Журнал событий: лента с иконкой + предложением, вместо таблицы с UUID. */
+.audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
 }
-.audit-table th,
-.audit-table td {
-  text-align: left;
-  padding: 6px 8px;
+.audit-item {
+  display: flex;
+  gap: 10px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
-  vertical-align: top;
+  align-items: flex-start;
 }
-.audit-table th { color: var(--text-mute); font-weight: 500; font-size: 11px; text-transform: uppercase; }
-.audit-time { color: var(--text-mute); white-space: nowrap; }
-.audit-actor { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-.audit-target { color: var(--text-mute); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.audit-item:last-child { border-bottom: 0; }
+.audit-item:hover { background: rgba(255, 255, 255, 0.03); }
+.audit-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 14px;
+  line-height: 1;
+}
+.audit-body { flex: 1; min-width: 0; }
+.audit-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.audit-actor { color: var(--text); font-weight: 500; }
+.audit-verb { color: var(--text-mute); }
+.audit-target { color: var(--text); }
+.audit-time { color: var(--text-mute); font-size: 11px; margin-top: 2px; }
+.audit-raw .audit-verb code {
+  font-size: 11px;
+  padding: 1px 5px;
+  background: var(--bg);
+  border-radius: 4px;
+}
 .attach-btn {
   display: grid;
   place-items: center;
@@ -739,7 +770,7 @@ input:focus { outline: none; border-color: var(--accent); }
 .attach-name { font-weight: 600; font-size: 13px; }
 .attach-meta { color: var(--text-mute); font-size: 11px; }
 
-.audit-table code {
+.audit-raw code {
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   background: var(--bg-elev-2);
   padding: 1px 6px;
