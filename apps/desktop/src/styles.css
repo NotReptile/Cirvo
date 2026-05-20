@@ -266,6 +266,15 @@ input:focus { outline: none; border-color: var(--accent); }
 .channel-menu-item:hover { background: var(--bg); }
 .channel-menu-item.danger { color: #f87171; }
 .channel-menu-item.danger:hover { background: rgba(248, 113, 113, 0.12); }
+.channel-menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 6px;
+}
+
+/* Замьюченный канал в sidebar: имя приглушено, badge'и (если просочились) тоже. */
+.channel-list li.muted .channel-name { opacity: 0.5; }
+.channel-list li.muted .unread-badge { display: none; }
 
 /* Popup управления громкостью remote-участника (ПКМ на чужом voice-tile). */
 .voice-volume-menu {

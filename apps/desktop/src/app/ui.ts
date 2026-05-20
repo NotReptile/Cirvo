@@ -316,6 +316,10 @@ interface AppState {
   // Правая панель участников (Discord-style). На широких экранах открыта
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
+  // Клиентский mute каналов: Set channelId. Подавляет browser-notification
+  // и unread-индикатор для канала. Не персистится на бэке (MVP) —
+  // на refresh сбрасывается, как в Discord-default-state до сохранения.
+  mutedChannels: Set<string>;
 }
 
 interface VoicePeekParticipant {
@@ -397,7 +401,8 @@ const state: AppState = {
   channelMenu: null,
   voiceVolumes: {},
   voiceVolumeMenu: null,
-  memberSidebarOpen: true
+  memberSidebarOpen: true,
+  mutedChannels: new Set()
 };
 
 // LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
@@ -760,6 +765,10 @@ function maybeShowBrowserNotification(item: NotificationItem): void {
   if (typeof window === "undefined" || !("Notification" in window)) return;
   if (Notification.permission !== "granted") return;
   if (typeof document !== "undefined" && document.visibilityState !== "hidden") return;
+  // Замьюченный канал — не дёргаем системное уведомление даже на mention.
+  // Звонки (call_incoming) приходят без channelId, их не глушим.
+  const chId = item.payload.channelId;
+  if (chId && state.mutedChannels.has(chId)) return;
   const title = notificationTitle(item);
   const body = notificationBody(item);
   try {
@@ -954,7 +963,10 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
   if (event.channelId && event.channelId !== state.selectedChannelId) {
     if (event.event === "message.created") {
       const msg = event.payload as Message;
-      if (msg.authorId !== state.me?.id) {
+      // Замьюченный канал — не инкрементим unread (Discord-like: канал
+      // в списке остаётся серым, без badge'а). Mentions всё равно приходят
+      // через notification.created, обрабатываются выше.
+      if (msg.authorId !== state.me?.id && !state.mutedChannels.has(event.channelId)) {
         state.unread[event.channelId] = (state.unread[event.channelId] ?? 0) + 1;
         render();
       }
@@ -1427,13 +1439,21 @@ function renderChannelMenu(): string {
   if (!ch) return "";
   const ws = state.workspaces.find((w) => w.id === ch.workspaceId);
   const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  const canModerate = !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
+  const muted = state.mutedChannels.has(ch.id);
+  const hasUnread = (state.unread[ch.id] ?? 0) > 0;
   return `
     <div class="channel-menu-backdrop" data-channel-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
       <div class="channel-menu-header">${escapeHtml(channelPrefix(ch))} ${escapeHtml(ch.name)}</div>
+      ${hasUnread ? `<button class="channel-menu-item" data-channel-action="mark-read" data-id="${ch.id}">Пометить как прочитанное</button>` : ""}
+      ${canModerate ? `<button class="channel-menu-item" data-channel-action="invite" data-id="${ch.id}">Пригласить</button>` : ""}
+      <button class="channel-menu-item" data-channel-action="mute" data-id="${ch.id}">${muted ? "Снять заглушение" : "Заглушить канал"}</button>
+      <div class="channel-menu-separator"></div>
       ${canManage ? `<button class="channel-menu-item" data-channel-action="rename" data-id="${ch.id}">Переименовать</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-channel-action="clone" data-id="${ch.id}">Клонировать канал</button>` : ""}
       <button class="channel-menu-item" data-channel-action="copy-id" data-id="${ch.id}">Скопировать ID</button>
-      ${canManage ? `<button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">Удалить канал</button>` : ""}
+      ${canManage ? `<div class="channel-menu-separator"></div><button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">Удалить канал</button>` : ""}
     </div>
   `;
 }
@@ -1665,9 +1685,11 @@ function renderChannelsBlock(): string {
       ${state.channels
         .map((ch) => {
           const unread = state.unread[ch.id] ?? 0;
+          const muted = state.mutedChannels.has(ch.id);
           const cls = [
             ch.id === state.selectedChannelId ? "active" : "",
-            unread > 0 ? "has-unread" : ""
+            unread > 0 ? "has-unread" : "",
+            muted ? "muted" : ""
           ]
             .filter(Boolean)
             .join(" ");
@@ -3048,6 +3070,63 @@ function attachShellHandlers(): void {
           state.status = `ID канала #${ch.name} скопирован`;
         } catch {
           state.status = "Не удалось скопировать";
+        }
+        render();
+        return;
+      }
+      if (action === "mark-read") {
+        // Берём последнее сообщение канала, если оно загружено — иначе
+        // просто шлём read без курсора (бэк интерпретирует как «текущий момент»
+        // — см. message-module/handleRead). Безопасно: повторный POST идемпотентен.
+        const last = state.selectedChannelId === id && state.messages.length > 0
+          ? state.messages[state.messages.length - 1].id
+          : "";
+        try {
+          await httpClient.post(`/api/v1/channels/${id}/read`, last ? { messageId: last } : {});
+          state.unread[id] = 0;
+        } catch (err) {
+          state.status = describeError(err);
+        }
+        render();
+        return;
+      }
+      if (action === "invite") {
+        // Существующая модалка инвайтов завязана на workspace. Открываем её
+        // и подсказываем юзеру выбрать конкретный канал внутри.
+        state.invitesOpen = true;
+        state.status = `Создай инвайт в воркспейс — он привяжет нового участника, а доступ к #${ch.name} даст admin'у через настройки канала.`;
+        render();
+        return;
+      }
+      if (action === "mute") {
+        if (state.mutedChannels.has(id)) {
+          state.mutedChannels.delete(id);
+        } else {
+          state.mutedChannels.add(id);
+        }
+        render();
+        return;
+      }
+      if (action === "clone") {
+        // Backend ещё не имеет /clone — постим обычный create с такими же
+        // полями. kind клонируется, имя — "<имя>-копия" (если уже есть, бэк
+        // вернёт 409 — мы покажем ошибку, юзер переименует).
+        const baseName = ch.name.length > 56 ? ch.name.slice(0, 56) : ch.name;
+        try {
+          const created = await httpClient.post<Channel>(
+            `/api/v1/workspaces/${ch.workspaceId}/channels`,
+            {
+              kind: ch.kind,
+              name: `${baseName}-копия`,
+              topic: ch.topic ?? "",
+              isPrivate: ch.isPrivate
+            }
+          );
+          if (created && !state.channels.some((c) => c.id === created.id)) {
+            state.channels = [...state.channels, created];
+          }
+        } catch (err) {
+          state.status = describeError(err);
         }
         render();
         return;
