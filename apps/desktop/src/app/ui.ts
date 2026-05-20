@@ -1298,52 +1298,43 @@ function renderShell(): void {
 
   rootEl.innerHTML = `
     <div class="shell${selectedChannel && state.memberSidebarOpen ? " with-members" : ""}">
-      <aside class="sidebar">
-        <div class="sidebar-header">
+      <aside class="ws-rail">
+        ${state.workspaces
+          .map(
+            (ws) => `
+          <button class="ws-rail-icon${ws.id === state.selectedWorkspaceId ? " active" : ""}" data-ws="${ws.id}" title="${escapeHtml(ws.name)}" aria-label="${escapeHtml(ws.name)}">
+            ${escapeHtml(ws.name.charAt(0).toUpperCase())}
+          </button>
+        `
+          )
+          .join("")}
+        <div class="ws-rail-spacer"></div>
+        <button id="ws-rail-create" class="ws-rail-icon ws-rail-add" title="Создать воркспейс" aria-label="Создать воркспейс">+</button>
+        <button id="ws-rail-invite" class="ws-rail-icon ws-rail-add" title="Принять инвайт" aria-label="Принять инвайт">↵</button>
+      </aside>
+      <aside class="ch-panel">
+        <header class="ch-panel-header">
+          <span class="ch-panel-title">${selectedWorkspace ? escapeHtml(selectedWorkspace.name) : "Нет воркспейса"}</span>
+        </header>
+        <div class="ch-panel-body">
+          ${state.selectedWorkspaceId ? renderChannelsBlock() : `<div class="ch-panel-empty">Выбери воркспейс слева или создай новый кнопкой +.</div>`}
+          ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}
+          ${renderVoiceStrip()}
+        </div>
+        <footer class="user-strip">
           <button id="open-profile" class="user user-btn" title="Профиль">
             <div class="avatar">${(me?.displayName || me?.username || "?").charAt(0).toUpperCase()}</div>
-            <div>
+            <div class="user-strip-name">
               <div class="user-name">${escapeHtml(me?.displayName || me?.username || "—")}</div>
               <div class="user-sub">@${escapeHtml(me?.username || "")}</div>
             </div>
           </button>
-          ${renderBellButton()}
-          ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">🛡</button>` : ""}
-          <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
-        </div>
-        <div class="section-title">Воркспейсы</div>
-        <ul class="workspace-list">
-          ${state.workspaces
-            .map(
-              (ws) => `
-            <li class="${ws.id === state.selectedWorkspaceId ? "active" : ""}" data-ws="${ws.id}">
-              <span class="ws-badge">${escapeHtml(ws.name.charAt(0).toUpperCase())}</span>
-              <span>${escapeHtml(ws.name)}</span>
-            </li>
-          `
-            )
-            .join("")}
-        </ul>
-        <form id="create-workspace" class="inline-form create-workspace-form" data-slug-touched="false">
-          <div class="create-workspace-row">
-            <input name="name" placeholder="Имя нового воркспейса" required />
-            <button type="submit" title="Создать">+</button>
+          <div class="user-strip-actions">
+            ${renderBellButton()}
+            ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">🛡</button>` : ""}
+            <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
           </div>
-          <details class="create-workspace-advanced">
-            <summary>Адрес (генерируется автоматически)</summary>
-            <input name="slug" placeholder="a-z, 0-9, -" title="3–64 символа, строчные a-z, 0-9, -, не может начинаться/заканчиваться дефисом" />
-          </details>
-        </form>
-        <form id="accept-invite" class="inline-form">
-          <input name="code" placeholder="Код инвайта" required />
-          <button type="submit" title="Принять">↵</button>
-        </form>
-        ${state.selectedWorkspaceId ? renderChannelsBlock() : ""}
-        ${state.selectedWorkspaceId ? renderSearchButton() : ""}
-        ${state.selectedWorkspaceId ? renderMembersButton() : ""}
-        ${state.selectedWorkspaceId && canModerate ? renderAuditButton() : ""}
-        ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}
-        ${renderVoiceStrip()}
+        </footer>
       </aside>
       <main class="content">
         ${selectedChannel ? renderChannelView(selectedChannel) : renderEmpty()}
@@ -1721,24 +1712,12 @@ function channelPrefix(ch: Channel): string {
   return "#";
 }
 
-function renderMembersButton(): string {
-  return `<button id="open-members" class="ghost wide-btn">Участники</button>`;
-}
-
 function renderBellButton(): string {
   const count = state.notificationsUnread;
   const badge = count > 0
     ? `<span class="bell-badge">${count > 99 ? "99+" : count}</span>`
     : "";
   return `<button id="open-notifications" class="ghost bell-btn" title="Уведомления" aria-label="Уведомления">🔔${badge}</button>`;
-}
-
-function renderSearchButton(): string {
-  return `<button id="open-search" class="ghost wide-btn">🔍 Поиск</button>`;
-}
-
-function renderAuditButton(): string {
-  return `<button id="open-audit" class="ghost wide-btn">Журнал событий</button>`;
 }
 
 function renderInvitesBlock(): string {
@@ -1793,7 +1772,9 @@ function renderChannelView(channel: Channel): string {
         ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
       </div>
       <div class="channel-header-actions">
+        <button id="open-search" class="ghost" title="Поиск по сообщениям" aria-label="Поиск">🔍</button>
         <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? "Скрыть участников" : "Показать участников"}" aria-label="Участники">👥</button>
+        ${state.workspaces.find((w) => w.id === channel.workspaceId)?.role && ["owner","admin","moderator"].includes(state.workspaces.find((w) => w.id === channel.workspaceId)!.role!) ? `<button id="open-audit" class="ghost" title="Журнал событий" aria-label="Журнал событий">📜</button>` : ""}
         ${canManage ? `<button id="open-channel-settings" class="ghost" title="Настройки канала" aria-label="Настройки канала">⚙</button>` : ""}
       </div>
     </header>
@@ -2976,9 +2957,9 @@ function attachShellHandlers(): void {
 
   syncCallTimer();
 
-  rootEl.querySelectorAll<HTMLLIElement>("[data-ws]").forEach((li) => {
-    li.addEventListener("click", () => {
-      const id = li.dataset.ws;
+  rootEl.querySelectorAll<HTMLElement>("[data-ws]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.ws;
       if (id && id !== state.selectedWorkspaceId) void selectWorkspace(id);
     });
   });
@@ -3170,54 +3151,33 @@ function attachShellHandlers(): void {
     });
   });
 
-  const wsForm = rootEl.querySelector<HTMLFormElement>("#create-workspace");
-  if (wsForm) {
-    const nameInput = wsForm.querySelector<HTMLInputElement>('input[name="name"]');
-    const slugInput = wsForm.querySelector<HTMLInputElement>('input[name="slug"]');
-    if (nameInput && slugInput) {
-      nameInput.addEventListener("input", () => {
-        if (wsForm.dataset.slugTouched !== "true") {
-          slugInput.value = slugify(nameInput.value);
-        }
-      });
-      slugInput.addEventListener("input", () => {
-        wsForm.dataset.slugTouched = slugInput.value === "" ? "false" : "true";
-      });
+  rootEl.querySelector<HTMLButtonElement>("#ws-rail-create")?.addEventListener("click", async () => {
+    const name = window.prompt("Имя нового воркспейса:")?.trim();
+    if (!name) return;
+    const slug = slugify(name);
+    if (slug.length < 3) {
+      state.status = "Имя должно содержать минимум 3 буквы/цифры для генерации адреса.";
+      render();
+      return;
     }
-    wsForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const data = new FormData(wsForm);
-      const name = String(data.get("name") ?? "").trim();
-      let slug = String(data.get("slug") ?? "").trim().toLowerCase();
-      slug = slug.replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "");
-      if (slug.length < 3) {
-        state.status = "Slug должен быть от 3 символов: a-z, 0-9, -";
-        render();
-        return;
-      }
-      try {
-        const ws = await httpClient.post<Workspace>("/api/v1/workspaces", { name, slug });
-        state.workspaces = [...state.workspaces, ws];
-        realtimeClient.reconnect();
-        await selectWorkspace(ws.id);
-      } catch (err) {
-        state.status = describeError(err);
-        render();
-      }
-    });
-  }
+    try {
+      const ws = await httpClient.post<Workspace>("/api/v1/workspaces", { name, slug });
+      state.workspaces = [...state.workspaces, ws];
+      realtimeClient.reconnect();
+      await selectWorkspace(ws.id);
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
 
-  rootEl.querySelector<HTMLFormElement>("#accept-invite")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.currentTarget as HTMLFormElement;
-    const data = new FormData(form);
-    const code = String(data.get("code") ?? "").trim();
+  rootEl.querySelector<HTMLButtonElement>("#ws-rail-invite")?.addEventListener("click", async () => {
+    const code = window.prompt("Введите код инвайта:")?.trim();
     if (!code) return;
     try {
       const res = await httpClient.post<{ workspaceId: string; role: string }>(
         `/api/v1/invites/${encodeURIComponent(code)}/accept`
       );
-      form.reset();
       await loadWorkspaces();
       realtimeClient.reconnect();
       await selectWorkspace(res.workspaceId);
