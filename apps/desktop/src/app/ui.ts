@@ -1331,7 +1331,7 @@ function renderShell(): void {
           </button>
           <div class="user-strip-actions">
             ${renderBellButton()}
-            ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">🛡</button>` : ""}
+            ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">${icon("shield")}</button>` : ""}
             <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
           </div>
         </footer>
@@ -1717,7 +1717,7 @@ function renderBellButton(): string {
   const badge = count > 0
     ? `<span class="bell-badge">${count > 99 ? "99+" : count}</span>`
     : "";
-  return `<button id="open-notifications" class="ghost bell-btn" title="Уведомления" aria-label="Уведомления">🔔${badge}</button>`;
+  return `<button id="open-notifications" class="ghost bell-btn" title="Уведомления" aria-label="Уведомления">${icon("bell")}${badge}</button>`;
 }
 
 function renderInvitesBlock(): string {
@@ -1772,10 +1772,10 @@ function renderChannelView(channel: Channel): string {
         ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
       </div>
       <div class="channel-header-actions">
-        <button id="open-search" class="ghost" title="Поиск по сообщениям" aria-label="Поиск">🔍</button>
-        <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? "Скрыть участников" : "Показать участников"}" aria-label="Участники">👥</button>
-        ${state.workspaces.find((w) => w.id === channel.workspaceId)?.role && ["owner","admin","moderator"].includes(state.workspaces.find((w) => w.id === channel.workspaceId)!.role!) ? `<button id="open-audit" class="ghost" title="Журнал событий" aria-label="Журнал событий">📜</button>` : ""}
-        ${canManage ? `<button id="open-channel-settings" class="ghost" title="Настройки канала" aria-label="Настройки канала">⚙</button>` : ""}
+        <button id="open-search" class="ghost" title="Поиск по сообщениям" aria-label="Поиск">${icon("search")}</button>
+        <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? "Скрыть участников" : "Показать участников"}" aria-label="Участники">${icon("users")}</button>
+        ${state.workspaces.find((w) => w.id === channel.workspaceId)?.role && ["owner","admin","moderator"].includes(state.workspaces.find((w) => w.id === channel.workspaceId)!.role!) ? `<button id="open-audit" class="ghost" title="Журнал событий" aria-label="Журнал событий">${icon("scroll")}</button>` : ""}
+        ${canManage ? `<button id="open-channel-settings" class="ghost" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>` : ""}
       </div>
     </header>
     ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
@@ -1790,7 +1790,7 @@ function renderChannelView(channel: Channel): string {
     <div id="mention-popup" class="mention-popup" hidden></div>
     <form id="send-form" class="send-form">
       <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
-        📎
+        ${icon("paperclip")}
         <input type="file" id="attach-input" multiple hidden ${canSend ? "" : "disabled"} />
       </label>
       <input
@@ -2393,10 +2393,10 @@ function renderMessage(m: Message): string {
         <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(describePeer(m.authorId))}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}
         <span class="timestamp">${formatTime(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
-          <button class="ghost action-react" data-id="${m.id}" title="Реакция">😊</button>
-          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">↩</button>
-          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">✎</button>` : ""}
-          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">🗑</button>` : ""}
+          <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
+          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">${icon("reply")}</button>
+          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">${icon("pencil")}</button>` : ""}
+          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">${icon("trash")}</button>` : ""}
         </span>
       </div>
       ${m.body ? `<div class="message-body">${renderBody(m.body)}</div>` : ""}
@@ -2676,8 +2676,8 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
         }
       </td>
       <td>
-        ${showCall ? `<button class="ghost member-call" data-user-id="${m.userId}" title="Позвонить">📞</button>` : ""}
-        ${showKick ? `<button class="ghost member-kick" data-user-id="${m.userId}" title="Удалить">🗑</button>` : ""}
+        ${showCall ? `<button class="ghost member-call" data-user-id="${m.userId}" title="Позвонить">${icon("phone")}</button>` : ""}
+        ${showKick ? `<button class="ghost member-kick" data-user-id="${m.userId}" title="Удалить">${icon("trash")}</button>` : ""}
       </td>
     </tr>
   `;
