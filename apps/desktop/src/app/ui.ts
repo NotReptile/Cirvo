@@ -1832,6 +1832,129 @@ function attachVoiceVideoStreams(): void {
   for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-call-remote]")) {
     if (el.srcObject !== callRemote) el.srcObject = callRemote;
   }
+  // Speaking-indicator: создаём/обновляем analyser-узлы для всех участников
+  // (включая себя), drop'аем для тех, кого больше нет в DOM.
+  refreshSpeakingIndicators(voiceLocal, callRemote);
+  attachVoiceTileFullscreen();
+}
+
+// Двойной клик на voice-tile разворачивает его поверх voice-room (через
+// position:fixed inset:24px), повторный клик возвращает в сетку. Один tile
+// в fullscreen за раз: при разворачивании снимаем класс с остальных.
+function attachVoiceTileFullscreen(): void {
+  const tiles = rootEl.querySelectorAll<HTMLDivElement>(".voice-tile");
+  for (const tile of Array.from(tiles)) {
+    if ((tile as HTMLElement & { _fsAttached?: boolean })._fsAttached) continue;
+    (tile as HTMLElement & { _fsAttached?: boolean })._fsAttached = true;
+    tile.addEventListener("dblclick", () => {
+      const wasFs = tile.classList.contains("fullscreen");
+      for (const other of Array.from(tiles)) other.classList.remove("fullscreen");
+      if (!wasFs) tile.classList.add("fullscreen");
+    });
+  }
+}
+
+// Speaking indicator: один общий AudioContext, по AnalyserNode на каждый
+// audio-track. RAF-цикл считает RMS и переключает .speaking на .voice-tile,
+// чтобы рамка тайла подсвечивалась во время речи (Discord-like). Volume
+// контроль (per-remote slider) — отдельная задача в бэклоге.
+interface SpeakingNode {
+  source: MediaStreamAudioSourceNode;
+  analyser: AnalyserNode;
+  buffer: Uint8Array<ArrayBuffer>;
+  isSpeaking: boolean;
+}
+
+let speakingCtx: AudioContext | null = null;
+const speakingNodes = new Map<string, SpeakingNode>();
+let speakingRaf: number | null = null;
+const SPEAKING_THRESHOLD = 12; // эмпирически: тишина ~3-6, разговор 20+
+
+function ensureSpeakingContext(): AudioContext | null {
+  if (speakingCtx) return speakingCtx;
+  try {
+    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) return null;
+    speakingCtx = new Ctor();
+    return speakingCtx;
+  } catch {
+    return null;
+  }
+}
+
+function refreshSpeakingIndicators(voiceLocal: MediaStream | null, callRemote: MediaStream | null): void {
+  const ctx = ensureSpeakingContext();
+  if (!ctx) return;
+
+  // Map<key, stream> — key используется и для DOM-селектора, и для
+  // удаления нод, когда участник ушёл.
+  const targets = new Map<string, MediaStream>();
+  if (voiceLocal) targets.set("self", voiceLocal);
+  for (const p of state.voiceSnapshot?.participants ?? []) {
+    if (state.voiceSnapshot && p.sessionId === state.voiceSnapshot.selfSessionId) continue;
+    const stream = voiceMgr.getRemoteStream(p.sessionId);
+    if (stream) targets.set(`peer:${p.sessionId}`, stream);
+  }
+  if (callRemote) targets.set("call-remote", callRemote);
+
+  // Создаём недостающие.
+  for (const [key, stream] of targets) {
+    if (speakingNodes.has(key)) continue;
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) continue;
+    try {
+      const source = ctx.createMediaStreamSource(new MediaStream([audioTracks[0]]));
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.6;
+      source.connect(analyser);
+      speakingNodes.set(key, {
+        source,
+        analyser,
+        buffer: new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount)),
+        isSpeaking: false
+      });
+    } catch {
+      // createMediaStreamSource может бросить, если track уже закрыт
+      // (например, peer leave прямо в момент refresh). Игнорируем — на
+      // следующем refresh подберём свежий stream.
+    }
+  }
+  // Удаляем ушедших.
+  for (const [key, node] of speakingNodes) {
+    if (!targets.has(key)) {
+      try { node.source.disconnect(); } catch {}
+      try { node.analyser.disconnect(); } catch {}
+      speakingNodes.delete(key);
+    }
+  }
+  if (speakingNodes.size > 0 && speakingRaf === null) {
+    speakingRaf = requestAnimationFrame(speakingLoop);
+  } else if (speakingNodes.size === 0 && speakingRaf !== null) {
+    cancelAnimationFrame(speakingRaf);
+    speakingRaf = null;
+  }
+}
+
+function speakingLoop(): void {
+  for (const [key, node] of speakingNodes) {
+    node.analyser.getByteFrequencyData(node.buffer);
+    let sum = 0;
+    for (let i = 0; i < node.buffer.length; i++) sum += node.buffer[i];
+    const avg = sum / node.buffer.length;
+    const speaking = avg > SPEAKING_THRESHOLD;
+    if (speaking === node.isSpeaking) continue;
+    node.isSpeaking = speaking;
+    const selector = key === "self"
+      ? ".voice-tile.self"
+      : key.startsWith("peer:")
+        ? `.voice-tile [data-voice-peer="${CSS.escape(key.slice(5))}"]`
+        : `.call-video-tile`;
+    const el = rootEl.querySelector<HTMLElement>(selector);
+    const tile = el?.closest<HTMLElement>(".voice-tile, .call-video-tile");
+    if (tile) tile.classList.toggle("speaking", speaking);
+  }
+  speakingRaf = speakingNodes.size > 0 ? requestAnimationFrame(speakingLoop) : null;
 }
 
 async function uploadFiles(files: File[]): Promise<void> {

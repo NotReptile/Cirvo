@@ -1062,8 +1062,24 @@ input:focus { outline: none; border-color: var(--accent); }
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid rgba(255,255,255,0.06);
+  cursor: pointer;
+  transition: box-shadow 80ms linear, border-color 80ms linear;
 }
 .voice-tile.self { border-color: rgba(67, 181, 129, 0.5); }
+.voice-tile.speaking,
+.call-video-tile.speaking {
+  border-color: rgba(67, 181, 129, 0.95);
+  box-shadow: 0 0 0 2px rgba(67, 181, 129, 0.55);
+}
+/* Fullscreen-режим: tile разворачивается на всю voice-room через
+   position:fixed (двойной клик в attachVoiceTileFullscreen). */
+.voice-tile.fullscreen {
+  position: fixed;
+  inset: 24px;
+  z-index: 70;
+  aspect-ratio: auto;
+  cursor: zoom-out;
+}
 .voice-tile-video {
   width: 100%;
   height: 100%;
