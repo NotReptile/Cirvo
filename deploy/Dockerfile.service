@@ -1,0 +1,48 @@
+# Универсальный Dockerfile для Go-сервисов RuCord (core-api / realtime /
+# worker). Передаётся через `--build-arg SERVICE_NAME=...`; контекст билда
+# должен быть КОРНЕМ репозитория, чтобы go.work + libs/shared-go попали
+# в образ (у каждого сервиса в go.mod стоит replace на ../../libs/shared-go).
+#
+# Использование (из корня репы):
+#   docker build -f deploy/Dockerfile.service --build-arg SERVICE_NAME=core-api -t rucord-core-api .
+# Либо через docker-compose (см. deploy/single-node/docker-compose.yml).
+
+# ---- builder ---------------------------------------------------------------
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /src
+
+# Сначала копируем модульные манифесты, чтобы максимизировать
+# кеш-hit при `go mod download` (изменения в коде не инвалидируют слой
+# зависимостей).
+COPY go.work go.work.sum ./
+COPY libs/shared-go/go.mod libs/shared-go/go.sum libs/shared-go/
+COPY services/core-api/go.mod services/core-api/go.sum services/core-api/
+COPY services/realtime/go.mod services/realtime/go.sum services/realtime/
+COPY services/worker/go.mod services/worker/go.sum services/worker/
+
+# Прогреваем кеш модулей. На go.work стек умеет тянуть deps для всех
+# модулей сразу.
+RUN go mod download all
+
+# Копируем исходники
+COPY libs/shared-go libs/shared-go
+COPY services services
+
+ARG SERVICE_NAME
+ENV CGO_ENABLED=0
+
+# go build из директории сервиса (свой go.mod), бинарь -> /out/app.
+RUN cd services/${SERVICE_NAME} && \
+    go build -trimpath -ldflags="-s -w" -o /out/app ./cmd/${SERVICE_NAME}
+
+# ---- runtime ---------------------------------------------------------------
+# distroless static = ~2 MB base, без shell. Безопасно для прода.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /out/app /app
+
+USER nonroot:nonroot
+ENTRYPOINT ["/app"]

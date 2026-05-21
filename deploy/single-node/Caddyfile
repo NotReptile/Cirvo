@@ -10,10 +10,9 @@
 #   RUCORD_TLS_EMAIL     — email для ACME/Let's Encrypt либо литерал
 #                          `internal` — тогда Caddy выдаст self-signed
 #                          сертификат через встроенный CA.
-#   RUCORD_UPSTREAM_HOST — хост, где слушают core-api/realtime. По умолчанию
-#                          `host.docker.internal` (сервисы как host-процессы).
-#                          Если поднимаешь core-api/realtime контейнерами в
-#                          этом же compose — поставь имя сервиса.
+#   RUCORD_CORE_API_HOST — хост core-api (по умолчанию имя сервиса `core-api`).
+#   RUCORD_REALTIME_HOST — хост realtime (по умолчанию имя сервиса `realtime`).
+#                          Менять только если запускаешь сервисы вне compose.
 
 {
 	# Глобальный admin endpoint наружу не торчит.
@@ -49,7 +48,7 @@
 	# --- Маршруты ---
 	# WebSocket → realtime (порт 8090).
 	handle /ws* {
-		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8090 {
+		reverse_proxy {$RUCORD_REALTIME_HOST:realtime}:8090 {
 			# WebSocket таймауты длиннее обычных HTTP.
 			transport http {
 				read_timeout 1h
@@ -60,15 +59,15 @@
 
 	# Liveness/readiness — наружу отдаём, но без кеширования.
 	handle /healthz {
-		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8080
+		reverse_proxy {$RUCORD_CORE_API_HOST:core-api}:8080
 	}
 	handle /readyz {
-		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8080
+		reverse_proxy {$RUCORD_CORE_API_HOST:core-api}:8080
 	}
 
 	# REST API.
 	handle /api/* {
-		reverse_proxy {$RUCORD_UPSTREAM_HOST:host.docker.internal}:8080
+		reverse_proxy {$RUCORD_CORE_API_HOST:core-api}:8080
 	}
 
 	# Всё остальное — статика клиента (если будет монтироваться в /srv)

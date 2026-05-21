@@ -1,14 +1,46 @@
 # Single-node deploy.
 #
-# Поднимает инфраструктуру (Postgres, Redis, MinIO) + Caddy reverse-proxy.
-# Сервисы core-api / realtime / worker пока запускаются как host-процессы
-# (см. `apps/desktop` README); Caddy проксирует их через
-# `host.docker.internal`. После того как появятся Dockerfile'ы для сервисов
-# (см. roadmap A.5) — добавить их сюда же и поменять RUCORD_UPSTREAM_HOST.
+# Поднимает весь стек одной командой: Postgres, Redis, MinIO, Caddy
+# reverse-proxy, и Go-сервисы (core-api, realtime, worker) собранные
+# из deploy/Dockerfile.service.
 #
 # Перед запуском:
 #   1) cp deploy/.env.example deploy/.env и поправить секреты + RUCORD_DOMAIN
-#   2) docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env up -d
+#   2) Миграции БД:
+#        docker compose -f deploy/single-node/docker-compose.yml \
+#          --env-file deploy/.env run --rm migrate
+#   3) Поднять всё:
+#        docker compose -f deploy/single-node/docker-compose.yml \
+#          --env-file deploy/.env up -d --build
+#
+# Билд-контекст у Go-сервисов — корень репозитория (../..), потому что
+# go.work + libs/shared-go нужны для replace-directives.
+
+x-go-service-env: &go-service-env
+  RUCORD_ENV: ${RUCORD_ENV:-production}
+  RUCORD_STAGE: ${RUCORD_STAGE:-prod}
+  RUCORD_JWT_SECRET: ${RUCORD_JWT_SECRET:?RUCORD_JWT_SECRET is required}
+  RUCORD_JWT_ACCESS_TTL: ${RUCORD_JWT_ACCESS_TTL:-15m}
+  RUCORD_CORS_ORIGINS: ${RUCORD_CORS_ORIGINS:-}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-rucord}
+  POSTGRES_USER: ${POSTGRES_USER:-rucord}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-disable}
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  REDIS_DB: ${REDIS_DB:-0}
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+  MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+  MINIO_BUCKET: ${MINIO_BUCKET:-rucord}
+  MINIO_USE_SSL: "false"
+  ICE_STUN_URLS: ${ICE_STUN_URLS:-stun:stun.l.google.com:19302}
+  ICE_TURN_URL: ${ICE_TURN_URL:-}
+  ICE_TURN_USERNAME: ${ICE_TURN_USERNAME:-}
+  ICE_TURN_CREDENTIAL: ${ICE_TURN_CREDENTIAL:-}
 
 services:
   reverse-proxy:
@@ -21,19 +53,77 @@ services:
     environment:
       RUCORD_DOMAIN: ${RUCORD_DOMAIN:-localhost}
       RUCORD_TLS_EMAIL: ${RUCORD_TLS_EMAIL:-internal}
-      RUCORD_UPSTREAM_HOST: ${RUCORD_UPSTREAM_HOST:-host.docker.internal}
+      RUCORD_CORE_API_HOST: ${RUCORD_CORE_API_HOST:-core-api}
+      RUCORD_REALTIME_HOST: ${RUCORD_REALTIME_HOST:-realtime}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    extra_hosts:
-      # На Linux Docker по умолчанию не резолвит host.docker.internal —
-      # добавляем явный маппинг на host-gateway.
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      core-api:
+        condition: service_started
+      realtime:
+        condition: service_started
+
+  core-api:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE_NAME: core-api
+    image: rucord-core-api:local
+    restart: unless-stopped
+    environment:
+      <<: *go-service-env
+      RUCORD_HTTP_ADDRESS: ":8080"
+      # Bootstrap первого админа — применяется один раз при пустой БД.
+      RUCORD_BOOTSTRAP_EMAIL: ${RUCORD_BOOTSTRAP_EMAIL:-}
+      RUCORD_BOOTSTRAP_USERNAME: ${RUCORD_BOOTSTRAP_USERNAME:-}
+      RUCORD_BOOTSTRAP_PASSWORD: ${RUCORD_BOOTSTRAP_PASSWORD:-}
+      RUCORD_BOOTSTRAP_DISPLAY_NAME: ${RUCORD_BOOTSTRAP_DISPLAY_NAME:-}
+      RUCORD_BOOTSTRAP_WORKSPACE_SLUG: ${RUCORD_BOOTSTRAP_WORKSPACE_SLUG:-}
+      RUCORD_BOOTSTRAP_WORKSPACE_NAME: ${RUCORD_BOOTSTRAP_WORKSPACE_NAME:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  realtime:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE_NAME: realtime
+    image: rucord-realtime:local
+    restart: unless-stopped
+    environment:
+      <<: *go-service-env
+      RUCORD_HTTP_ADDRESS: ":8090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.service
+      args:
+        SERVICE_NAME: worker
+    image: rucord-worker:local
+    restart: unless-stopped
+    environment:
+      <<: *go-service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
 
   postgres:
@@ -54,9 +144,7 @@ services:
   # Миграции применяются явно командой:
   #   docker compose -f deploy/single-node/docker-compose.yml \
   #     --env-file deploy/.env run --rm migrate
-  # Profile `tools` исключает контейнер из `docker compose up` — иначе он
-  # выполнился бы один раз и не пере-исполнялся при добавлении новых
-  # миграций без `--force-recreate`. См. A.5.
+  # Profile `tools` исключает контейнер из `docker compose up`.
   migrate:
     image: migrate/migrate:v4.17.1
     profiles: ["tools"]
@@ -98,8 +186,7 @@ services:
       retries: 12
 
   # One-off контейнер для backup/restore MinIO бакета через mc mirror.
-  # Используется скриптами deploy/backup.sh и deploy/restore.sh:
-  #   docker compose run --rm --entrypoint /bin/sh mc -c "..."
+  # Используется скриптами deploy/backup.sh и deploy/restore.sh.
   mc:
     image: minio/mc:latest
     profiles: ["tools"]
