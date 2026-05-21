@@ -1228,6 +1228,37 @@ input:focus { outline: none; border-color: var(--accent); }
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
 }
+/* Когда кто-то шарит экран — layout «primary + strip»: один большой
+   tile сверху, остальные в горизонтальной полосе. Большой растягивается
+   на доступную высоту (aspect-ratio переопределён в .primary). */
+.voice-tiles.screen-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.voice-primary {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.voice-primary .voice-tile.primary {
+  flex: 1;
+  aspect-ratio: auto;
+  min-height: 240px;
+}
+.voice-strip-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  max-height: 140px;
+}
+.voice-strip-tiles .voice-tile {
+  aspect-ratio: 16/9;
+}
+.voice-tile.sharing {
+  border-color: rgba(88,101,242,0.5);
+  box-shadow: 0 0 0 1px rgba(88,101,242,0.3);
+}
 .voice-tile {
   position: relative;
   aspect-ratio: 16/9;

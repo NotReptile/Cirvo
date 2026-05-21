@@ -33,6 +33,10 @@ var relayEvents = map[string]struct{}{
 	"voice.answer": {},
 	"voice.ice":    {},
 	"voice.hangup": {},
+	// Track-kind / mute-state синхронизация. Принимающий не может
+	// определить по MediaStreamTrack, делится ли peer экраном или
+	// камерой — отдельный канал signalling'а несёт `state` JSON.
+	"voice.state": {},
 }
 
 type Module struct {
@@ -74,6 +78,7 @@ type relayPayload struct {
 	Candidate       json.RawMessage `json:"candidate,omitempty"`
 	Reason          string          `json:"reason,omitempty"`
 	ChannelID       string          `json:"channel_id,omitempty"`
+	State           json.RawMessage `json:"state,omitempty"`
 }
 
 // Relay validates and forwards a signaling envelope from a connected user.
@@ -160,6 +165,9 @@ func (m *Module) Relay(ctx context.Context, event string, fromUser, fromSession 
 	}
 	if p.Reason != "" {
 		pl["reason"] = p.Reason
+	}
+	if len(p.State) > 0 {
+		pl["state"] = json.RawMessage(p.State)
 	}
 	encoded, err := json.Marshal(envelope)
 	if err != nil {

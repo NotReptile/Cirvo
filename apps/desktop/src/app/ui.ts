@@ -328,6 +328,8 @@ interface VoicePeekParticipant {
   username: string;
   displayName?: string;
   joinedAt: string;
+  screenSharing?: boolean;
+  cameraOn?: boolean;
 }
 
 interface VoicePeek {
@@ -1824,22 +1826,42 @@ function renderVoiceChannelView(channel: Channel): string {
   // tiles: один на каждого участника. Для своих — local stream через
   // data-voice-self; для чужих — remote stream через data-voice-peer.
   // srcObject цепляется после render() в attachVoiceVideoStreams().
+  //
+  // Screenshare-layout: если кто-то делится экраном (self или peer),
+  // его tile становится primary (большой, сверху), остальные —
+  // в горизонтальной полосе под ним. peer.screenSharing приходит
+  // через `voice.state` (отдельный сигналинг, см. PeerStatePayload).
+  const renderTile = (p: typeof participants[number], extraClass = ""): string => {
+    const name = p.displayName?.trim() || p.username || p.userId.slice(0, 8);
+    const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
+    const tag = isSelf ? `data-voice-self="1"` : `data-voice-peer="${escapeHtml(p.sessionId)}"`;
+    const sharing = isSelf ? screenOn : !!p.screenSharing;
+    const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${extraClass ? " " + extraClass : ""}`;
+    return `<div class="${cls}">
+      <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
+      <div class="voice-tile-overlay">
+        <span class="voice-dot"></span>
+        <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}${sharing ? " · 🖥 экран" : ""}</span>
+      </div>
+    </div>`;
+  };
+
+  const sharer = participants.find((p) => {
+    const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
+    return isSelf ? screenOn : !!p.screenSharing;
+  });
+
   const tiles = participants.length === 0
     ? `<div class="muted">Пока никого. ${joined ? "Подключайся, говори :)" : "Будь первым."}</div>`
-    : `<div class="voice-tiles">${participants
-        .map((p) => {
-          const name = p.displayName?.trim() || p.username || p.userId.slice(0, 8);
-          const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
-          const tag = isSelf ? `data-voice-self="1"` : `data-voice-peer="${escapeHtml(p.sessionId)}"`;
-          return `<div class="voice-tile${isSelf ? " self" : ""}">
-            <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
-            <div class="voice-tile-overlay">
-              <span class="voice-dot"></span>
-              <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
-            </div>
-          </div>`;
-        })
-        .join("")}</div>`;
+    : sharer
+      ? `<div class="voice-tiles screen-layout">
+          <div class="voice-primary">${renderTile(sharer, "primary")}</div>
+          <div class="voice-strip-tiles">${participants
+            .filter((p) => p.sessionId !== sharer.sessionId)
+            .map((p) => renderTile(p))
+            .join("")}</div>
+        </div>`
+      : `<div class="voice-tiles">${participants.map((p) => renderTile(p)).join("")}</div>`;
 
   const actions = joined
     ? `

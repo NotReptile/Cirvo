@@ -19,6 +19,11 @@ export interface VoiceParticipant {
   username: string;
   displayName?: string;
   joinedAt: string;
+  // Транслируется через `voice.state` (peer сообщает, что у него
+  // активна демонстрация экрана). Receiver не может вывести это из
+  // MediaStreamTrack — нужен отдельный сигналинг.
+  screenSharing?: boolean;
+  cameraOn?: boolean;
 }
 
 export type VoiceState = "idle" | "joining" | "active" | "leaving";
@@ -54,6 +59,12 @@ interface RelayPayload {
   sdp?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
   reason?: string;
+  state?: PeerStatePayload;
+}
+
+interface PeerStatePayload {
+  screen_sharing?: boolean;
+  camera_on?: boolean;
 }
 
 interface VoiceEventPayload {
@@ -251,6 +262,7 @@ export class VoiceChannelManager {
         }
       }
       this.update({ cameraOn: true, error: null });
+      this.broadcastState();
       return true;
     }
     const track = this.cameraTrack;
@@ -278,6 +290,7 @@ export class VoiceChannelManager {
       // трек, ничего делать не надо. cameraOn=false уже корректно.
     }
     this.update({ cameraOn: false });
+    this.broadcastState();
     return false;
   }
 
@@ -342,6 +355,7 @@ export class VoiceChannelManager {
         }
       }
       this.update({ screenSharing: true, cameraOn: false, error: null });
+      this.broadcastState();
       return true;
     }
     // off
@@ -362,6 +376,7 @@ export class VoiceChannelManager {
       }
     }
     this.update({ screenSharing: false });
+    this.broadcastState();
     return false;
   }
 
@@ -396,6 +411,10 @@ export class VoiceChannelManager {
     } finally {
       peer.makingOffer = false;
     }
+    // После offer'а сообщаем своё текущее состояние (screen/camera).
+    // Receiver может уже знать через прошлый broadcast, но мы только
+    // что подружились — гарантируем первый снимок.
+    this.sendStateTo(other.sessionId);
   }
 
   private createPeer(peerSessionId: string, callId: string, polite: boolean): PeerEntry {
@@ -547,6 +566,45 @@ export class VoiceChannelManager {
       case "voice.hangup":
         this.destroyPeer(p.from_session_id);
         break;
+      case "voice.state":
+        this.handleState(p);
+        break;
+    }
+  }
+
+  private handleState(p: RelayPayload): void {
+    if (!p.from_session_id || !p.state) return;
+    const sid = p.from_session_id;
+    const next = this.snapshot.participants.map((x) =>
+      x.sessionId === sid
+        ? {
+            ...x,
+            screenSharing: !!p.state!.screen_sharing,
+            cameraOn: !!p.state!.camera_on
+          }
+        : x
+    );
+    this.update({ participants: next });
+  }
+
+  private sendStateTo(sessionId: string): void {
+    try {
+      this.realtime.send("voice.state", {
+        call_id: this.peers.get(sessionId)?.callId ?? "state",
+        target_session_id: sessionId,
+        state: {
+          screen_sharing: this.snapshot.screenSharing,
+          camera_on: this.snapshot.cameraOn
+        }
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private broadcastState(): void {
+    for (const sid of this.peers.keys()) {
+      this.sendStateTo(sid);
     }
   }
 
@@ -612,6 +670,9 @@ export class VoiceChannelManager {
     } catch {
       /* ignore — peer мог быть закрыт пока шла обработка */
     }
+    // Симметрично dialPeer: после answer'а отправляем своё текущее
+    // состояние caller'у, чтобы он знал про screen/camera.
+    this.sendStateTo(p.from_session_id);
   }
 
   private async handleAnswer(p: RelayPayload): Promise<void> {
