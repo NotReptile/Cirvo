@@ -28,6 +28,18 @@ export interface VoiceParticipant {
 
 export type VoiceState = "idle" | "joining" | "active" | "leaving";
 
+// Пресет качества screenshare'а: разрешение, FPS и cap по битрейту.
+// Передаётся в toggleScreenShare() — без него браузер сам выбирает
+// (обычно 720p15, а WebRTC режет битрейт до ~1-2 Mbps → картинка
+// «сыпется»). После replace/addTrack применяем `setParameters` с
+// `maxBitrate`/`maxFramerate` к video sender'у каждого peer'а.
+export interface ScreenShareQuality {
+  width: number;
+  height: number;
+  frameRate: number;
+  maxBitrate: number;
+}
+
 export interface VoiceSnapshot {
   channelId: string | null;
   participants: VoiceParticipant[];
@@ -300,15 +312,25 @@ export class VoiceChannelManager {
   // камеру можно включить заново отдельной кнопкой. Слушаем
   // track.onended, чтобы авто-выключиться когда юзер нажал «Stop
   // sharing» в системной панели браузера.
-  async toggleScreenShare(): Promise<boolean> {
+  async toggleScreenShare(quality?: ScreenShareQuality): Promise<boolean> {
     if (this.snapshot.state !== "active") return false;
     if (!this.screenTrack) {
       let displayStream: MediaStream;
       try {
         // navigator.mediaDevices.getDisplayMedia — стандартный API; на
         // Tauri desktop нужны OS-разрешения (на macOS — Screen
-        // Recording; на Wayland — portal-prompt).
-        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        // Recording; на Wayland — portal-prompt). Без constraints
+        // браузер выдаёт 720p ~15fps — отсюда «сыпется». ideal-поля
+        // просят максимум, фактический выдаваемый формат зависит от
+        // источника (нельзя апскейлить экран).
+        const videoConstraints: MediaTrackConstraints = quality
+          ? {
+              width: { ideal: quality.width },
+              height: { ideal: quality.height },
+              frameRate: { ideal: quality.frameRate }
+            }
+          : {};
+        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints });
       } catch (err) {
         const message = err instanceof Error ? err.message : "screen share denied";
         this.update({ error: message });
@@ -353,6 +375,13 @@ export class VoiceChannelManager {
         } catch {
           /* ignore */
         }
+      }
+      // Поднимаем cap по битрейту/FPS на video sender'е. По умолчанию
+      // WebRTC держит ~1-2 Mbps — для статичного экрана норм, для
+      // динамики/игр мало. setParameters async, ошибки в каждом peer'е
+      // игнорим — peer может уже быть закрыт.
+      if (quality) {
+        await this.applyScreenShareEncoding(quality);
       }
       this.update({ screenSharing: true, cameraOn: false, error: null });
       this.broadcastState();
@@ -531,7 +560,16 @@ export class VoiceChannelManager {
   private async acquireLocalStream(): Promise<void> {
     if (this.localStream) return;
     this.localStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
+      // Нативный WebRTC-стек Chromium: NS3 шумоподавление + AEC3
+      // эхоподавление + AGC2. Бесплатно, без зависимостей. Чистит
+      // вентилятор/клавиатуру/эхо динамиков — для разговорной речи
+      // приемлемо. Если железо/драйвер не поддерживают какой-то
+      // флаг, браузер тихо его игнорит.
+      audio: {
+        noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true
+      },
       video: false
     });
   }
@@ -569,6 +607,31 @@ export class VoiceChannelManager {
       case "voice.state":
         this.handleState(p);
         break;
+    }
+  }
+
+  // Применить cap на video sender'ах ВРУЧНУЮ (без переоткрытия
+   // displayStream'а). Если screenshare сейчас не активен — no-op.
+  async applyScreenShareQuality(quality: ScreenShareQuality): Promise<void> {
+    if (!this.screenTrack) return;
+    await this.applyScreenShareEncoding(quality);
+  }
+
+  private async applyScreenShareEncoding(quality: ScreenShareQuality): Promise<void> {
+    for (const peer of this.peers.values()) {
+      const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
+      if (!sender) continue;
+      try {
+        const params = sender.getParameters();
+        if (!params.encodings || params.encodings.length === 0) {
+          params.encodings = [{}];
+        }
+        params.encodings[0].maxBitrate = quality.maxBitrate;
+        params.encodings[0].maxFramerate = quality.frameRate;
+        await sender.setParameters(params);
+      } catch {
+        /* ignore — peer мог закрыться, либо браузер не поддерживает поле */
+      }
     }
   }
 

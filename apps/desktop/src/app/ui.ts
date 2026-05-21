@@ -3,6 +3,7 @@ import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelMan
 import type { ApiError, HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { icon } from "./icons";
+import type { ScreenShareQuality } from "../call/voiceChannelManager";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
@@ -320,6 +321,29 @@ interface AppState {
   // и unread-индикатор для канала. Не персистится на бэке (MVP) —
   // на refresh сбрасывается, как в Discord-default-state до сохранения.
   mutedChannels: Set<string>;
+  // Пресет качества демонстрации экрана. Применяется при следующем
+  // toggleScreenShare; меняется через `<select>` рядом с кнопкой
+  // «Поделиться экраном». Персистится в localStorage.
+  screenShareQuality: ScreenShareQualityKey;
+}
+
+export type ScreenShareQualityKey = "720p30" | "1080p30" | "1080p60" | "1440p30";
+
+export const SCREEN_SHARE_PRESETS: Record<ScreenShareQualityKey, ScreenShareQuality> = {
+  "720p30":  { width: 1280, height: 720,  frameRate: 30, maxBitrate: 2_500_000 },
+  "1080p30": { width: 1920, height: 1080, frameRate: 30, maxBitrate: 5_000_000 },
+  "1080p60": { width: 1920, height: 1080, frameRate: 60, maxBitrate: 8_000_000 },
+  "1440p30": { width: 2560, height: 1440, frameRate: 30, maxBitrate: 10_000_000 }
+};
+
+const SCREEN_SHARE_QUALITY_LS = "rucord:screenShareQuality";
+
+function loadScreenShareQuality(): ScreenShareQualityKey {
+  try {
+    const v = localStorage.getItem(SCREEN_SHARE_QUALITY_LS);
+    if (v && v in SCREEN_SHARE_PRESETS) return v as ScreenShareQualityKey;
+  } catch { /* ignore */ }
+  return "1080p30";
 }
 
 interface VoicePeekParticipant {
@@ -404,7 +428,8 @@ const state: AppState = {
   voiceVolumes: {},
   voiceVolumeMenu: null,
   memberSidebarOpen: true,
-  mutedChannels: new Set()
+  mutedChannels: new Set(),
+  screenShareQuality: loadScreenShareQuality()
 };
 
 // LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
@@ -1806,6 +1831,17 @@ function renderChannelView(channel: Channel): string {
   `;
 }
 
+// Селект качества демонстрации экрана (рядом с кнопкой «Поделиться
+// экраном»). Применяется при следующем toggleScreenShare; если уже
+// шарим — applyScreenShareQuality переприменяет cap на лету.
+function renderScreenQualitySelect(): string {
+  const cur = state.screenShareQuality;
+  const opts = (Object.keys(SCREEN_SHARE_PRESETS) as ScreenShareQualityKey[])
+    .map((k) => `<option value="${k}"${k === cur ? " selected" : ""}>${k}</option>`)
+    .join("");
+  return `<select class="screen-quality-select ghost" title="Качество демонстрации экрана">${opts}</select>`;
+}
+
 function renderVoiceChannelView(channel: Channel): string {
   const voice = state.voiceSnapshot;
   const joined = voice?.channelId === channel.id;
@@ -1868,6 +1904,7 @@ function renderVoiceChannelView(channel: Channel): string {
       ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? "Включить микрофон" : "Заглушить", muted ? "danger" : "")}
       ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? "Выключить камеру" : "Включить камеру", "", screenOn)}
       ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? "Прекратить демо" : "Поделиться экраном", screenOn ? "active" : "")}
+      ${renderScreenQualitySelect()}
       ${callIconButton("voice-leave", "log-out", leaving ? "Выхожу…" : "Выйти", "hangup", leaving)}
     `
     : `
@@ -2959,10 +2996,25 @@ function attachShellHandlers(): void {
   for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-screen")) {
     btn.addEventListener("click", async () => {
       try {
-        await voiceMgr.toggleScreenShare();
+        const preset = SCREEN_SHARE_PRESETS[state.screenShareQuality];
+        await voiceMgr.toggleScreenShare(preset);
       } catch (err) {
         state.status = describeError(err);
         render();
+      }
+    });
+  }
+  for (const sel of rootEl.querySelectorAll<HTMLSelectElement>(".screen-quality-select")) {
+    sel.addEventListener("change", () => {
+      const v = sel.value;
+      if (v in SCREEN_SHARE_PRESETS) {
+        state.screenShareQuality = v as ScreenShareQualityKey;
+        try { localStorage.setItem("rucord:screenShareQuality", v); } catch { /* ignore */ }
+        // Если уже шарим — переприменяем encoding без переподключения.
+        const snap = voiceMgr.getSnapshot();
+        if (snap.screenSharing) {
+          void voiceMgr.applyScreenShareQuality(SCREEN_SHARE_PRESETS[v as ScreenShareQualityKey]);
+        }
       }
     });
   }

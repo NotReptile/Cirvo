@@ -355,7 +355,14 @@ export class CallManager {
 
   private async acquireLocalStream(): Promise<void> {
     if (this.localStream) return;
-    this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    this.localStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true
+      },
+      video: false
+    });
   }
 
   private createPeerConnection(): void {

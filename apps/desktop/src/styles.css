@@ -1259,6 +1259,15 @@ input:focus { outline: none; border-color: var(--accent); }
   border-color: rgba(88,101,242,0.5);
   box-shadow: 0 0 0 1px rgba(88,101,242,0.3);
 }
+.screen-quality-select {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+  height: 32px;
+}
 .voice-tile {
   position: relative;
   aspect-ratio: 16/9;
