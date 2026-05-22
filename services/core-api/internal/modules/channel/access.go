@@ -16,24 +16,46 @@ type Scope struct {
 }
 
 // Resolve returns the channel scope if the user is allowed to see the channel.
-// A user can see a channel when they are a workspace member, and either the
-// channel is public or they appear in channel_members.
+// Для workspace-каналов: пользователь должен быть участником воркспейса, и
+// либо канал публичный, либо есть запись в channel_members.
+// Для DM-каналов (kind='dm', workspace_id IS NULL): проверка только через
+// channel_members — DM существует вне воркспейса, оба участника
+// прописаны в channel_members при создании.
 func Resolve(ctx context.Context, db *postgres.Pool, channelID, userID uuid.UUID) (Scope, bool) {
-	var s Scope
+	var (
+		s          Scope
+		wsID       *uuid.UUID
+	)
 	err := db.QueryRow(ctx,
-		`select c.workspace_id, c.kind, c.is_private
-		 from channels c
-		 join workspace_members m on m.workspace_id = c.workspace_id and m.user_id = $2
-		 where c.id = $1`,
-		channelID, userID,
-	).Scan(&s.WorkspaceID, &s.Kind, &s.IsPrivate)
+		`select c.workspace_id, c.kind, c.is_private from channels c where c.id = $1`,
+		channelID,
+	).Scan(&wsID, &s.Kind, &s.IsPrivate)
 	if err != nil {
 		return Scope{}, false
 	}
-	if s.IsPrivate {
-		if !IsMember(ctx, db, channelID, userID) {
+	if wsID != nil {
+		s.WorkspaceID = *wsID
+		// Workspace-канал: проверяем членство в воркспейсе.
+		var memberExists bool
+		if err := db.QueryRow(ctx,
+			`select exists(select 1 from workspace_members where workspace_id = $1 and user_id = $2)`,
+			s.WorkspaceID, userID,
+		).Scan(&memberExists); err != nil || !memberExists {
 			return Scope{}, false
 		}
+		if s.IsPrivate {
+			if !IsMember(ctx, db, channelID, userID) {
+				return Scope{}, false
+			}
+		}
+		return s, true
+	}
+	// DM-канал — workspace_id отсутствует. Доступ только через channel_members.
+	if s.Kind != "dm" {
+		return Scope{}, false
+	}
+	if !IsMember(ctx, db, channelID, userID) {
+		return Scope{}, false
 	}
 	return s, true
 }

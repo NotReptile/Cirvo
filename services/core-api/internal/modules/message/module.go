@@ -272,13 +272,16 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
 		return
 	}
-	if scope.Kind != "text" {
+	if scope.Kind != "text" && scope.Kind != "dm" {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel does not accept messages")
 		return
 	}
 	// D.4 — per-channel overrides: deny message.write блокирует отправку
 	// даже для участника, у которого есть базовое право от роли.
-	if !permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageWrite) {
+	// DM-каналы (workspace_id IS NULL) пропускают workspace-permission
+	// проверки — членство в DM = право писать/прикреплять/реагировать.
+	if scope.Kind != "dm" &&
+		!permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageWrite) {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "writing is disabled in this channel")
 		return
 	}
@@ -300,7 +303,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	// D.4 — deny message.attach запрещает прикреплять файлы (сообщения
 	// без вложений всё ещё проходят).
-	if len(attachmentUUIDs) > 0 &&
+	if scope.Kind != "dm" && len(attachmentUUIDs) > 0 &&
 		!permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageAttach) {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "attachments are disabled in this channel")
 		return
@@ -424,7 +427,9 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// игнорируются: парсинг пропускается, ничего не пишется в
 	// message_mentions, notifications не enqueue'ятся. UI клиент
 	// тоже не подсветит — без записи в mentions[].
-	mentionsAllowed := permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageMention)
+	// В DM-каналах mentions нет смысла (только 2 участника) — пропускаем.
+	mentionsAllowed := scope.Kind != "dm" &&
+		permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageMention)
 	if mentionsAllowed {
 		if slugs := parseMentionSlugs(req.Body); len(slugs) > 0 {
 			ids, err := resolveMentionTargets(r.Context(), tx, scope.WorkspaceID, slugs)
@@ -499,7 +504,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload message")
 		return
 	}
-	m.publish("message.created", scope.WorkspaceID, channelID, view)
+	m.publishScope("message.created", scope, channelID, view)
 	sharedhttp.WriteJSON(w, http.StatusCreated, view)
 }
 
@@ -689,7 +694,7 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload message")
 		return
 	}
-	m.publish("message.updated", scope.WorkspaceID, channelID, view)
+	m.publishScope("message.updated", scope, channelID, view)
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -743,18 +748,22 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not delete message")
 		return
 	}
-	m.publish("message.deleted", scope.WorkspaceID, channelID, map[string]any{
+	m.publishScope("message.deleted", scope, channelID, map[string]any{
 		"id":        messageID.String(),
 		"channelId": channelID.String(),
 		"deletedAt": now,
 	})
-	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
-		ActorID:     userID,
-		WorkspaceID: scope.WorkspaceID,
-		Action:      auditlog.ActionMessageDeleted,
-		TargetType:  "message",
-		TargetID:    messageID.String(),
-	})
+	// Audit пишем только для workspace-каналов — журнал событий per-workspace,
+	// DM-удаления (приватный диалог двух людей) туда не относятся.
+	if scope.Kind != "dm" {
+		auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+			ActorID:     userID,
+			WorkspaceID: scope.WorkspaceID,
+			Action:      auditlog.ActionMessageDeleted,
+			TargetType:  "message",
+			TargetID:    messageID.String(),
+		})
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -777,7 +786,8 @@ func (m *Module) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageReact) {
+	if scope.Kind != "dm" &&
+		!permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageReact) {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "reactions are disabled in this channel")
 		return
 	}
@@ -792,7 +802,7 @@ func (m *Module) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not add reaction")
 		return
 	}
-	m.publish("message.reaction.added", scope.WorkspaceID, channelID, map[string]any{
+	m.publishScope("message.reaction.added", scope, channelID, map[string]any{
 		"messageId": messageID.String(),
 		"channelId": channelID.String(),
 		"userId":    userID.String(),
@@ -827,7 +837,7 @@ func (m *Module) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not remove reaction")
 		return
 	}
-	m.publish("message.reaction.removed", scope.WorkspaceID, channelID, map[string]any{
+	m.publishScope("message.reaction.removed", scope, channelID, map[string]any{
 		"messageId": messageID.String(),
 		"channelId": channelID.String(),
 		"userId":    userID.String(),
@@ -891,7 +901,7 @@ func (m *Module) handleMarkRead(w http.ResponseWriter, r *http.Request) {
 	if lastMessageID != nil {
 		view.LastMessageID = lastMessageID.String()
 	}
-	m.publish("channel.read", scope.WorkspaceID, channelID, view)
+	m.publishScope("channel.read", scope, channelID, view)
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -1301,6 +1311,47 @@ func (m *Module) publish(eventName string, workspaceID, channelID uuid.UUID, pay
 		ChannelID:   channelID.String(),
 		Payload:     raw,
 	})
+}
+
+// publishScope — публикует событие с учётом DM-семантики. Для workspace-каналов
+// fan-out идёт через WorkspaceID. Для DM (workspace_id отсутствует) — по
+// UserID каждого участника channel_members; так событие доезжает до обеих
+// сторон (включая другие сессии автора) без подписки на воркспейс.
+func (m *Module) publishScope(eventName string, scope channel.Scope, channelID uuid.UUID, payload any) {
+	if m.publisher == nil {
+		return
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	if scope.Kind != "dm" {
+		_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+			Event:       eventName,
+			WorkspaceID: scope.WorkspaceID.String(),
+			ChannelID:   channelID.String(),
+			Payload:     raw,
+		})
+		return
+	}
+	rows, err := m.db.Query(context.Background(),
+		`select user_id from channel_members where channel_id = $1`, channelID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid uuid.UUID
+		if err := rows.Scan(&uid); err != nil {
+			continue
+		}
+		_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+			Event:     eventName,
+			UserID:    uid.String(),
+			ChannelID: channelID.String(),
+			Payload:   raw,
+		})
+	}
 }
 
 func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
