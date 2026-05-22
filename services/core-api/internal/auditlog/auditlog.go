@@ -12,6 +12,7 @@ import (
 // Action codes used across modules.
 const (
 	ActionWorkspaceCreated     = "workspace.created"
+	ActionWorkspaceUpdated     = "workspace.updated"
 	ActionWorkspaceMemberAdded = "workspace.member.added"
 	ActionChannelCreated       = "channel.created"
 	ActionChannelUpdated       = "channel.updated"

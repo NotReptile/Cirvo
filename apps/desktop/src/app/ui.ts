@@ -24,6 +24,7 @@ interface Workspace {
   name: string;
   ownerId: string;
   role?: string;
+  avatarMediaId?: string;
   createdAt: string;
 }
 
@@ -309,6 +310,7 @@ interface AppState {
   // Контекстное меню канала: ПКМ на элементе списка → плавающее меню
   // (Переименовать / Удалить / Скопировать ID). null = меню закрыто.
   channelMenu: { channelId: string; x: number; y: number } | null;
+  workspaceMenu: { workspaceId: string; x: number; y: number } | null;
   // Volume per-remote: ключ — sessionId участника voice-канала либо
   // спец-ключ "call-remote" для 1-к-1 собеседника. Значение 0..1, при
   // отсутствии ключа применяем 1 (default). Хранится в памяти, на
@@ -427,6 +429,7 @@ const state: AppState = {
     draft: {}
   },
   channelMenu: null,
+  workspaceMenu: null,
   voiceVolumes: {},
   voiceVolumeMenu: null,
   memberSidebarOpen: true,
@@ -1329,13 +1332,15 @@ function renderShell(): void {
     <div class="shell${selectedChannel && state.memberSidebarOpen ? " with-members" : ""}">
       <aside class="ws-rail">
         ${state.workspaces
-          .map(
-            (ws) => `
-          <button class="ws-rail-icon${ws.id === state.selectedWorkspaceId ? " active" : ""}" data-ws="${ws.id}" title="${escapeHtml(ws.name)}" aria-label="${escapeHtml(ws.name)}">
-            ${escapeHtml(ws.name.charAt(0).toUpperCase())}
+          .map((ws) => {
+            const active = ws.id === state.selectedWorkspaceId ? " active" : "";
+            const mediaAttr = ws.avatarMediaId ? ` data-avatar-media="${escapeHtml(ws.avatarMediaId)}"` : "";
+            return `
+          <button class="ws-rail-icon${active}" data-ws="${ws.id}"${mediaAttr} title="${escapeHtml(ws.name)}" aria-label="${escapeHtml(ws.name)}">
+            <span class="ws-rail-letter">${escapeHtml(ws.name.charAt(0).toUpperCase())}</span>
           </button>
-        `
-          )
+        `;
+          })
           .join("")}
         <div class="ws-rail-spacer"></div>
         <button id="ws-rail-create" class="ws-rail-icon ws-rail-add" title="Создать воркспейс" aria-label="Создать воркспейс">+</button>
@@ -1377,6 +1382,7 @@ function renderShell(): void {
       ${renderModal()}
       ${renderCallOverlay()}
       ${renderChannelMenu()}
+      ${renderWorkspaceMenu()}
       ${renderVoiceVolumeMenu()}
     </div>
   `;
@@ -1513,6 +1519,26 @@ function renderChannelMenu(): string {
   `;
 }
 
+// H.2: ПКМ-меню на иконке воркспейса. Для owner/admin показывает действия
+// «Загрузить иконку» / «Удалить иконку», остальным — «Скопировать ID».
+function renderWorkspaceMenu(): string {
+  const menu = state.workspaceMenu;
+  if (!menu) return "";
+  const ws = state.workspaces.find((w) => w.id === menu.workspaceId);
+  if (!ws) return "";
+  const canManage = ["owner", "admin"].includes(ws.role ?? "");
+  return `
+    <input id="workspace-avatar-input" type="file" accept="image/*" hidden />
+    <div class="channel-menu-backdrop" data-workspace-menu-close></div>
+    <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
+      <div class="channel-menu-header">${escapeHtml(ws.name)}</div>
+      ${canManage ? `<button class="channel-menu-item" data-workspace-action="upload-icon" data-id="${ws.id}">${ws.avatarMediaId ? "Сменить иконку" : "Загрузить иконку"}</button>` : ""}
+      ${canManage && ws.avatarMediaId ? `<button class="channel-menu-item" data-workspace-action="remove-icon" data-id="${ws.id}">Удалить иконку</button>` : ""}
+      <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">Скопировать ID</button>
+    </div>
+  `;
+}
+
 function renderCallOverlay(): string {
   const snap = state.callSnapshot;
   if (!snap) return "";
@@ -1606,6 +1632,7 @@ function callIconButton(id: string, iconName: Parameters<typeof icon>[0], title:
 // потерять видимость новой активности в логе.
 const AUDIT_ACTION_INFO: Record<string, { ru: string; icon: string }> = {
   "workspace.created": { ru: "создал воркспейс", icon: "🏠" },
+  "workspace.updated": { ru: "изменил воркспейс", icon: "✎" },
   "workspace.member.added": { ru: "добавил участника", icon: "👥" },
   "channel.created": { ru: "создал канал", icon: "📁" },
   "channel.updated": { ru: "изменил канал", icon: "✎" },
@@ -3177,6 +3204,15 @@ function attachShellHandlers(): void {
       const id = el.dataset.ws;
       if (id && id !== state.selectedWorkspaceId) void selectWorkspace(id);
     });
+    el.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const id = el.dataset.ws;
+      if (!id) return;
+      const x = Math.min(ev.clientX, window.innerWidth - 220);
+      const y = Math.min(ev.clientY, window.innerHeight - 160);
+      state.workspaceMenu = { workspaceId: id, x, y };
+      render();
+    });
   });
 
   rootEl.querySelectorAll<HTMLLIElement>("[data-ch]").forEach((li) => {
@@ -3200,6 +3236,76 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLElement>("[data-channel-menu-close]")?.addEventListener("click", () => {
     state.channelMenu = null;
     render();
+  });
+
+  rootEl.querySelector<HTMLElement>("[data-workspace-menu-close]")?.addEventListener("click", () => {
+    state.workspaceMenu = null;
+    render();
+  });
+
+  // H.2: ПКМ-меню воркспейса — загрузка/удаление иконки + copy ID.
+  // Upload — двухступенчатый: POST /uploads (existing media-pipeline,
+  // переиспользует квоты и MinIO-store), затем PUT /workspaces/{id}/avatar
+  // с полученным mediaId. Все права проверяет бэк.
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-workspace-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.dataset.workspaceAction;
+      const id = btn.dataset.id;
+      if (!id || !action) return;
+      state.workspaceMenu = null;
+      const ws = state.workspaces.find((w) => w.id === id);
+      if (!ws) {
+        render();
+        return;
+      }
+      if (action === "copy-id") {
+        try {
+          await navigator.clipboard.writeText(id);
+          state.status = `ID воркспейса «${ws.name}» скопирован`;
+        } catch {
+          state.status = "Не удалось скопировать";
+        }
+        render();
+        return;
+      }
+      if (action === "remove-icon") {
+        if (!window.confirm(`Удалить иконку воркспейса «${ws.name}»?`)) {
+          render();
+          return;
+        }
+        try {
+          const updated = await httpClient.del<Workspace>(`/api/v1/workspaces/${id}/avatar`);
+          state.workspaces = state.workspaces.map((w) => (w.id === id ? { ...w, avatarMediaId: updated.avatarMediaId } : w));
+        } catch (err) {
+          state.status = describeError(err);
+        }
+        render();
+        return;
+      }
+      if (action === "upload-icon") {
+        const input = rootEl.querySelector<HTMLInputElement>("#workspace-avatar-input");
+        if (!input) {
+          render();
+          return;
+        }
+        input.onchange = async () => {
+          const file = input.files?.[0];
+          input.value = "";
+          if (!file) return;
+          try {
+            const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
+            const updated = await httpClient.put<Workspace>(`/api/v1/workspaces/${id}/avatar`, { mediaId: uploaded.id });
+            state.workspaces = state.workspaces.map((w) => (w.id === id ? { ...w, avatarMediaId: updated.avatarMediaId } : w));
+            state.status = `Иконка воркспейса «${ws.name}» обновлена`;
+          } catch (err) {
+            state.status = describeError(err);
+          }
+          render();
+        };
+        input.click();
+        return;
+      }
+    });
   });
 
   rootEl.querySelector<HTMLButtonElement>("#toggle-member-sidebar")?.addEventListener("click", () => {
@@ -3662,6 +3768,37 @@ function attachShellHandlers(): void {
         void fresh;
       } catch {
         // оставляем letter-placeholder
+      }
+    })();
+  });
+
+  // H.2: иконки воркспейсов в ws-rail. Reuse того же mediaBlobCache.
+  // ws-rail-icon — это button, не .avatar-pic, поэтому отдельный селектор;
+  // <img class="ws-rail-img"> вставляется внутрь, letter-placeholder скрывается
+  // CSS-правилом `.ws-rail-icon:has(.ws-rail-img) .ws-rail-letter`.
+  rootEl.querySelectorAll<HTMLButtonElement>(".ws-rail-icon[data-avatar-media]").forEach((slot) => {
+    const mediaId = slot.dataset.avatarMedia;
+    if (!mediaId) return;
+    if (slot.querySelector("img")) return;
+    const url = `/api/v1/media/${mediaId}`;
+    const cached = mediaBlobCache.get(url);
+    if (cached) {
+      slot.insertAdjacentHTML("afterbegin", `<img class="ws-rail-img" src="${cached}" alt="" />`);
+      return;
+    }
+    void (async () => {
+      try {
+        const blob = await httpClient.getBlob(url);
+        const blobUrl = URL.createObjectURL(blob);
+        mediaBlobCache.set(url, blobUrl);
+        rootEl.querySelectorAll<HTMLButtonElement>(
+          `.ws-rail-icon[data-avatar-media="${CSS.escape(mediaId)}"]`
+        ).forEach((s) => {
+          if (s.querySelector("img")) return;
+          s.insertAdjacentHTML("afterbegin", `<img class="ws-rail-img" src="${blobUrl}" alt="" />`);
+        });
+      } catch {
+        // letter остаётся видимой
       }
     })();
   });

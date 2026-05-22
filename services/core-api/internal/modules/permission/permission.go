@@ -41,6 +41,8 @@ const (
 	MemberManageRole Action = "member.manage_role" // change another member's role
 	MemberKick       Action = "member.kick"        // remove another member from workspace
 
+	WorkspaceUpdate Action = "workspace.update" // изменить иконку/имя воркспейса (H.2 — owner+admin)
+
 	// D.4 — channel-scoped actions, поддерживают override через
 	// channel_role_overrides. Базовые grants ниже, эффективный набор
 	// решает AuthorizeChannel.
@@ -203,5 +205,6 @@ func allActions() map[Action]struct{} {
 		MessageReact,
 		MessageAttach,
 		MessageMention,
+		WorkspaceUpdate,
 	)
 }

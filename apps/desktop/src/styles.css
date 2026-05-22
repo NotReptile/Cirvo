@@ -119,8 +119,18 @@ input:focus { outline: none; border-color: var(--accent); }
   display: grid;
   place-items: center;
   position: relative;
+  overflow: hidden;
   transition: border-radius 120ms ease, background 120ms ease;
 }
+.ws-rail-icon .ws-rail-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ws-rail-icon:has(.ws-rail-img) .ws-rail-letter { visibility: hidden; }
 .ws-rail-icon:hover { border-radius: 14px; background: var(--accent); color: #fff; }
 .ws-rail-icon.active { border-radius: 14px; background: var(--accent); color: #fff; }
 .ws-rail-icon.active::before {

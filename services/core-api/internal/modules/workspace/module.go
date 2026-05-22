@@ -44,18 +44,25 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/workspaces", m.handleList)
 	router.Protected("POST /api/v1/workspaces", m.handleCreate)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}", m.handleGet)
+	router.Protected("PUT /api/v1/workspaces/{workspaceId}/avatar", m.handleUpdateAvatar)
+	router.Protected("DELETE /api/v1/workspaces/{workspaceId}/avatar", m.handleRemoveAvatar)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/members", m.handleListMembers)
 	router.Protected("PATCH /api/v1/workspaces/{workspaceId}/members/{userId}", m.handleUpdateMember)
 	router.Protected("DELETE /api/v1/workspaces/{workspaceId}/members/{userId}", m.handleRemoveMember)
 }
 
 type workspaceView struct {
-	ID        string    `json:"id"`
-	Slug      string    `json:"slug"`
-	Name      string    `json:"name"`
-	OwnerID   string    `json:"ownerId"`
-	Role      string    `json:"role,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID            string    `json:"id"`
+	Slug          string    `json:"slug"`
+	Name          string    `json:"name"`
+	OwnerID       string    `json:"ownerId"`
+	Role          string    `json:"role,omitempty"`
+	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+type avatarRequest struct {
+	MediaID string `json:"mediaId"`
 }
 
 type createRequest struct {
@@ -66,7 +73,7 @@ type createRequest struct {
 func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	userID := authctx.MustUserID(r.Context())
 	rows, err := m.db.Query(r.Context(),
-		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code
+		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id
 		 from workspaces w
 		 join workspace_members m on m.workspace_id = w.id and m.user_id = $1
 		 order by w.created_at`,
@@ -82,12 +89,16 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v workspaceView
 		var id, ownerID uuid.UUID
-		if err := rows.Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role); err != nil {
+		var avatarID *uuid.UUID
+		if err := rows.Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
 		v.ID = id.String()
 		v.OwnerID = ownerID.String()
+		if avatarID != nil {
+			v.AvatarMediaID = avatarID.String()
+		}
 		items = append(items, v)
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -200,13 +211,14 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	var v workspaceView
 	var id, ownerID uuid.UUID
+	var avatarID *uuid.UUID
 	err := m.db.QueryRow(r.Context(),
-		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code
+		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id
 		 from workspaces w
 		 join workspace_members m on m.workspace_id = w.id and m.user_id = $2
 		 where w.id = $1`,
 		workspaceID, userID,
-	).Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role)
+	).Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
@@ -217,6 +229,147 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	v.ID = id.String()
 	v.OwnerID = ownerID.String()
+	if avatarID != nil {
+		v.AvatarMediaID = avatarID.String()
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, v)
+}
+
+// handleUpdateAvatar — H.2. Привязывает media-объект как иконку воркспейса.
+// Семантика по аналогии с profile.handleUpdateAvatar: media должна
+// принадлежать вызывающему (защита от привязки чужого upload'а), content-type
+// — image/*. Через FK on delete set null retention.Sweep пропустит media
+// как «прикреплённое».
+func (m *Module) handleUpdateAvatar(w http.ResponseWriter, r *http.Request) {
+	actorID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUIDParam(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, actorID, permission.WorkspaceUpdate)
+	if !isMember {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+	if !allowed {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only owner or admin can change workspace icon")
+		return
+	}
+
+	var req avatarRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	mediaID, err := uuid.Parse(strings.TrimSpace(req.MediaID))
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid mediaId")
+		return
+	}
+
+	var (
+		contentType string
+		ownerID     *uuid.UUID
+	)
+	err = m.db.QueryRow(r.Context(),
+		`select content_type, uploaded_by_user_id from media_objects where id = $1`,
+		mediaID,
+	).Scan(&contentType, &ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "media not found")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if ownerID == nil || *ownerID != actorID {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "media does not belong to you")
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "icon must be an image")
+		return
+	}
+
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update workspaces set avatar_media_id = $1, updated_at = $2 where id = $3`,
+		mediaID, now, workspaceID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update icon")
+		return
+	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     actorID,
+		WorkspaceID: workspaceID,
+		Action:      auditlog.ActionWorkspaceUpdated,
+		TargetType:  "workspace",
+		TargetID:    workspaceID.String(),
+	})
+
+	m.writeWorkspaceView(w, r, workspaceID, actorID)
+}
+
+func (m *Module) handleRemoveAvatar(w http.ResponseWriter, r *http.Request) {
+	actorID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUIDParam(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, actorID, permission.WorkspaceUpdate)
+	if !isMember {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+	if !allowed {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only owner or admin can change workspace icon")
+		return
+	}
+
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update workspaces set avatar_media_id = null, updated_at = $1 where id = $2`,
+		now, workspaceID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not remove icon")
+		return
+	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     actorID,
+		WorkspaceID: workspaceID,
+		Action:      auditlog.ActionWorkspaceUpdated,
+		TargetType:  "workspace",
+		TargetID:    workspaceID.String(),
+	})
+
+	m.writeWorkspaceView(w, r, workspaceID, actorID)
+}
+
+func (m *Module) writeWorkspaceView(w http.ResponseWriter, r *http.Request, workspaceID, userID uuid.UUID) {
+	var v workspaceView
+	var id, ownerID uuid.UUID
+	var avatarID *uuid.UUID
+	err := m.db.QueryRow(r.Context(),
+		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id
+		 from workspaces w
+		 join workspace_members m on m.workspace_id = w.id and m.user_id = $2
+		 where w.id = $1`,
+		workspaceID, userID,
+	).Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload workspace")
+		return
+	}
+	v.ID = id.String()
+	v.OwnerID = ownerID.String()
+	if avatarID != nil {
+		v.AvatarMediaID = avatarID.String()
+	}
 	sharedhttp.WriteJSON(w, http.StatusOK, v)
 }
 

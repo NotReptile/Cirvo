@@ -369,7 +369,10 @@ func (m *Module) canAccess(ctx context.Context, mediaID, userID uuid.UUID, owner
 		   -- H.1: avatar media is public-readable to any authenticated user.
 		   -- Avatars by design must be visible to anyone who might see this user
 		   -- in a member list. Self-host scope keeps the audience trusted.
-		   or exists (select 1 from users where avatar_media_id = $1)`,
+		   or exists (select 1 from users where avatar_media_id = $1)
+		   -- H.2: иконка воркспейса — публично читаемая (видят все, кто
+		   -- получит инвайт-код; в self-host сценарии аудитория ограничена).
+		   or exists (select 1 from workspaces where avatar_media_id = $1)`,
 		mediaID, userID,
 	).Scan(&allowed)
 	if err != nil {
