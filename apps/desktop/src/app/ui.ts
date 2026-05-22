@@ -1697,39 +1697,52 @@ function renderEmpty(): string {
 }
 
 function renderChannelsBlock(): string {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  const textChannels = state.channels.filter((ch) => ch.kind === "text");
+  const voiceChannels = state.channels.filter((ch) => ch.kind === "voice");
   return `
-    <div class="section-title">Каналы</div>
-    <ul class="channel-list">
-      ${state.channels
-        .map((ch) => {
-          const unread = state.unread[ch.id] ?? 0;
-          const muted = state.mutedChannels.has(ch.id);
-          const cls = [
-            ch.id === state.selectedChannelId ? "active" : "",
-            unread > 0 ? "has-unread" : "",
-            muted ? "muted" : ""
-          ]
-            .filter(Boolean)
-            .join(" ");
-          const badge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : "";
-          return `
+    ${renderChannelCategory("text", "Текстовые каналы", textChannels, canManage)}
+    ${renderChannelCategory("voice", "Голосовые каналы", voiceChannels, canManage)}
+  `;
+}
+
+function renderChannelCategory(
+  kind: "text" | "voice",
+  title: string,
+  channels: Channel[],
+  canManage: boolean
+): string {
+  const addBtn = canManage
+    ? `<button class="ghost ch-category-add" data-create-kind="${kind}" title="Создать канал" aria-label="Создать канал">${icon("plus")}</button>`
+    : "";
+  const items = channels
+    .map((ch) => {
+      const unread = state.unread[ch.id] ?? 0;
+      const muted = state.mutedChannels.has(ch.id);
+      const cls = [
+        ch.id === state.selectedChannelId ? "active" : "",
+        unread > 0 ? "has-unread" : "",
+        muted ? "muted" : ""
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const badge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : "";
+      return `
         <li class="${cls}" data-ch="${ch.id}">
           <span class="channel-prefix">${channelPrefix(ch)}</span>
           <span class="channel-name">${escapeHtml(ch.name)}</span>
           ${badge}
         </li>
       `;
-        })
-        .join("")}
-    </ul>
-    <form id="create-channel" class="inline-form">
-      <select name="kind" title="Тип канала">
-        <option value="text">#</option>
-        <option value="voice">🔊</option>
-      </select>
-      <input name="name" placeholder="новый-канал" required />
-      <button type="submit">+</button>
-    </form>
+    })
+    .join("");
+  return `
+    <div class="section-title ch-category-title">
+      <span>${title}</span>
+      ${addBtn}
+    </div>
+    <ul class="channel-list">${items}</ul>
   `;
 }
 
@@ -3262,24 +3275,26 @@ function attachShellHandlers(): void {
     }
   });
 
-  rootEl.querySelector<HTMLFormElement>("#create-channel")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if (!state.selectedWorkspaceId) return;
-    const form = e.currentTarget as HTMLFormElement;
-    const data = new FormData(form);
-    const kind = String(data.get("kind") ?? "text").trim() || "text";
-    try {
-      const ch = await httpClient.post<Channel>(`/api/v1/workspaces/${state.selectedWorkspaceId}/channels`, {
-        kind,
-        name: String(data.get("name") ?? "").trim()
-      });
-      state.channels = [...state.channels, ch];
-      form.reset();
-      await selectChannel(ch.id);
-    } catch (err) {
-      state.status = describeError(err);
-      render();
-    }
+  rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-add").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      if (!state.selectedWorkspaceId) return;
+      const kind = (btn.dataset.createKind as "text" | "voice" | undefined) ?? "text";
+      const promptLabel = kind === "voice" ? "Имя голосового канала" : "Имя текстового канала";
+      const name = window.prompt(promptLabel, "")?.trim();
+      if (!name) return;
+      try {
+        const ch = await httpClient.post<Channel>(`/api/v1/workspaces/${state.selectedWorkspaceId}/channels`, {
+          kind,
+          name
+        });
+        state.channels = [...state.channels, ch];
+        await selectChannel(ch.id);
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
   });
 
   rootEl.querySelector<HTMLButtonElement>("#toggle-invites")?.addEventListener("click", async (e) => {

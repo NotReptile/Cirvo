@@ -257,6 +257,26 @@ input:focus { outline: none; border-color: var(--accent); }
   color: var(--text-mute);
   margin-top: 8px;
 }
+.ch-category-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-right: 4px;
+}
+.ch-category-title span { flex: 1; min-width: 0; }
+.ch-category-add {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+  border-radius: 4px;
+}
+.ch-category-add:hover { color: var(--text); background: var(--bg-elev-2); }
+.ch-category-add svg { width: 16px; height: 16px; }
 
 .workspace-list, .channel-list {
   list-style: none;
