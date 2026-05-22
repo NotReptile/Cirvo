@@ -91,11 +91,12 @@ type authResponse struct {
 }
 
 type userView struct {
-	ID          string `json:"id"`
-	Email       string `json:"email"`
-	Username    string `json:"username"`
-	DisplayName string `json:"displayName,omitempty"`
-	IsRoot      bool   `json:"isRoot,omitempty"`
+	ID            string `json:"id"`
+	Email         string `json:"email"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"displayName,omitempty"`
+	IsRoot        bool   `json:"isRoot,omitempty"`
+	AvatarMediaID string `json:"avatarMediaId,omitempty"`
 }
 
 func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -218,12 +219,13 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		displayName  *string
 		bannedAt     *time.Time
 		isRoot       bool
+		avatarID     *uuid.UUID
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select id, email, username, display_name, password_hash, banned_at, is_root
+		`select id, email, username, display_name, password_hash, banned_at, is_root, avatar_media_id
 		 from users where email = $1 or username = $1`,
 		req.Login,
-	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot)
+	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot, &avatarID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
@@ -263,6 +265,9 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if displayName != nil {
 		resp.User.DisplayName = *displayName
+	}
+	if avatarID != nil {
+		resp.User.AvatarMediaID = avatarID.String()
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
@@ -387,11 +392,12 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		username    string
 		displayName *string
 		isRoot      bool
+		avatarID    *uuid.UUID
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select email, username, display_name, is_root from users where id = $1`,
+		`select email, username, display_name, is_root, avatar_media_id from users where id = $1`,
 		userID,
-	).Scan(&email, &username, &displayName, &isRoot)
+	).Scan(&email, &username, &displayName, &isRoot, &avatarID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -403,6 +409,9 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 	view := userView{ID: userID.String(), Email: email, Username: username, IsRoot: isRoot}
 	if displayName != nil {
 		view.DisplayName = *displayName
+	}
+	if avatarID != nil {
+		view.AvatarMediaID = avatarID.String()
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }

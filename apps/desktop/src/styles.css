@@ -1854,3 +1854,103 @@ input:focus { outline: none; border-color: var(--accent); }
   font-size: 12px;
   padding: 4px 8px;
 }
+
+/* H.1: универсальный avatar-component. Поверх letter-placeholder ленивая
+   подгрузка <img> через mediaBlobCache. Letter скрыт когда есть <img>. */
+.avatar-pic {
+  position: relative;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.avatar-pic .avatar-letter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-transform: uppercase;
+  border-radius: 50%;
+}
+.avatar-pic .avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  z-index: 1;
+}
+/* Когда подгрузился <img> — буква-placeholder скрывается. */
+.avatar-pic:has(.avatar-img) .avatar-letter { visibility: hidden; }
+.avatar-pic .avatar-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 30%;
+  height: 30%;
+  min-width: 8px;
+  min-height: 8px;
+  max-width: 12px;
+  max-height: 12px;
+  border-radius: 50%;
+  background: #80848e;
+  border: 2px solid var(--bg-elev);
+  z-index: 2;
+}
+.avatar-pic .avatar-dot.on { background: #3ba55c; }
+
+/* H.1: message-layout — avatar слева, текст справа (Discord-style). */
+.message {
+  flex-direction: row !important;
+  align-items: flex-start;
+  gap: 12px;
+}
+.message-avatar {
+  margin-top: 2px;
+}
+.message-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* H.1: profile-modal с avatar-row + upload. */
+.profile-avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.profile-avatar-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.profile-avatar-upload {
+  display: inline-block;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  text-align: center;
+}
+.profile-avatar-upload:hover { background: var(--bg); }
+.profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}

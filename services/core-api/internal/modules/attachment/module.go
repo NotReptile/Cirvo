@@ -343,22 +343,33 @@ func (m *Module) canAccess(ctx context.Context, mediaID, userID uuid.UUID, owner
 	}
 	var allowed bool
 	err := m.db.QueryRow(ctx,
-		`select exists (
-		   select 1
-		   from message_attachments ma
-		   join messages msg on msg.id = ma.message_id
-		   join channels c on c.id = msg.channel_id
-		   join workspace_members wm
-		     on wm.workspace_id = c.workspace_id and wm.user_id = $2
-		   where ma.media_id = $1
-		     and (
-		       c.is_private = false
-		       or exists (
-		         select 1 from channel_members cm
-		         where cm.channel_id = c.id and cm.user_id = $2
+		`select
+		   exists (
+		     select 1
+		     from message_attachments ma
+		     join messages msg on msg.id = ma.message_id
+		     join channels c on c.id = msg.channel_id
+		     left join workspace_members wm
+		       on wm.workspace_id = c.workspace_id and wm.user_id = $2
+		     where ma.media_id = $1
+		       and (
+		         (c.workspace_id is not null and wm.user_id is not null and (
+		           c.is_private = false
+		           or exists (
+		             select 1 from channel_members cm
+		             where cm.channel_id = c.id and cm.user_id = $2
+		           )
+		         ))
+		         or (c.workspace_id is null and exists (
+		           select 1 from channel_members cm2
+		           where cm2.channel_id = c.id and cm2.user_id = $2
+		         ))
 		       )
-		     )
-		 )`,
+		   )
+		   -- H.1: avatar media is public-readable to any authenticated user.
+		   -- Avatars by design must be visible to anyone who might see this user
+		   -- in a member list. Self-host scope keeps the audience trusted.
+		   or exists (select 1 from users where avatar_media_id = $1)`,
 		mediaID, userID,
 	).Scan(&allowed)
 	if err != nil {

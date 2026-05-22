@@ -221,12 +221,13 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 type memberView struct {
-	UserID      string    `json:"userId"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"displayName,omitempty"`
-	Role        string    `json:"role"`
-	JoinedAt    time.Time `json:"joinedAt"`
-	Online      bool      `json:"online"`
+	UserID        string    `json:"userId"`
+	Username      string    `json:"username"`
+	DisplayName   string    `json:"displayName,omitempty"`
+	Role          string    `json:"role"`
+	JoinedAt      time.Time `json:"joinedAt"`
+	Online        bool      `json:"online"`
+	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
 }
 
 func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +251,8 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		          where s.user_id = u.id
 		            and s.revoked_at is null
 		            and s.last_seen_at > now() - interval '5 minutes'
-		        ) as online
+		        ) as online,
+		        u.avatar_media_id
 		 from workspace_members wm
 		 join users u on u.id = wm.user_id
 		 where wm.workspace_id = $1
@@ -272,14 +274,18 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 			role        string
 			joinedAt    time.Time
 			online      bool
+			avatarID    *uuid.UUID
 		)
-		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &online); err != nil {
+		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &online, &avatarID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
 		view := memberView{UserID: id.String(), Username: username, Role: role, JoinedAt: joinedAt, Online: online}
 		if displayName != nil {
 			view.DisplayName = *displayName
+		}
+		if avatarID != nil {
+			view.AvatarMediaID = avatarID.String()
 		}
 		items = append(items, view)
 	}

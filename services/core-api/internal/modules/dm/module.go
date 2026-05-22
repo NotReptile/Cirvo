@@ -45,10 +45,11 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 }
 
 type peerView struct {
-	UserID      string `json:"userId"`
-	Username    string `json:"username"`
-	DisplayName string `json:"displayName,omitempty"`
-	Online      bool   `json:"online"`
+	UserID        string `json:"userId"`
+	Username      string `json:"username"`
+	DisplayName   string `json:"displayName,omitempty"`
+	Online        bool   `json:"online"`
+	AvatarMediaID string `json:"avatarMediaId,omitempty"`
 }
 
 type dmView struct {
@@ -90,7 +91,8 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		       and mm.created_at > coalesce(
 		         (select last_read_at from read_receipts r
 		           where r.channel_id = c.id and r.user_id = $1),
-		         'epoch'::timestamptz)) as unread_count
+		         'epoch'::timestamptz)) as unread_count,
+		   u.avatar_media_id
 		 from dm_channels d
 		 join channels c on c.id = d.channel_id
 		 join users u on u.id = case when d.user_a = $1 then d.user_b else d.user_a end
@@ -116,19 +118,24 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 			online      bool
 			lastMsg     *time.Time
 			unread      int
+			avatarID    *uuid.UUID
 		)
-		if err := rows.Scan(&chID, &created, &peerID, &username, &displayName, &online, &lastMsg, &unread); err != nil {
+		if err := rows.Scan(&chID, &created, &peerID, &username, &displayName, &online, &lastMsg, &unread, &avatarID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
+		pv := peerView{
+			UserID:      peerID.String(),
+			Username:    username,
+			DisplayName: displayName,
+			Online:      online,
+		}
+		if avatarID != nil {
+			pv.AvatarMediaID = avatarID.String()
+		}
 		items = append(items, dmView{
-			ChannelID: chID.String(),
-			Peer: peerView{
-				UserID:      peerID.String(),
-				Username:    username,
-				DisplayName: displayName,
-				Online:      online,
-			},
+			ChannelID:     chID.String(),
+			Peer:          pv,
 			CreatedAt:     created,
 			LastMessageAt: lastMsg,
 			UnreadCount:   unread,
@@ -314,6 +321,7 @@ func (m *Module) respondOpened(w http.ResponseWriter, r *http.Request, channelID
 		createdAt   time.Time
 		lastMsg     *time.Time
 		unread      int
+		avatarID    *uuid.UUID
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select u.username, coalesce(u.display_name, ''),
@@ -331,23 +339,28 @@ func (m *Module) respondOpened(w http.ResponseWriter, r *http.Request, channelID
 		             and mm.created_at > coalesce(
 		               (select last_read_at from read_receipts r
 		                 where r.channel_id = c.id and r.user_id = $2),
-		               'epoch'::timestamptz))
+		               'epoch'::timestamptz)),
+		        u.avatar_media_id
 		 from users u, channels c
 		 where u.id = $1 and c.id = $3`,
 		peerID, viewerID, channelID,
-	).Scan(&username, &displayName, &online, &createdAt, &lastMsg, &unread)
+	).Scan(&username, &displayName, &online, &createdAt, &lastMsg, &unread, &avatarID)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not load dm view")
 		return
 	}
+	pv := peerView{
+		UserID:      peerID.String(),
+		Username:    username,
+		DisplayName: displayName,
+		Online:      online,
+	}
+	if avatarID != nil {
+		pv.AvatarMediaID = avatarID.String()
+	}
 	view := dmView{
-		ChannelID: channelID.String(),
-		Peer: peerView{
-			UserID:      peerID.String(),
-			Username:    username,
-			DisplayName: displayName,
-			Online:      online,
-		},
+		ChannelID:     channelID.String(),
+		Peer:          pv,
 		CreatedAt:     createdAt,
 		LastMessageAt: lastMsg,
 		UnreadCount:   unread,

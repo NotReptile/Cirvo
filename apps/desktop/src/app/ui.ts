@@ -15,6 +15,7 @@ interface Me {
   username: string;
   displayName?: string;
   isRoot?: boolean;
+  avatarMediaId?: string;
 }
 
 interface Workspace {
@@ -104,6 +105,7 @@ interface Member {
   role: string;
   joinedAt: string;
   online?: boolean;
+  avatarMediaId?: string;
 }
 
 interface AuditEntry {
@@ -1350,7 +1352,11 @@ function renderShell(): void {
         </div>
         <footer class="user-strip">
           <button id="open-profile" class="user user-btn" title="Профиль">
-            <div class="avatar">${(me?.displayName || me?.username || "?").charAt(0).toUpperCase()}</div>
+            ${renderAvatar({
+              avatarMediaId: me?.avatarMediaId,
+              fallbackText: me?.displayName || me?.username || "?",
+              sizePx: 32
+            })}
             <div class="user-strip-name">
               <div class="user-name">${escapeHtml(me?.displayName || me?.username || "—")}</div>
               <div class="user-sub">@${escapeHtml(me?.username || "")}</div>
@@ -1413,6 +1419,32 @@ const ROLE_COLORS: Record<string, string> = {
   moderator: "#3ba55c"
 };
 
+// H.1: универсальный рендер аватара. Если есть avatarMediaId — слот с
+// data-avatar-media, который attachAvatarSlots() лениво наполняет blob-URL'ом
+// после рендера (через тот же mediaBlobCache что и для attach-image). Пока
+// blob не загружен — внутри буква-плейсхолдер, чтобы не было пустоты.
+// fallbackText — первая буква имени; sizePx — диаметр круга.
+interface AvatarOpts {
+  avatarMediaId?: string;
+  fallbackText: string;
+  sizePx: number;
+  className?: string;
+  online?: boolean | null;
+}
+
+function renderAvatar(opts: AvatarOpts): string {
+  const letter = (opts.fallbackText || "?").charAt(0).toUpperCase();
+  const dot = opts.online === undefined || opts.online === null
+    ? ""
+    : `<span class="avatar-dot${opts.online ? " on" : " off"}"></span>`;
+  const cls = `avatar-pic ${opts.className ?? ""}`.trim();
+  const style = `width:${opts.sizePx}px;height:${opts.sizePx}px;font-size:${Math.round(opts.sizePx * 0.45)}px;`;
+  if (opts.avatarMediaId) {
+    return `<span class="${cls} has-media" data-avatar-media="${escapeHtml(opts.avatarMediaId)}" style="${style}"><span class="avatar-letter">${escapeHtml(letter)}</span>${dot}</span>`;
+  }
+  return `<span class="${cls}" style="${style}"><span class="avatar-letter">${escapeHtml(letter)}</span>${dot}</span>`;
+}
+
 function renderMemberSidebar(): string {
   if (state.membersLoading && state.members.length === 0) {
     return `<aside class="member-sidebar"><div class="member-sidebar-empty">Загрузка…</div></aside>`;
@@ -1430,7 +1462,12 @@ function renderMemberSidebar(): string {
     const style = color ? ` style="color:${color};"` : "";
     return `
       <li class="member-sidebar-item${m.online ? "" : " offline"}" data-member-user="${escapeHtml(m.userId)}">
-        <span class="member-sidebar-avatar"><span class="dot${m.online ? "" : " off"}"></span>${escapeHtml(name.charAt(0).toUpperCase())}</span>
+        ${renderAvatar({
+          avatarMediaId: m.avatarMediaId,
+          fallbackText: name,
+          sizePx: 28,
+          online: !!m.online
+        })}
         <span class="member-sidebar-name"${style}>${escapeHtml(name)}</span>
       </li>
     `;
@@ -2442,27 +2479,44 @@ function renderMessage(m: Message): string {
   const reactions = Object.entries(m.reactions ?? {});
   const pickerOpen = state.pickerForMessageId === m.id;
 
+  const authorName = describePeer(m.authorId);
+  const authorMember = state.members.find((mem) => mem.userId === m.authorId);
+  const authorAvatarId = m.authorId === state.me?.id
+    ? state.me?.avatarMediaId
+    : authorMember?.avatarMediaId;
+  const avatarHtml = renderAvatar({
+    avatarMediaId: authorAvatarId,
+    fallbackText: authorName,
+    sizePx: 40,
+    className: "message-avatar"
+  });
+
   if (isEditing) {
     return `
       <div class="message" data-id="${m.id}">
-        <div class="message-meta">
-          <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(describePeer(m.authorId))}</span>
-          <span class="timestamp">${formatTime(m.createdAt)}</span>
+        ${avatarHtml}
+        <div class="message-content">
+          <div class="message-meta">
+            <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>
+            <span class="timestamp">${formatTime(m.createdAt)}</span>
+          </div>
+          <form class="edit-form" data-edit-id="${m.id}">
+            <input name="body" value="${escapeHtml(m.body)}" autofocus />
+            <button type="submit" class="primary">Сохранить</button>
+            <button type="button" class="ghost cancel-edit" data-id="${m.id}">Отмена</button>
+          </form>
         </div>
-        <form class="edit-form" data-edit-id="${m.id}">
-          <input name="body" value="${escapeHtml(m.body)}" autofocus />
-          <button type="submit" class="primary">Сохранить</button>
-          <button type="button" class="ghost cancel-edit" data-id="${m.id}">Отмена</button>
-        </form>
       </div>
     `;
   }
 
   return `
     <div class="message" data-id="${m.id}">
+      ${avatarHtml}
+      <div class="message-content">
       ${renderReplySnippet(m.replyTo)}
       <div class="message-meta">
-        <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(describePeer(m.authorId))}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}
+        <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}
         <span class="timestamp">${formatTime(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
@@ -2504,6 +2558,7 @@ function renderMessage(m: Message): string {
             </div>`
           : ""
       }
+      </div>
     </div>
   `;
 }
@@ -2673,18 +2728,35 @@ function renderProfileModal(): string {
           <h3>Профиль</h3>
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
-        <form id="profile-form" class="modal-body">
-          <label>Email
-            <input value="${escapeHtml(me.email)}" disabled />
-          </label>
-          <label>Имя пользователя
-            <input value="${escapeHtml(me.username)}" disabled />
-          </label>
-          <label>Отображаемое имя
-            <input name="displayName" value="${escapeHtml(me.displayName ?? "")}" maxlength="64" />
-          </label>
-          <button type="submit" class="primary">Сохранить</button>
-        </form>
+        <div class="modal-body">
+          <div class="profile-avatar-row">
+            ${renderAvatar({
+              avatarMediaId: me.avatarMediaId,
+              fallbackText: me.displayName || me.username,
+              sizePx: 96,
+              className: "profile-avatar"
+            })}
+            <div class="profile-avatar-actions">
+              <label class="ghost profile-avatar-upload">
+                <input id="profile-avatar-input" type="file" accept="image/*" hidden />
+                Загрузить фото
+              </label>
+              ${me.avatarMediaId ? `<button id="profile-avatar-remove" class="ghost">Удалить</button>` : ""}
+            </div>
+          </div>
+          <form id="profile-form" class="profile-form">
+            <label>Email
+              <input value="${escapeHtml(me.email)}" disabled />
+            </label>
+            <label>Имя пользователя
+              <input value="${escapeHtml(me.username)}" disabled />
+            </label>
+            <label>Отображаемое имя
+              <input name="displayName" value="${escapeHtml(me.displayName ?? "")}" maxlength="64" />
+            </label>
+            <button type="submit" class="primary">Сохранить</button>
+          </form>
+        </div>
       </div>
     </div>
   `;
@@ -2885,10 +2957,66 @@ function attachShellHandlers(): void {
       });
       state.me = {
         id: updated.id, email: updated.email, username: updated.username,
-        displayName: updated.displayName, isRoot: state.me?.isRoot
+        displayName: updated.displayName, isRoot: state.me?.isRoot,
+        avatarMediaId: updated.avatarMediaId ?? state.me?.avatarMediaId
       };
       state.modal = null;
       state.status = "Профиль обновлён";
+      render();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
+
+  // H.1: загрузка аватара. Двухступенчато: (1) POST /uploads c image-файлом
+  // через существующий attachment-pipeline → получаем mediaId; (2) PUT
+  // /users/me/avatar c этим mediaId → бэк ставит users.avatar_media_id и
+  // возвращает обновлённую meView. Делаем поэтапно а не одним multipart'ом,
+  // чтобы переиспользовать уже работающую загрузку файлов (квоты, ACL,
+  // MinIO-pipeline).
+  rootEl.querySelector<HTMLInputElement>("#profile-avatar-input")?.addEventListener("change", async (e) => {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      state.status = "Аватар должен быть картинкой";
+      render();
+      return;
+    }
+    try {
+      state.status = "Загрузка аватара…";
+      render();
+      const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
+      const updated = await httpClient.put<Me & { updatedAt: string }>(
+        "/api/v1/users/me/avatar",
+        { mediaId: uploaded.id }
+      );
+      if (state.me) {
+        state.me = {
+          ...state.me,
+          avatarMediaId: updated.avatarMediaId,
+          displayName: updated.displayName ?? state.me.displayName
+        };
+      }
+      state.status = "Аватар обновлён";
+      render();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    } finally {
+      input.value = "";
+    }
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#profile-avatar-remove")?.addEventListener("click", async (e) => {
+    e.preventDefault();
+    try {
+      const updated = await httpClient.del<Me & { updatedAt: string }>("/api/v1/users/me/avatar");
+      if (state.me) {
+        state.me = { ...state.me, avatarMediaId: undefined, displayName: updated.displayName ?? state.me.displayName };
+      }
+      state.status = "Аватар удалён";
       render();
     } catch (err) {
       state.status = describeError(err);
@@ -3496,6 +3624,44 @@ function attachShellHandlers(): void {
         (fresh ?? slot).innerHTML = `<img src="${blobUrl}" alt="" />`;
       } catch {
         slot.innerHTML = `<div class="attach-image-loader">Не удалось загрузить</div>`;
+      }
+    })();
+  });
+
+  // H.1: lazy-load аватары. Тот же mediaBlobCache что и для attachments,
+  // ключ — `/api/v1/media/<id>`. Слот с .avatar-pic.has-media рендерит
+  // letter-placeholder под <img> — placeholder остаётся видим, пока blob
+  // не приехал; при успешной загрузке мы добавляем <img> сверху (placeholder
+  // буква скрыта CSS'ом когда есть .avatar-pic img).
+  rootEl.querySelectorAll<HTMLSpanElement>(".avatar-pic.has-media").forEach((slot) => {
+    const mediaId = slot.dataset.avatarMedia;
+    if (!mediaId) return;
+    if (slot.querySelector("img")) return;
+    const url = `/api/v1/media/${mediaId}`;
+    const cached = mediaBlobCache.get(url);
+    if (cached) {
+      slot.insertAdjacentHTML("afterbegin", `<img class="avatar-img" src="${cached}" alt="" />`);
+      return;
+    }
+    void (async () => {
+      try {
+        const blob = await httpClient.getBlob(url);
+        const blobUrl = URL.createObjectURL(blob);
+        mediaBlobCache.set(url, blobUrl);
+        const fresh = rootEl.querySelector<HTMLSpanElement>(
+          `.avatar-pic.has-media[data-avatar-media="${CSS.escape(mediaId)}"]`
+        );
+        // Может быть несколько слотов с тем же media-id (мой аватар в
+        // user-strip и в моих сообщениях). Заполним все.
+        rootEl.querySelectorAll<HTMLSpanElement>(
+          `.avatar-pic.has-media[data-avatar-media="${CSS.escape(mediaId)}"]`
+        ).forEach((s) => {
+          if (s.querySelector("img")) return;
+          s.insertAdjacentHTML("afterbegin", `<img class="avatar-img" src="${blobUrl}" alt="" />`);
+        });
+        void fresh;
+      } catch {
+        // оставляем letter-placeholder
       }
     })();
   });

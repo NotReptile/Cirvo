@@ -88,10 +88,11 @@ type memberRequest struct {
 }
 
 type memberView struct {
-	UserID      string    `json:"userId"`
-	Username    string    `json:"username"`
-	DisplayName string    `json:"displayName,omitempty"`
-	JoinedAt    time.Time `json:"joinedAt"`
+	UserID        string    `json:"userId"`
+	Username      string    `json:"username"`
+	DisplayName   string    `json:"displayName,omitempty"`
+	JoinedAt      time.Time `json:"joinedAt"`
+	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
 }
 
 var allowedKinds = map[string]struct{}{
@@ -437,7 +438,7 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := m.db.Query(r.Context(),
-		`select u.id, u.username, u.display_name, cm.joined_at
+		`select u.id, u.username, u.display_name, cm.joined_at, u.avatar_media_id
 		 from channel_members cm
 		 join users u on u.id = cm.user_id
 		 where cm.channel_id = $1
@@ -457,14 +458,18 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 			username    string
 			displayName *string
 			joinedAt    time.Time
+			avatarID    *uuid.UUID
 		)
-		if err := rows.Scan(&id, &username, &displayName, &joinedAt); err != nil {
+		if err := rows.Scan(&id, &username, &displayName, &joinedAt, &avatarID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
 		mv := memberView{UserID: id.String(), Username: username, JoinedAt: joinedAt}
 		if displayName != nil {
 			mv.DisplayName = *displayName
+		}
+		if avatarID != nil {
+			mv.AvatarMediaID = avatarID.String()
 		}
 		items = append(items, mv)
 	}
