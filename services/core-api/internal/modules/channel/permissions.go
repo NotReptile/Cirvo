@@ -177,9 +177,11 @@ func (m *Module) handleUpdatePermissions(w http.ResponseWriter, r *http.Request)
 		}
 		if _, err := tx.Exec(r.Context(),
 			`insert into channel_role_overrides
-			   (channel_id, role_code, granted_actions, denied_actions, updated_at, updated_by_user_id)
-			 values ($1, $2, $3, $4, $5, $6)`,
-			channelID, o.RoleCode, o.Granted, o.Denied, now, userID,
+			   (channel_id, role_code, role_id, granted_actions, denied_actions, updated_at, updated_by_user_id)
+			 select $1, $2, wr.id, $3, $4, $5, $6
+			 from workspace_roles wr
+			 where wr.workspace_id = $7 and wr.code = $2`,
+			channelID, o.RoleCode, o.Granted, o.Denied, now, userID, scope.WorkspaceID,
 		); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not write override")
 			return

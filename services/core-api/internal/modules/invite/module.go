@@ -19,6 +19,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
@@ -392,6 +393,10 @@ func (m *Module) handleAccept(w http.ResponseWriter, r *http.Request) {
 		)
 		if err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not add member")
+			return
+		}
+		if err := role.AssignSystemRole(r.Context(), tx, wsID, userID, role.CodeMember); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not assign member role")
 			return
 		}
 		existingRole = workspace.RoleMember

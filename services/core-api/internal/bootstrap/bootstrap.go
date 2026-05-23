@@ -17,6 +17,7 @@ import (
 
 	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
 )
 
 const (
@@ -124,6 +125,13 @@ func Run(ctx context.Context, db *postgres.Pool, logger *slog.Logger, cfg Config
 		workspaceID, userID, roleOwner, now,
 	); err != nil {
 		return fmt.Errorf("insert membership: %w", err)
+	}
+
+	if err := role.SeedDefaults(ctx, tx, workspaceID); err != nil {
+		return fmt.Errorf("seed roles: %w", err)
+	}
+	if err := role.AssignSystemRole(ctx, tx, workspaceID, userID, role.CodeOwner); err != nil {
+		return fmt.Errorf("assign owner role: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx,

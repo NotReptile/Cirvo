@@ -30,6 +30,11 @@ const (
 	ActionServerSettingsUpdate = "server.settings.updated"
 	ActionRetentionSweep       = "server.retention.sweep"
 	ActionChannelPermissionsUpdated = "channel.permissions.updated"
+	ActionRoleCreated               = "role.created"
+	ActionRoleUpdated               = "role.updated"
+	ActionRoleDeleted               = "role.deleted"
+	ActionRoleAssigned              = "role.assigned"
+	ActionRoleUnassigned            = "role.unassigned"
 )
 
 // Entry describes a single audit log entry to be persisted.

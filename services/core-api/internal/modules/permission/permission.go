@@ -1,6 +1,17 @@
-// Package permission is the single source of truth for "who can do what"
-// across the core-api. Modules call Authorize / Can with a semantic action
-// instead of doing role string comparisons inline.
+// Package permission — единый резолвер прав. Модули вызывают Authorize /
+// AuthorizeChannel с семантическим Action; конкретный набор прав роли
+// хранится в workspace_roles.base_action_mask (jsonb), эффективный набор
+// юзера — union'у всех его ролей в воркспейсе (workspace_role_members).
+//
+// До миграции «Кастомные роли» прав-матрица жила в этом файле как хардкод.
+// Сейчас хардкод остался только как fallback для двух кейсов:
+//   1) Can(role, action) — публичный helper для случаев, где юзер уже
+//      резолвлен (используется тестами/документацией). Он бьётся в
+//      хардкод-матрицу — это работает для seeded role'ов owner/admin/
+//      moderator/member, но НЕ учитывает кастомные роли. Новый код должен
+//      использовать Authorize, который сходит в БД.
+//   2) baseHardcoded — fallback если в БД нет ни одной роли юзера (теоретически
+//      невозможно после миграции, но защищает от panic'а).
 package permission
 
 import (
@@ -11,10 +22,6 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 )
 
-// Role codes are duplicated as string literals here (rather than imported
-// from the workspace package) to keep this package free of cycles - workspace
-// also wants to call Authorize. The canonical source is workspace.RoleOwner
-// etc; if you rename them there, update them here too.
 const (
 	roleOwner     = "owner"
 	roleAdmin     = "admin"
@@ -22,8 +29,6 @@ const (
 	roleMember    = "member"
 )
 
-// Action is a semantic name for a permission check. New actions go here and
-// are then mapped to roles in roleActions below.
 type Action string
 
 const (
@@ -32,63 +37,43 @@ const (
 	ChannelDelete        Action = "channel.delete"
 	ChannelManageMembers Action = "channel.manage_members"
 
-	MessageModerate Action = "message.moderate" // delete or edit other people's messages
+	MessageModerate Action = "message.moderate"
 
-	InviteManage Action = "invite.manage" // create / list / revoke
+	InviteManage Action = "invite.manage"
 
 	AuditRead Action = "audit.read"
 
-	MemberManageRole Action = "member.manage_role" // change another member's role
-	MemberKick       Action = "member.kick"        // remove another member from workspace
+	MemberManageRole Action = "member.manage_role"
+	MemberKick       Action = "member.kick"
 
-	WorkspaceUpdate Action = "workspace.update" // изменить иконку/имя воркспейса (H.2 — owner+admin)
+	MessageWrite   Action = "message.write"
+	MessageReact   Action = "message.react"
+	MessageAttach  Action = "message.attach"
+	MessageMention Action = "message.mention"
 
-	// D.4 — channel-scoped actions, поддерживают override через
-	// channel_role_overrides. Базовые grants ниже, эффективный набор
-	// решает AuthorizeChannel.
-	MessageWrite   Action = "message.write"   // отправлять сообщения в канал
-	MessageReact   Action = "message.react"   // ставить/снимать реакции
-	MessageAttach  Action = "message.attach"  // прикреплять файлы к сообщению
-	MessageMention Action = "message.mention" // упоминать @username (deny → mentions молча игнорируются)
+	WorkspaceUpdate Action = "workspace.update"
 )
 
-// roleActions is the canonical role-to-actions matrix.
-//
-// Owner and Admin share the full set today; the distinction is enforced
-// outside of this table (only owner can transfer ownership / delete the
-// workspace itself). When workspace-level destructive actions appear, they
-// should land here as new Actions and be granted to owner only.
-var roleActions = map[string]map[Action]struct{}{
-	roleOwner: allActions(),
-	roleAdmin: allActions(),
-	roleModerator: setOf(
-		ChannelCreate,
-		ChannelUpdate,
-		ChannelDelete,
-		ChannelManageMembers,
-		MessageModerate,
-		InviteManage,
-		AuditRead,
-		MemberKick,
-		// channel-scoped — moderator по умолчанию пишет/реагирует/прикрепляет
-		MessageWrite,
-		MessageReact,
-		MessageAttach,
-		MessageMention,
-	),
-	roleMember: setOf(
-		// обычный участник может писать в канал (если он в нём виден),
-		// ставить реакции, прикреплять файлы и упоминать
-		MessageWrite,
-		MessageReact,
-		MessageAttach,
-		MessageMention,
-	),
+// AllActions — единый источник списка для UI / валидации. Совпадает с
+// allActions() ниже; держится синхронно вручную (новый Action → обе записи).
+var AllActions = []Action{
+	ChannelCreate,
+	ChannelUpdate,
+	ChannelDelete,
+	ChannelManageMembers,
+	MessageModerate,
+	InviteManage,
+	AuditRead,
+	MemberManageRole,
+	MemberKick,
+	MessageWrite,
+	MessageReact,
+	MessageAttach,
+	MessageMention,
+	WorkspaceUpdate,
 }
 
-// ChannelActions — список action'ов, доступных к override per channel.
-// Используется UI чтобы знать, какие чекбоксы рендерить. Совпадает с
-// channel-scoped константами выше.
+// ChannelActions — action'ы, доступные к override per channel.
 var ChannelActions = []Action{
 	MessageWrite,
 	MessageReact,
@@ -98,10 +83,27 @@ var ChannelActions = []Action{
 	ChannelUpdate,
 }
 
-// Can reports whether a role is allowed to perform the action at the
-// workspace level (без учёта channel overrides).
+// baseHardcoded — fallback-матрица на случай, если workspace_role_members
+// для юзера пустой (теоретически невозможно после миграции). Совпадает с
+// предыдущим хардкодом до перехода на jsonb-маски.
+var baseHardcoded = map[string]map[Action]struct{}{
+	roleOwner: allActions(),
+	roleAdmin: allActions(),
+	roleModerator: setOf(
+		ChannelCreate, ChannelUpdate, ChannelDelete, ChannelManageMembers,
+		MessageModerate, InviteManage, AuditRead, MemberKick,
+		MessageWrite, MessageReact, MessageAttach, MessageMention,
+	),
+	roleMember: setOf(
+		MessageWrite, MessageReact, MessageAttach, MessageMention,
+	),
+}
+
+// Can — fallback по хардкод-матрице seeded ролей. Не учитывает custom roles
+// и не сходит в БД. Используется только в legacy-сценариях где роль уже на
+// руках и важна именно базовая seeded-семантика. Новый код — Authorize.
 func Can(role string, action Action) bool {
-	actions, ok := roleActions[role]
+	actions, ok := baseHardcoded[role]
 	if !ok {
 		return false
 	}
@@ -109,9 +111,11 @@ func Can(role string, action Action) bool {
 	return allowed
 }
 
-// Authorize resolves the user's role in the workspace and checks the action.
-// Three values let callers distinguish "not a member" (return 404 to hide
-// existence) from "member but no permission" (return 403).
+// Authorize резолвит права юзера в воркспейсе через workspace_role_members
+// + workspace_roles.base_action_mask (union всех ролей).
+//
+// Возвращает primary role (workspace_members.role_code — для совместимости
+// с местами, где значение используется для отображения), isMember и allowed.
 func Authorize(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.UUID, action Action) (role string, isMember bool, allowed bool) {
 	err := db.QueryRow(ctx,
 		`select role_code from workspace_members where workspace_id = $1 and user_id = $2`,
@@ -120,20 +124,16 @@ func Authorize(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.
 	if err != nil {
 		return "", false, false
 	}
-	return role, true, Can(role, action)
+	allowed = hasActionInRoles(ctx, db, workspaceID, userID, action, role)
+	return role, true, allowed
 }
 
-// AuthorizeChannel — D.4. То же, что Authorize, но дополнительно применяет
-// channel_role_overrides поверх workspace-роли.
+// AuthorizeChannel — то же, но с учётом channel_role_overrides.
 //
-// Effective = (Can(role, action) ∨ granted) ∧ ¬denied.
+// Эффективный набор = (union(base_action_mask всех ролей юзера) ∨ any(granted))
+//   − any(denied)
 //
-// Семантика «защиты от самоблокировки»: owner всегда сохраняет полный
-// доступ — overrides на owner просто игнорируются (admin под overrides
-// попадает; намеренно, чтобы owner мог делегировать модерацию админу с
-// узкими правами на конкретный канал).
-//
-// Возвращает (role, isMember, allowed). Не-член workspace → isMember=false.
+// Owner короткозамыкается на allowed=true (защита от self-lock).
 func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, channelID, userID uuid.UUID, action Action) (role string, isMember bool, allowed bool) {
 	err := db.QueryRow(ctx,
 		`select role_code from workspace_members where workspace_id = $1 and user_id = $2`,
@@ -145,32 +145,91 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 	if role == roleOwner {
 		return role, true, true
 	}
-	base := Can(role, action)
-	allowed = base
-	var granted, denied []string
-	err = db.QueryRow(ctx,
-		`select coalesce(granted_actions, '{}'), coalesce(denied_actions, '{}')
-		 from channel_role_overrides where channel_id = $1 and role_code = $2`,
-		channelID, role,
-	).Scan(&granted, &denied)
-	if err == nil {
-		actStr := string(action)
-		if !allowed && containsStr(granted, actStr) {
-			allowed = true
+
+	// Один проход: union base masks ролей юзера + флаги granted/denied из
+	// channel_role_overrides per role. Сравнение по role_id (новая колонка).
+	rows, err := db.Query(ctx,
+		`select wr.base_action_mask, coalesce(cro.granted_actions, '{}'), coalesce(cro.denied_actions, '{}')
+		 from workspace_role_members wrm
+		 join workspace_roles wr on wr.id = wrm.role_id
+		 left join channel_role_overrides cro
+		   on cro.role_id = wrm.role_id and cro.channel_id = $3
+		 where wrm.workspace_id = $1 and wrm.user_id = $2`,
+		workspaceID, userID, channelID,
+	)
+	if err != nil {
+		return role, true, fallbackCan(role, action)
+	}
+	defer rows.Close()
+
+	actStr := string(action)
+	var baseAllowed, anyGranted, anyDenied bool
+	for rows.Next() {
+		var mask []string
+		var granted, denied []string
+		if err := rows.Scan(&mask, &granted, &denied); err != nil {
+			continue
+		}
+		if containsStr(mask, actStr) {
+			baseAllowed = true
+		}
+		if containsStr(granted, actStr) {
+			anyGranted = true
 		}
 		if containsStr(denied, actStr) {
-			allowed = false
+			anyDenied = true
 		}
 	}
+	allowed = (baseAllowed || anyGranted) && !anyDenied
 	return role, true, allowed
 }
 
-// CanInChannel — удобный wrapper для случаев, когда у вызывающего уже есть
-// channel.Scope (т.е. видимость канала уже проверена). Не сходит в БД за
-// ролью повторно — берёт через AuthorizeChannel.
 func CanInChannel(ctx context.Context, db *postgres.Pool, workspaceID, channelID, userID uuid.UUID, action Action) bool {
 	_, _, ok := AuthorizeChannel(ctx, db, workspaceID, channelID, userID, action)
 	return ok
+}
+
+// hasActionInRoles — union base_action_mask всех ролей юзера в воркспейсе.
+// Если ни одной роли (например, миграция backfill не отработала) — fallback
+// на хардкод-матрицу по primary role.
+func hasActionInRoles(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.UUID, action Action, primaryRole string) bool {
+	rows, err := db.Query(ctx,
+		`select wr.base_action_mask
+		 from workspace_role_members wrm
+		 join workspace_roles wr on wr.id = wrm.role_id
+		 where wrm.workspace_id = $1 and wrm.user_id = $2`,
+		workspaceID, userID,
+	)
+	if err != nil {
+		return fallbackCan(primaryRole, action)
+	}
+	defer rows.Close()
+
+	actStr := string(action)
+	anyRow := false
+	for rows.Next() {
+		anyRow = true
+		var mask []string
+		if err := rows.Scan(&mask); err != nil {
+			continue
+		}
+		if containsStr(mask, actStr) {
+			return true
+		}
+	}
+	if !anyRow {
+		return fallbackCan(primaryRole, action)
+	}
+	return false
+}
+
+func fallbackCan(role string, action Action) bool {
+	actions, ok := baseHardcoded[role]
+	if !ok {
+		return false
+	}
+	_, allowed := actions[action]
+	return allowed
 }
 
 func containsStr(haystack []string, needle string) bool {
@@ -191,20 +250,9 @@ func setOf(actions ...Action) map[Action]struct{} {
 }
 
 func allActions() map[Action]struct{} {
-	return setOf(
-		ChannelCreate,
-		ChannelUpdate,
-		ChannelDelete,
-		ChannelManageMembers,
-		MessageModerate,
-		InviteManage,
-		AuditRead,
-		MemberManageRole,
-		MemberKick,
-		MessageWrite,
-		MessageReact,
-		MessageAttach,
-		MessageMention,
-		WorkspaceUpdate,
-	)
+	out := make(map[Action]struct{}, len(AllActions))
+	for _, a := range AllActions {
+		out[a] = struct{}{}
+	}
+	return out
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
@@ -164,6 +165,15 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not add owner membership")
+		return
+	}
+
+	if err := role.SeedDefaults(r.Context(), tx, workspaceID); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not seed roles")
+		return
+	}
+	if err := role.AssignSystemRole(r.Context(), tx, workspaceID, userID, role.CodeOwner); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not assign owner role")
 		return
 	}
 
@@ -511,12 +521,25 @@ func (m *Module) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = m.db.Exec(r.Context(),
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	if _, err := tx.Exec(r.Context(),
 		`update workspace_members set role_code = $1 where workspace_id = $2 and user_id = $3`,
 		req.Role, workspaceID, targetID,
-	)
-	if err != nil {
+	); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update role")
+		return
+	}
+	if err := role.SyncPrimaryRole(r.Context(), tx, workspaceID, targetID, req.Role); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not sync role membership")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -571,12 +594,25 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = m.db.Exec(r.Context(),
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	if err := role.RemoveAllAssignments(r.Context(), tx, workspaceID, targetID); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not strip roles")
+		return
+	}
+	if _, err := tx.Exec(r.Context(),
 		`delete from workspace_members where workspace_id = $1 and user_id = $2`,
 		workspaceID, targetID,
-	)
-	if err != nil {
+	); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not remove member")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

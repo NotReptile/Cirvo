@@ -16,6 +16,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/profile"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
 	servermod "github.com/NotReptile/RuCord/services/core-api/internal/modules/server"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/system"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/voice"
@@ -54,6 +55,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		call.NewModule(container.DB, container.Publisher, container.Logger),
 		profile.NewModule(container.DB, container.Logger),
 		workspace.NewModule(container.DB, container.Settings, container.Logger),
+		role.NewModule(container.DB, container.Logger),
 		channel.NewModule(container.DB, container.Publisher, container.Settings, container.Logger),
 		dm.NewModule(container.DB, container.Publisher, container.Logger),
 		message.NewModule(container.DB, container.Publisher, container.Settings, container.Logger),
