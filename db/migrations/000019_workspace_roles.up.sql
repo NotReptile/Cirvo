@@ -92,11 +92,15 @@ on conflict (role_id, user_id) do nothing;
 -- читаются по role_code (но к моменту прогона миграции backfill обновил
 -- все строки).
 alter table channel_role_overrides add column if not exists role_id uuid;
+-- Postgres UPDATE ... FROM запрещает ссылаться на target (cro) внутри JOIN-ON
+-- для не-target таблиц. Переводим join в CROSS+WHERE.
 update channel_role_overrides cro
 set role_id = wr.id
-from channels c
-join workspace_roles wr on wr.workspace_id = c.workspace_id and wr.code = cro.role_code
-where cro.channel_id = c.id and cro.role_id is null;
+from channels c, workspace_roles wr
+where cro.channel_id = c.id
+  and wr.workspace_id = c.workspace_id
+  and wr.code = cro.role_code
+  and cro.role_id is null;
 alter table channel_role_overrides
   add constraint channel_role_overrides_role_fk
   foreign key (role_id) references workspace_roles(id) on delete cascade;
