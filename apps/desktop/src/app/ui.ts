@@ -1460,8 +1460,6 @@ function renderMemberSidebar(): string {
     const bn = b.displayName || b.username;
     return an.localeCompare(bn, "ru");
   });
-  const online = sorted.filter((m) => m.online);
-  const offline = sorted.filter((m) => !m.online);
   const renderItem = (m: Member) => {
     const name = m.displayName || m.username;
     const color = ROLE_COLORS[m.role];
@@ -1478,16 +1476,31 @@ function renderMemberSidebar(): string {
       </li>
     `;
   };
+  const renderGroup = (label: string, items: Member[]) =>
+    items.length === 0
+      ? ""
+      : `<div class="member-sidebar-group">${escapeHtml(label)} — ${items.length}</div>
+         <ul class="member-sidebar-list">${items.map(renderItem).join("")}</ul>`;
+  // H.3: жёсткая схема «Owner — Admin — Moderator — В сети — Не в сети» до
+  // ввода кастомных ролей (H.5). Hoisted-роли в онлайне идут своими секциями
+  // по приоритету; member online — общая «В сети»; все офлайн — одной кучей
+  // в «Не в сети» (когда H.5 закроется, hoisted=true роль будет давать
+  // отдельную секцию и в офлайне тоже).
+  const online = sorted.filter((m) => m.online);
+  const offline = sorted.filter((m) => !m.online);
+  const owners = online.filter((m) => m.role === "owner");
+  const admins = online.filter((m) => m.role === "admin");
+  const moderators = online.filter((m) => m.role === "moderator");
+  const onlineMembers = online.filter(
+    (m) => m.role !== "owner" && m.role !== "admin" && m.role !== "moderator"
+  );
   return `
     <aside class="member-sidebar">
-      ${online.length > 0 ? `
-        <div class="member-sidebar-group">В сети — ${online.length}</div>
-        <ul class="member-sidebar-list">${online.map(renderItem).join("")}</ul>
-      ` : ""}
-      ${offline.length > 0 ? `
-        <div class="member-sidebar-group">Не в сети — ${offline.length}</div>
-        <ul class="member-sidebar-list">${offline.map(renderItem).join("")}</ul>
-      ` : ""}
+      ${renderGroup("Владелец", owners)}
+      ${renderGroup("Администраторы", admins)}
+      ${renderGroup("Модераторы", moderators)}
+      ${renderGroup("В сети", onlineMembers)}
+      ${renderGroup("Не в сети", offline)}
       ${state.members.length === 0 ? `<div class="member-sidebar-empty">Никого нет</div>` : ""}
     </aside>
   `;
