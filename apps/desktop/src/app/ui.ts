@@ -2368,14 +2368,24 @@ function renderReplySnippet(reply: ReplySnippet | undefined): string {
   if (!reply) return "";
   if (reply.deleted) {
     return `<div class="reply-snippet deleted">
-      <span class="reply-arrow">↩</span>
+      <span class="reply-arrow">${icon("reply", { size: 14 })}</span>
       <span class="muted">исходное сообщение удалено</span>
     </div>`;
   }
   const author = describePeer(reply.authorId);
+  const member = state.members.find((m) => m.userId === reply.authorId);
+  const avatar = renderAvatar({
+    avatarMediaId: member?.avatarMediaId,
+    fallbackText: author,
+    sizePx: 16,
+    className: "reply-avatar"
+  });
+  const color = member ? ROLE_COLORS[member.role] : undefined;
+  const authorStyle = color ? ` style="color:${color};"` : "";
   return `<div class="reply-snippet" data-jump-id="${escapeHtml(reply.messageId)}" title="Перейти к исходному">
-    <span class="reply-arrow">↩</span>
-    <span class="reply-author">${escapeHtml(author)}</span>
+    <span class="reply-arrow">${icon("reply", { size: 14 })}</span>
+    ${avatar}
+    <span class="reply-author"${authorStyle}>${escapeHtml(author)}</span>
     <span class="reply-body">${escapeHtml(reply.body)}</span>
   </div>`;
 }
