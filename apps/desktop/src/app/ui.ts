@@ -347,6 +347,12 @@ interface AppState {
   // D.4: channel permission overrides
   channelSettings: ChannelSettingsState;
   workspaceRoles: WorkspaceRolesState;
+  // H.7: цвета ролей текущего воркспейса. Загружается параллельно с
+  // members при selectWorkspace и после save в roles-модалке. Ключ —
+  // role.code, значение — color (null если не задан). Если ничего не
+  // загружено / роль не найдена — fallback к хардкод-палитре в
+  // getRoleColor() (для отображения до окончания загрузки).
+  roleColors: Record<string, string | null>;
   // Контекстное меню канала: ПКМ на элементе списка → плавающее меню
   // (Переименовать / Удалить / Скопировать ID). null = меню закрыто.
   channelMenu: { channelId: string; x: number; y: number } | null;
@@ -477,6 +483,7 @@ const state: AppState = {
     selectedRoleId: null,
     draft: null
   },
+  roleColors: {},
   channelMenu: null,
   workspaceMenu: null,
   voiceVolumes: {},
@@ -616,12 +623,14 @@ async function selectWorkspace(id: string): Promise<void> {
   state.invites = [];
   state.members = [];
   state.unread = {};
+  state.roleColors = {};
   render();
   const data = await httpClient.get<{ items: Channel[] }>(`/api/v1/workspaces/${id}/channels`);
   state.channels = data.items ?? [];
   // Резолвинг authorId → имя в сообщениях. Не блокируем загрузку каналов.
   void loadMembers();
   void loadUnread(id);
+  void loadRoleColors(id);
   if (state.channels.length > 0) {
     await selectChannel(state.channels[0].id);
   } else {
@@ -1466,13 +1475,40 @@ function renderVoiceVolumeMenu(): string {
   `;
 }
 
-// Цвета ролей (хардкод до миграции workspace_roles.color). Подсветка имени
-// в member-sidebar и в авторе сообщения; member — дефолтный текст.
-const ROLE_COLORS: Record<string, string> = {
+// H.7: цвета ролей. По умолчанию подтягиваем из workspace_roles.color
+// (loadRoleColors при выборе ws); хардкод-палитра ниже — fallback пока
+// данные не загружены либо для роли не задан color в БД (member-роль
+// в seed'е — null). member-роль без цвета остаётся дефолтным --text.
+const ROLE_COLORS_FALLBACK: Record<string, string> = {
   owner: "#ed4245",
   admin: "#5865f2",
   moderator: "#3ba55c"
 };
+
+function getRoleColor(roleCode: string | undefined | null): string | undefined {
+  if (!roleCode) return undefined;
+  const live = state.roleColors[roleCode];
+  if (live !== undefined) {
+    return live ?? undefined; // null → нет цвета, undefined → не загружено
+  }
+  return ROLE_COLORS_FALLBACK[roleCode];
+}
+
+async function loadRoleColors(workspaceId: string): Promise<void> {
+  try {
+    const data = await httpClient.get<{ items: WorkspaceRole[] }>(`/api/v1/workspaces/${workspaceId}/roles`);
+    // Race-guard: ответ устарел если юзер успел переключить воркспейс.
+    if (state.selectedWorkspaceId !== workspaceId) return;
+    const colors: Record<string, string | null> = {};
+    for (const r of data.items ?? []) {
+      colors[r.code] = r.color ?? null;
+    }
+    state.roleColors = colors;
+    render();
+  } catch {
+    // Не критично — fallback к хардкоду в getRoleColor.
+  }
+}
 
 // H.1: универсальный рендер аватара. Если есть avatarMediaId — слот с
 // data-avatar-media, который attachAvatarSlots() лениво наполняет blob-URL'ом
@@ -1511,7 +1547,7 @@ function renderMemberSidebar(): string {
   });
   const renderItem = (m: Member) => {
     const name = m.displayName || m.username;
-    const color = ROLE_COLORS[m.role];
+    const color = getRoleColor(m.role);
     const style = color ? ` style="color:${color};"` : "";
     return `
       <li class="member-sidebar-item${m.online ? "" : " offline"}" data-member-user="${escapeHtml(m.userId)}">
@@ -1764,13 +1800,13 @@ function describeAuditEntry(e: AuditEntry): AuditDescription {
   return { icon: "•", actor, verb: e.action, target, raw: true };
 }
 
-// Возвращает inline-style="color:..." если у участника есть role-цвет;
-// иначе пустая строка (наследует дефолтный --text). Тот же ROLE_COLORS,
-// что в member-sidebar — единый источник истины.
+// Возвращает inline-style="color:..." если у участника есть role-цвет
+// (workspace_roles.color через getRoleColor, см. H.7). Иначе пустая
+// строка — наследует дефолтный --text.
 function authorColorStyle(userId: string): string {
   const m = state.members.find((x) => x.userId === userId);
   if (!m) return "";
-  const color = ROLE_COLORS[m.role];
+  const color = getRoleColor(m.role);
   return color ? ` style="color:${color};"` : "";
 }
 
@@ -2430,7 +2466,7 @@ function renderReplySnippet(reply: ReplySnippet | undefined): string {
     sizePx: 16,
     className: "reply-avatar"
   });
-  const color = member ? ROLE_COLORS[member.role] : undefined;
+  const color = member ? getRoleColor(member.role) : undefined;
   const authorStyle = color ? ` style="color:${color};"` : "";
   return `<div class="reply-snippet" data-jump-id="${escapeHtml(reply.messageId)}" title="Перейти к исходному">
     <span class="reply-arrow">${icon("reply", { size: 14 })}</span>
@@ -2932,6 +2968,11 @@ function attachWorkspaceRolesHandlers(): void {
       const updated = await httpClient.patch<WorkspaceRole>(`/api/v1/workspaces/${wsId}/roles/${sel.id}`, body);
       rs.roles = rs.roles.map((r) => (r.id === updated.id ? updated : r));
       syncWorkspaceRoleDraft();
+      // H.7: цвет роли мог поменяться — обновить кеш для member-sidebar
+      // и .author в сообщениях.
+      if (state.selectedWorkspaceId === wsId) {
+        state.roleColors[updated.code] = updated.color ?? null;
+      }
     } catch (err) {
       rs.error = describeError(err);
     } finally {
