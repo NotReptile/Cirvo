@@ -9,6 +9,11 @@ import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./s
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
 
+// H.8: presenceMode — выбранный юзером режим. "online"/"idle"/"dnd"/
+// "invisible". Для других юзеров invisible маскируется на бэке как
+// "offline" (см. effective_mode). У state.me хранится реальный режим.
+type PresenceMode = "online" | "idle" | "dnd" | "invisible" | "offline";
+
 interface Me {
   id: string;
   email: string;
@@ -16,6 +21,8 @@ interface Me {
   displayName?: string;
   isRoot?: boolean;
   avatarMediaId?: string;
+  presenceMode?: PresenceMode;
+  customStatus?: string;
 }
 
 interface Workspace {
@@ -107,6 +114,8 @@ interface Member {
   joinedAt: string;
   online?: boolean;
   avatarMediaId?: string;
+  presenceMode?: PresenceMode;
+  customStatus?: string;
 }
 
 interface AuditEntry {
@@ -364,6 +373,9 @@ interface AppState {
   voiceVolumes: Record<string, number>;
   // Popup управления громкостью: ПКМ на чужом voice-tile.
   voiceVolumeMenu: { key: string; label: string; x: number; y: number } | null;
+  // H.8: попап под avatar'ом в user-strip. Открывается на клик кнопки
+  // статуса; содержит радиокнопки per-mode + поле customStatus.
+  statusMenu: { x: number; y: number; draftMode: PresenceMode; draftCustom: string } | null;
   // Правая панель участников (Discord-style). На широких экранах открыта
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
@@ -488,6 +500,7 @@ const state: AppState = {
   workspaceMenu: null,
   voiceVolumes: {},
   voiceVolumeMenu: null,
+  statusMenu: null,
   memberSidebarOpen: true,
   mutedChannels: new Set(),
   screenShareQuality: loadScreenShareQuality()
@@ -855,6 +868,9 @@ function maybeShowBrowserNotification(item: NotificationItem): void {
   if (typeof window === "undefined" || !("Notification" in window)) return;
   if (Notification.permission !== "granted") return;
   if (typeof document !== "undefined" && document.visibilityState !== "hidden") return;
+  // H.8: DnD — пользователь явно попросил не беспокоить. Подавляем
+  // системные popup'ы. Badge + dropdown в UI всё равно обновятся.
+  if (state.me?.presenceMode === "dnd") return;
   // Замьюченный канал — не дёргаем системное уведомление даже на mention.
   // Звонки (call_incoming) приходят без channelId, их не глушим.
   const chId = item.payload.channelId;
@@ -888,6 +904,25 @@ function notificationTitle(item: NotificationItem): string {
 function notificationBody(item: NotificationItem): string {
   if (item.kind === "call_incoming") return "Нажмите, чтобы открыть RuCord";
   return item.payload.snippet ?? "";
+}
+
+// H.8: PUT /users/me/status. mode="online" + custom="" → сброс к дефолту.
+async function saveStatus(mode: PresenceMode, customStatus: string): Promise<void> {
+  try {
+    const updated = await httpClient.put<{ presenceMode?: PresenceMode; customStatus?: string }>(
+      "/api/v1/users/me/status",
+      { mode, customStatus }
+    );
+    if (state.me) {
+      state.me.presenceMode = (updated.presenceMode as PresenceMode | undefined) ?? mode;
+      state.me.customStatus = updated.customStatus ?? "";
+    }
+    state.statusMenu = null;
+    render();
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+  }
 }
 
 async function requestBrowserNotificationPermission(): Promise<void> {
@@ -1016,6 +1051,20 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
       createdAt: string;
       payload: NotificationPayload;
     });
+    return;
+  }
+  // H.8: presence.updated приходит из profile-модуля при PUT /users/me/status.
+  // Бэк рассылает по всем воркспейсам автора и его DM-собеседникам;
+  // invisible режим маскируется как 'offline'. Обновляем state.members
+  // (если автор в текущем ws) и dms (если есть DM с автором).
+  if (event.event === "presence.updated") {
+    const p = event.payload as { userId: string; mode: PresenceMode; customStatus?: string };
+    state.members = state.members.map((m) =>
+      m.userId === p.userId
+        ? { ...m, presenceMode: p.mode, online: p.mode !== "offline", customStatus: p.customStatus ?? "" }
+        : m
+    );
+    render();
     return;
   }
   // Каналы (create/update/delete) приходят с workspaceID-routing'ом и
@@ -1414,20 +1463,24 @@ function renderShell(): void {
           ${renderVoiceStrip()}
         </div>
         <footer class="user-strip">
-          <button id="open-profile" class="user user-btn" title="Профиль">
-            ${renderAvatar({
-              avatarMediaId: me?.avatarMediaId,
-              fallbackText: me?.displayName || me?.username || "?",
-              sizePx: 32
-            })}
+          <button id="open-status" class="user user-btn" title="Изменить статус">
+            <span class="user-strip-avatar-wrap">
+              ${renderAvatar({
+                avatarMediaId: me?.avatarMediaId,
+                fallbackText: me?.displayName || me?.username || "?",
+                sizePx: 32
+              })}
+              <span class="presence-dot ${presenceDotClass(me?.presenceMode)}"></span>
+            </span>
             <div class="user-strip-name">
               <div class="user-name">${escapeHtml(me?.displayName || me?.username || "—")}</div>
-              <div class="user-sub">@${escapeHtml(me?.username || "")}</div>
+              <div class="user-sub">${me?.customStatus ? escapeHtml(me.customStatus) : presenceLabel(me?.presenceMode)}</div>
             </div>
           </button>
           <div class="user-strip-actions">
             ${renderBellButton()}
             ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">${icon("shield")}</button>` : ""}
+            <button id="open-profile" class="ghost" title="Профиль" aria-label="Профиль">${icon("settings")}</button>
             <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
           </div>
         </footer>
@@ -1442,6 +1495,7 @@ function renderShell(): void {
       ${renderChannelMenu()}
       ${renderWorkspaceMenu()}
       ${renderVoiceVolumeMenu()}
+      ${renderStatusMenu()}
     </div>
   `;
   attachShellHandlers();
@@ -1471,6 +1525,81 @@ function renderVoiceVolumeMenu(): string {
       />
       <div class="voice-volume-hint">Перетащи или нажми Reset чтобы вернуть 100%</div>
       <button class="channel-menu-item" data-voice-volume-reset>Reset до 100%</button>
+    </div>
+  `;
+}
+
+// H.8: цвет точки/метка для presence-mode. Для отсутствующего значения
+// (старые серверы без миграции 21) считаем "online" если есть active
+// session, иначе "offline" — поведение совпадает с pre-H.8.
+function presenceDotClass(mode: PresenceMode | undefined | null): string {
+  switch (mode) {
+    case "online":
+      return "presence-online";
+    case "idle":
+      return "presence-idle";
+    case "dnd":
+      return "presence-dnd";
+    case "invisible":
+    case "offline":
+      return "presence-offline";
+    default:
+      return "presence-online";
+  }
+}
+
+function presenceLabel(mode: PresenceMode | undefined | null): string {
+  switch (mode) {
+    case "online":
+      return "В сети";
+    case "idle":
+      return "Неактивен";
+    case "dnd":
+      return "Не беспокоить";
+    case "invisible":
+      return "Невидимый";
+    case "offline":
+      return "Не в сети";
+    default:
+      return "В сети";
+  }
+}
+
+const PRESENCE_OPTIONS: { mode: PresenceMode; label: string; hint: string }[] = [
+  { mode: "online", label: "В сети", hint: "Виден как онлайн" },
+  { mode: "idle", label: "Неактивен", hint: "Жёлтая точка, виден как онлайн" },
+  { mode: "dnd", label: "Не беспокоить", hint: "Системные уведомления подавляются" },
+  { mode: "invisible", label: "Невидимый", hint: "Другие видят тебя офлайн" }
+];
+
+function renderStatusMenu(): string {
+  const menu = state.statusMenu;
+  if (!menu) return "";
+  const options = PRESENCE_OPTIONS.map((opt) => {
+    const active = menu.draftMode === opt.mode ? " active" : "";
+    return `
+      <button class="status-menu-option${active}" data-status-mode="${opt.mode}" role="menuitemradio" aria-checked="${menu.draftMode === opt.mode}">
+        <span class="presence-dot ${presenceDotClass(opt.mode)}"></span>
+        <span class="status-menu-text">
+          <span class="status-menu-label">${escapeHtml(opt.label)}</span>
+          <span class="status-menu-hint">${escapeHtml(opt.hint)}</span>
+        </span>
+      </button>
+    `;
+  }).join("");
+  return `
+    <div class="channel-menu-backdrop" data-status-menu-close></div>
+    <div class="status-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
+      <div class="status-menu-list">${options}</div>
+      <div class="status-menu-separator"></div>
+      <label class="status-menu-custom">
+        <span class="status-menu-custom-label">Кастомный статус</span>
+        <input id="status-custom-input" type="text" maxlength="64" placeholder="Например: «Играю в X»" value="${escapeHtml(menu.draftCustom)}" />
+      </label>
+      <div class="status-menu-actions">
+        <button id="status-clear" class="ghost">Очистить</button>
+        <button id="status-save" class="primary">Сохранить</button>
+      </div>
     </div>
   `;
 }
@@ -1549,15 +1678,24 @@ function renderMemberSidebar(): string {
     const name = m.displayName || m.username;
     const color = getRoleColor(m.role);
     const style = color ? ` style="color:${color};"` : "";
+    const effMode = m.presenceMode ?? (m.online ? "online" : "offline");
+    const subline = m.customStatus
+      ? `<span class="member-sidebar-status">${escapeHtml(m.customStatus)}</span>`
+      : "";
     return `
       <li class="member-sidebar-item${m.online ? "" : " offline"}" data-member-user="${escapeHtml(m.userId)}">
-        ${renderAvatar({
-          avatarMediaId: m.avatarMediaId,
-          fallbackText: name,
-          sizePx: 28,
-          online: !!m.online
-        })}
-        <span class="member-sidebar-name"${style}>${escapeHtml(name)}</span>
+        <span class="member-sidebar-avatar-wrap">
+          ${renderAvatar({
+            avatarMediaId: m.avatarMediaId,
+            fallbackText: name,
+            sizePx: 28
+          })}
+          <span class="presence-dot ${presenceDotClass(effMode)}"></span>
+        </span>
+        <span class="member-sidebar-body">
+          <span class="member-sidebar-name"${style}>${escapeHtml(name)}</span>
+          ${subline}
+        </span>
       </li>
     `;
   };
@@ -3303,6 +3441,52 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#open-profile")?.addEventListener("click", () => {
     state.modal = "profile";
     render();
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#open-status")?.addEventListener("click", (ev) => {
+    const target = ev.currentTarget as HTMLElement;
+    const rect = target.getBoundingClientRect();
+    // Открываем popup НАД user-strip'ом (Discord-like): фиксируем нижний
+    // край popup'а к верху кнопки. Слева — у кнопки.
+    state.statusMenu = {
+      x: Math.max(8, rect.left),
+      y: Math.max(8, rect.top - 8),
+      draftMode: (state.me?.presenceMode as PresenceMode) ?? "online",
+      draftCustom: state.me?.customStatus ?? ""
+    };
+    render();
+  });
+
+  rootEl.querySelector<HTMLElement>("[data-status-menu-close]")?.addEventListener("click", () => {
+    state.statusMenu = null;
+    render();
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-status-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (!state.statusMenu) return;
+      state.statusMenu.draftMode = btn.dataset.statusMode as PresenceMode;
+      render();
+    });
+  });
+
+  const statusCustomInput = rootEl.querySelector<HTMLInputElement>("#status-custom-input");
+  if (statusCustomInput) {
+    statusCustomInput.addEventListener("input", () => {
+      if (state.statusMenu) state.statusMenu.draftCustom = statusCustomInput.value;
+    });
+  }
+
+  rootEl.querySelector<HTMLButtonElement>("#status-clear")?.addEventListener("click", () => {
+    if (!state.statusMenu) return;
+    state.statusMenu.draftCustom = "";
+    void saveStatus("online", "");
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#status-save")?.addEventListener("click", () => {
+    if (!state.statusMenu) return;
+    const { draftMode, draftCustom } = state.statusMenu;
+    void saveStatus(draftMode, draftCustom);
   });
 
   rootEl.querySelector<HTMLButtonElement>("#open-members")?.addEventListener("click", async () => {

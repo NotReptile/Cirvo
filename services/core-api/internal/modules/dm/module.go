@@ -50,6 +50,8 @@ type peerView struct {
 	DisplayName   string `json:"displayName,omitempty"`
 	Online        bool   `json:"online"`
 	AvatarMediaID string `json:"avatarMediaId,omitempty"`
+	PresenceMode  string `json:"presenceMode,omitempty"`
+	CustomStatus  string `json:"customStatus,omitempty"`
 }
 
 type dmView struct {
@@ -76,12 +78,17 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		   case when d.user_a = $1 then d.user_b else d.user_a end as peer_id,
 		   u.username,
 		   coalesce(u.display_name, ''),
-		   exists(
-		     select 1 from user_sessions s
-		     where s.user_id = u.id
-		       and s.revoked_at is null
-		       and s.last_seen_at > now() - interval '5 minutes'
-		   ) as online,
+		   case
+		     when u.presence_mode = 'invisible' then 'offline'
+		     when not exists (
+		       select 1 from user_sessions s
+		       where s.user_id = u.id
+		         and s.revoked_at is null
+		         and s.last_seen_at > now() - interval '5 minutes'
+		     ) then 'offline'
+		     else u.presence_mode
+		   end as effective_mode,
+		   case when u.presence_mode = 'invisible' then null else u.custom_status end as effective_status,
 		   (select max(m.created_at) from messages m
 		     where m.channel_id = c.id and m.deleted_at is null) as last_message_at,
 		   (select count(*) from messages mm
@@ -115,23 +122,28 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 			peerID      uuid.UUID
 			username    string
 			displayName string
-			online      bool
+			effMode     string
+			effStatus   *string
 			lastMsg     *time.Time
 			unread      int
 			avatarID    *uuid.UUID
 		)
-		if err := rows.Scan(&chID, &created, &peerID, &username, &displayName, &online, &lastMsg, &unread, &avatarID); err != nil {
+		if err := rows.Scan(&chID, &created, &peerID, &username, &displayName, &effMode, &effStatus, &lastMsg, &unread, &avatarID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
 		pv := peerView{
-			UserID:      peerID.String(),
-			Username:    username,
-			DisplayName: displayName,
-			Online:      online,
+			UserID:       peerID.String(),
+			Username:     username,
+			DisplayName:  displayName,
+			Online:       effMode != "offline",
+			PresenceMode: effMode,
 		}
 		if avatarID != nil {
 			pv.AvatarMediaID = avatarID.String()
+		}
+		if effStatus != nil {
+			pv.CustomStatus = *effStatus
 		}
 		items = append(items, dmView{
 			ChannelID:     chID.String(),
@@ -317,7 +329,8 @@ func (m *Module) respondOpened(w http.ResponseWriter, r *http.Request, channelID
 	var (
 		username    string
 		displayName string
-		online      bool
+		effMode     string
+		effStatus   *string
 		createdAt   time.Time
 		lastMsg     *time.Time
 		unread      int
@@ -325,10 +338,15 @@ func (m *Module) respondOpened(w http.ResponseWriter, r *http.Request, channelID
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select u.username, coalesce(u.display_name, ''),
-		        exists(select 1 from user_sessions s
-		                where s.user_id = u.id
-		                  and s.revoked_at is null
-		                  and s.last_seen_at > now() - interval '5 minutes') as online,
+		        case
+		          when u.presence_mode = 'invisible' then 'offline'
+		          when not exists (select 1 from user_sessions s
+		                            where s.user_id = u.id
+		                              and s.revoked_at is null
+		                              and s.last_seen_at > now() - interval '5 minutes') then 'offline'
+		          else u.presence_mode
+		        end as effective_mode,
+		        case when u.presence_mode = 'invisible' then null else u.custom_status end as effective_status,
 		        c.created_at,
 		        (select max(m.created_at) from messages m
 		           where m.channel_id = c.id and m.deleted_at is null),
@@ -344,19 +362,23 @@ func (m *Module) respondOpened(w http.ResponseWriter, r *http.Request, channelID
 		 from users u, channels c
 		 where u.id = $1 and c.id = $3`,
 		peerID, viewerID, channelID,
-	).Scan(&username, &displayName, &online, &createdAt, &lastMsg, &unread, &avatarID)
+	).Scan(&username, &displayName, &effMode, &effStatus, &createdAt, &lastMsg, &unread, &avatarID)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not load dm view")
 		return
 	}
 	pv := peerView{
-		UserID:      peerID.String(),
-		Username:    username,
-		DisplayName: displayName,
-		Online:      online,
+		UserID:       peerID.String(),
+		Username:     username,
+		DisplayName:  displayName,
+		Online:       effMode != "offline",
+		PresenceMode: effMode,
 	}
 	if avatarID != nil {
 		pv.AvatarMediaID = avatarID.String()
+	}
+	if effStatus != nil {
+		pv.CustomStatus = *effStatus
 	}
 	view := dmView{
 		ChannelID:     channelID.String(),

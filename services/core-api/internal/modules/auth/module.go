@@ -97,6 +97,8 @@ type userView struct {
 	DisplayName   string `json:"displayName,omitempty"`
 	IsRoot        bool   `json:"isRoot,omitempty"`
 	AvatarMediaID string `json:"avatarMediaId,omitempty"`
+	PresenceMode  string `json:"presenceMode,omitempty"`
+	CustomStatus  string `json:"customStatus,omitempty"`
 }
 
 func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -220,12 +222,14 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		bannedAt     *time.Time
 		isRoot       bool
 		avatarID     *uuid.UUID
+		presenceMode string
+		customStatus *string
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select id, email, username, display_name, password_hash, banned_at, is_root, avatar_media_id
+		`select id, email, username, display_name, password_hash, banned_at, is_root, avatar_media_id, presence_mode, custom_status
 		 from users where email = $1 or username = $1`,
 		req.Login,
-	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot, &avatarID)
+	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot, &avatarID, &presenceMode, &customStatus)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
@@ -258,16 +262,20 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.User = userView{
-		ID:       userID.String(),
-		Email:    email,
-		Username: username,
-		IsRoot:   isRoot,
+		ID:           userID.String(),
+		Email:        email,
+		Username:     username,
+		IsRoot:       isRoot,
+		PresenceMode: presenceMode,
 	}
 	if displayName != nil {
 		resp.User.DisplayName = *displayName
 	}
 	if avatarID != nil {
 		resp.User.AvatarMediaID = avatarID.String()
+	}
+	if customStatus != nil {
+		resp.User.CustomStatus = *customStatus
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
@@ -388,16 +396,18 @@ func (m *Module) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 	userID := authctx.MustUserID(r.Context())
 	var (
-		email       string
-		username    string
-		displayName *string
-		isRoot      bool
-		avatarID    *uuid.UUID
+		email        string
+		username     string
+		displayName  *string
+		isRoot       bool
+		avatarID     *uuid.UUID
+		presenceMode string
+		customStatus *string
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select email, username, display_name, is_root, avatar_media_id from users where id = $1`,
+		`select email, username, display_name, is_root, avatar_media_id, presence_mode, custom_status from users where id = $1`,
 		userID,
-	).Scan(&email, &username, &displayName, &isRoot, &avatarID)
+	).Scan(&email, &username, &displayName, &isRoot, &avatarID, &presenceMode, &customStatus)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -406,12 +416,15 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
-	view := userView{ID: userID.String(), Email: email, Username: username, IsRoot: isRoot}
+	view := userView{ID: userID.String(), Email: email, Username: username, IsRoot: isRoot, PresenceMode: presenceMode}
 	if displayName != nil {
 		view.DisplayName = *displayName
 	}
 	if avatarID != nil {
 		view.AvatarMediaID = avatarID.String()
+	}
+	if customStatus != nil {
+		view.CustomStatus = *customStatus
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }

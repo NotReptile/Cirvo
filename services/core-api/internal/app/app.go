@@ -53,7 +53,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 	server.registerModules(
 		auth.NewModule(container.DB, container.JWT, container.Limiter, container.Settings, container.Logger),
 		call.NewModule(container.DB, container.Publisher, container.Logger),
-		profile.NewModule(container.DB, container.Logger),
+		profile.NewModule(container.DB, container.Publisher, container.Logger),
 		workspace.NewModule(container.DB, container.Settings, container.Logger),
 		role.NewModule(container.DB, container.Logger),
 		channel.NewModule(container.DB, container.Publisher, container.Settings, container.Logger),

@@ -391,6 +391,8 @@ type memberView struct {
 	JoinedAt      time.Time `json:"joinedAt"`
 	Online        bool      `json:"online"`
 	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
+	PresenceMode  string    `json:"presenceMode,omitempty"`
+	CustomStatus  string    `json:"customStatus,omitempty"`
 }
 
 func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
@@ -407,14 +409,21 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 
 	// online — есть активная (не ревокированная) сессия с last_seen за
 	// последние 5 минут. Порог 5 минут совпадает с realtime presence-TTL.
+	// H.8: presence_mode/custom_status маскируют invisible как offline,
+	// чтобы юзеры в режиме «Невидимый» выглядели как офлайн для других.
 	rows, err := m.db.Query(r.Context(),
 		`select u.id, u.username, u.display_name, wm.role_code, wm.joined_at,
-		        exists (
-		          select 1 from user_sessions s
-		          where s.user_id = u.id
-		            and s.revoked_at is null
-		            and s.last_seen_at > now() - interval '5 minutes'
-		        ) as online,
+		        case
+		          when u.presence_mode = 'invisible' then 'offline'
+		          when not exists (
+		            select 1 from user_sessions s
+		            where s.user_id = u.id
+		              and s.revoked_at is null
+		              and s.last_seen_at > now() - interval '5 minutes'
+		          ) then 'offline'
+		          else u.presence_mode
+		        end as effective_mode,
+		        case when u.presence_mode = 'invisible' then null else u.custom_status end as effective_status,
 		        u.avatar_media_id
 		 from workspace_members wm
 		 join users u on u.id = wm.user_id
@@ -431,24 +440,35 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	items := make([]memberView, 0)
 	for rows.Next() {
 		var (
-			id          uuid.UUID
-			username    string
-			displayName *string
-			role        string
-			joinedAt    time.Time
-			online      bool
-			avatarID    *uuid.UUID
+			id           uuid.UUID
+			username     string
+			displayName  *string
+			role         string
+			joinedAt     time.Time
+			effMode      string
+			effStatus    *string
+			avatarID     *uuid.UUID
 		)
-		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &online, &avatarID); err != nil {
+		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &effMode, &effStatus, &avatarID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
-		view := memberView{UserID: id.String(), Username: username, Role: role, JoinedAt: joinedAt, Online: online}
+		view := memberView{
+			UserID:       id.String(),
+			Username:     username,
+			Role:         role,
+			JoinedAt:     joinedAt,
+			Online:       effMode != "offline",
+			PresenceMode: effMode,
+		}
 		if displayName != nil {
 			view.DisplayName = *displayName
 		}
 		if avatarID != nil {
 			view.AvatarMediaID = avatarID.String()
+		}
+		if effStatus != nil {
+			view.CustomStatus = *effStatus
 		}
 		items = append(items, view)
 	}

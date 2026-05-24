@@ -2,9 +2,11 @@ package profile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,24 +15,38 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
-const maxDisplayName = 64
+const (
+	maxDisplayName  = 64
+	maxCustomStatus = 64
+)
 
-type Module struct {
-	db     *postgres.Pool
-	logger *slog.Logger
+// presenceModes — допустимые режимы для users.presence_mode. Семантика:
+// online/idle/dnd видны другим как соответствующий цветной dot; invisible
+// маскируется на бэке (см. EffectivePresenceSQL) — другие видят как offline,
+// сам юзер в /users/me видит реальный режим.
+var presenceModes = map[string]struct{}{
+	"online": {}, "idle": {}, "dnd": {}, "invisible": {},
 }
 
-func NewModule(db *postgres.Pool, logger *slog.Logger) *Module {
-	return &Module{db: db, logger: logger}
+type Module struct {
+	db        *postgres.Pool
+	publisher *realtimebus.Publisher
+	logger    *slog.Logger
+}
+
+func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, logger *slog.Logger) *Module {
+	return &Module{db: db, publisher: publisher, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("PUT /api/v1/users/me", m.handleUpdateMe)
+	router.Protected("PUT /api/v1/users/me/status", m.handleUpdateStatus)
 	router.Protected("PUT /api/v1/users/me/avatar", m.handleUpdateAvatar)
 	router.Protected("DELETE /api/v1/users/me/avatar", m.handleRemoveAvatar)
 	router.Protected("GET /api/v1/users/{userId}", m.handleGetUser)
@@ -49,12 +65,152 @@ type profileView struct {
 	Username      string `json:"username"`
 	DisplayName   string `json:"displayName,omitempty"`
 	AvatarMediaID string `json:"avatarMediaId,omitempty"`
+	PresenceMode  string `json:"presenceMode,omitempty"`
+	CustomStatus  string `json:"customStatus,omitempty"`
 }
 
 type meView struct {
 	profileView
 	Email     string    `json:"email"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type statusRequest struct {
+	Mode         *string `json:"mode"`
+	CustomStatus *string `json:"customStatus"`
+}
+
+// handleUpdateStatus — H.8: смена presence_mode и/или custom_status.
+// Pointer-поля: nil = не трогать, "" в customStatus = очистить.
+// После апдейта публикуем presence.updated по всем воркспейсам юзера
+// и всем DM-собеседникам, чтобы клиенты обновили dot/подпись без F5.
+func (m *Module) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+
+	var req statusRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	if req.Mode == nil && req.CustomStatus == nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nothing to update")
+		return
+	}
+
+	now := time.Now().UTC()
+	setParts := []string{}
+	args := []any{}
+	idx := 1
+	if req.Mode != nil {
+		mode := strings.TrimSpace(*req.Mode)
+		if _, ok := presenceModes[mode]; !ok {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid presence mode")
+			return
+		}
+		setParts = append(setParts, "presence_mode = $"+strconv.Itoa(idx))
+		args = append(args, mode)
+		idx++
+	}
+	if req.CustomStatus != nil {
+		cs := strings.TrimSpace(*req.CustomStatus)
+		if len(cs) > maxCustomStatus {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "customStatus too long")
+			return
+		}
+		setParts = append(setParts, "custom_status = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, cs)
+		idx++
+	}
+	setParts = append(setParts, "updated_at = $"+strconv.Itoa(idx))
+	args = append(args, now)
+	idx++
+	args = append(args, userID)
+
+	q := "update users set " + strings.Join(setParts, ", ") + " where id = $" + strconv.Itoa(idx)
+	if _, err := m.db.Exec(r.Context(), q, args...); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update status")
+		return
+	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:    userID,
+		Action:     auditlog.ActionProfileUpdated,
+		TargetType: "user",
+		TargetID:   userID.String(),
+	})
+
+	view, err := m.loadMeView(r.Context(), userID, now)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload profile")
+		return
+	}
+
+	m.publishPresenceUpdated(r.Context(), userID, view.PresenceMode, view.CustomStatus)
+
+	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+// publishPresenceUpdated публикует presence.updated:
+//   - для каждого workspace юзера → workspace fan-out;
+//   - для каждого DM-собеседника → per-user fan-out.
+//
+// Если режим invisible — публикуем effective='offline' (другие видят
+// как офлайн), customStatus затирается. Сам юзер локально знает свой
+// реальный режим из ответа PUT /users/me/status.
+func (m *Module) publishPresenceUpdated(ctx context.Context, userID uuid.UUID, mode, customStatus string) {
+	if m.publisher == nil {
+		return
+	}
+	effectiveMode := mode
+	effectiveStatus := customStatus
+	if mode == "invisible" {
+		effectiveMode = "offline"
+		effectiveStatus = ""
+	}
+	payload, err := json.Marshal(map[string]any{
+		"userId":       userID.String(),
+		"mode":         effectiveMode,
+		"customStatus": effectiveStatus,
+	})
+	if err != nil {
+		return
+	}
+
+	// Workspaces
+	wsRows, err := m.db.Query(ctx, `select workspace_id from workspace_members where user_id = $1`, userID)
+	if err == nil {
+		defer wsRows.Close()
+		for wsRows.Next() {
+			var wid uuid.UUID
+			if err := wsRows.Scan(&wid); err == nil {
+				_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+					Event:       "presence.updated",
+					WorkspaceID: wid.String(),
+					Payload:     payload,
+				})
+			}
+		}
+	}
+
+	// DM peers
+	peerRows, err := m.db.Query(ctx,
+		`select case when user_a = $1 then user_b else user_a end as peer_id
+		   from dm_channels where user_a = $1 or user_b = $1`,
+		userID,
+	)
+	if err == nil {
+		defer peerRows.Close()
+		for peerRows.Next() {
+			var pid uuid.UUID
+			if err := peerRows.Scan(&pid); err == nil {
+				_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+					Event:   "presence.updated",
+					UserID:  pid.String(),
+					Payload: payload,
+				})
+			}
+		}
+	}
 }
 
 func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
@@ -193,19 +349,21 @@ func (m *Module) handleRemoveAvatar(w http.ResponseWriter, r *http.Request) {
 
 func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt time.Time) (meView, error) {
 	var (
-		email    string
-		username string
-		display  *string
-		avatarID *uuid.UUID
+		email        string
+		username     string
+		display      *string
+		avatarID     *uuid.UUID
+		presenceMode string
+		customStatus *string
 	)
 	if err := m.db.QueryRow(ctx,
-		`select email, username, display_name, avatar_media_id from users where id = $1`,
+		`select email, username, display_name, avatar_media_id, presence_mode, custom_status from users where id = $1`,
 		userID,
-	).Scan(&email, &username, &display, &avatarID); err != nil {
+	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus); err != nil {
 		return meView{}, err
 	}
 	view := meView{
-		profileView: profileView{ID: userID.String(), Username: username},
+		profileView: profileView{ID: userID.String(), Username: username, PresenceMode: presenceMode},
 		Email:       email,
 		UpdatedAt:   updatedAt,
 	}
@@ -215,25 +373,33 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 	if avatarID != nil {
 		view.AvatarMediaID = avatarID.String()
 	}
+	if customStatus != nil {
+		view.CustomStatus = *customStatus
+	}
 	return view, nil
 }
 
 func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
-	_ = authctx.MustUserID(r.Context())
+	viewerID := authctx.MustUserID(r.Context())
 	targetID, ok := parseUUID(r, "userId")
 	if !ok {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid user id")
 		return
 	}
 	var (
-		username string
-		display  *string
-		avatarID *uuid.UUID
+		username     string
+		display      *string
+		avatarID     *uuid.UUID
+		presenceMode string
+		customStatus *string
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select username, display_name, avatar_media_id from users where id = $1`,
+		`select username, display_name, avatar_media_id,
+		        `+effectivePresenceModeExpr("u")+`,
+		        `+effectiveCustomStatusExpr("u")+`
+		 from users u where u.id = $1`,
 		targetID,
-	).Scan(&username, &display, &avatarID)
+	).Scan(&username, &display, &avatarID, &presenceMode, &customStatus)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -242,15 +408,60 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
-	view := profileView{ID: targetID.String(), Username: username}
+	view := profileView{ID: targetID.String(), Username: username, PresenceMode: presenceMode}
+	// Если запрашивают самого себя — это редкий путь (фронт обычно зовёт
+	// /users/me), но всё равно показываем реальный режим (invisible маска
+	// смысла не имеет для самого себя).
+	if targetID == viewerID {
+		err := m.db.QueryRow(r.Context(),
+			`select presence_mode, custom_status from users where id = $1`, viewerID,
+		).Scan(&presenceMode, &customStatus)
+		if err == nil {
+			view.PresenceMode = presenceMode
+		}
+	}
 	if display != nil {
 		view.DisplayName = *display
 	}
 	if avatarID != nil {
 		view.AvatarMediaID = avatarID.String()
 	}
+	if customStatus != nil {
+		view.CustomStatus = *customStatus
+	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
+
+// effectivePresenceModeExpr возвращает SQL-фрагмент, дающий «эффективный»
+// presence-mode для других юзеров. Маскирует invisible как offline и
+// учитывает свежесть user_sessions.last_seen_at (порог 5 минут).
+//
+// Параметр alias — алиас таблицы users в запросе (например "u").
+func effectivePresenceModeExpr(alias string) string {
+	return `case
+		when ` + alias + `.presence_mode = 'invisible' then 'offline'
+		when not exists (
+		  select 1 from user_sessions s
+		  where s.user_id = ` + alias + `.id
+		    and s.revoked_at is null
+		    and s.last_seen_at > now() - interval '5 minutes'
+		) then 'offline'
+		else ` + alias + `.presence_mode
+	end as presence_mode`
+}
+
+// effectiveCustomStatusExpr — кастомный статус для других юзеров.
+// Скрывается, если режим invisible.
+func effectiveCustomStatusExpr(alias string) string {
+	return `case when ` + alias + `.presence_mode = 'invisible' then null
+	             else ` + alias + `.custom_status end as custom_status`
+}
+
+// EffectivePresenceModeExpr / EffectiveCustomStatusExpr — экспорт для
+// других модулей (workspace.handleListMembers, dm.handleList/respondOpened),
+// чтобы фрагменты SQL не дублировались.
+func EffectivePresenceModeExpr(alias string) string { return effectivePresenceModeExpr(alias) }
+func EffectiveCustomStatusExpr(alias string) string { return effectiveCustomStatusExpr(alias) }
 
 func parseUUID(r *http.Request, name string) (uuid.UUID, bool) {
 	raw := r.PathValue(name)

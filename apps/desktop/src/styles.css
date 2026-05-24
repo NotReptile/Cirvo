@@ -2066,3 +2066,86 @@ input:focus { outline: none; border-color: var(--accent); }
 .roles-detail-actions .danger { margin-left: auto; }
 .roles-error { color: #ed4245; font-size: 13px; }
 .roles-empty { color: var(--text-mute); padding: 16px; text-align: center; }
+
+/* H.8 — presence: dot цветом per-mode, накладывается на avatar. */
+.user-strip-avatar-wrap,
+.member-sidebar-avatar-wrap { position: relative; display: inline-block; flex-shrink: 0; }
+.presence-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-elev);
+  background: #80848e;
+  z-index: 2;
+}
+.presence-online { background: #3ba55c; }
+.presence-idle { background: #faa61a; }
+.presence-dnd { background: #ed4245; }
+.presence-offline { background: #80848e; }
+/* Меньшая точка для member-sidebar (28px avatar). */
+.member-sidebar-avatar-wrap .presence-dot { width: 10px; height: 10px; }
+.member-sidebar-body { display: flex; flex-direction: column; min-width: 0; }
+.member-sidebar-status {
+  font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* H.8 — popup смены статуса под user-strip. position:fixed с инверсией
+   по Y (transform), чтобы popup рос ВВЕРХ от точки клика. */
+.status-menu {
+  position: fixed;
+  z-index: 90;
+  transform: translateY(-100%);
+  min-width: 260px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.status-menu-list { display: flex; flex-direction: column; gap: 2px; }
+.status-menu-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.status-menu-option:hover { background: var(--bg-elev-2); }
+.status-menu-option.active { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.status-menu-option .presence-dot {
+  position: static;
+  border: 0;
+  width: 10px;
+  height: 10px;
+}
+.status-menu-text { display: flex; flex-direction: column; min-width: 0; }
+.status-menu-label { font-size: 13px; font-weight: 500; }
+.status-menu-hint { font-size: 11px; color: var(--text-mute); }
+.status-menu-separator { height: 1px; background: var(--border); margin: 4px 0; }
+.status-menu-custom { display: flex; flex-direction: column; gap: 4px; padding: 0 4px; }
+.status-menu-custom-label { font-size: 11px; color: var(--text-mute); text-transform: uppercase; }
+.status-menu-custom input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+.status-menu-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 4px; }
+
