@@ -119,7 +119,38 @@ interface AuditEntry {
   createdAt: string;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | null;
+
+interface WorkspaceRole {
+  id: string;
+  workspaceId: string;
+  code: string;
+  name: string;
+  color?: string;
+  position: number;
+  hoisted: boolean;
+  baseActionMask: string[];
+  system: boolean;
+  memberUserIds: string[];
+}
+
+interface WorkspaceRoleDraft {
+  name: string;
+  color: string;
+  position: number;
+  hoisted: boolean;
+  baseActionMask: string[];
+}
+
+interface WorkspaceRolesState {
+  workspaceId: string | null;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  roles: WorkspaceRole[];
+  selectedRoleId: string | null;
+  draft: WorkspaceRoleDraft | null;
+}
 
 // D.4 — per-channel permission overrides.
 interface RoleOverride {
@@ -151,8 +182,16 @@ const ACTION_LABELS_RU: Record<string, string> = {
   "message.react": "Ставить реакции",
   "message.attach": "Прикреплять файлы",
   "message.mention": "Упоминать @username",
-  "channel.manage_members": "Управлять участниками",
-  "channel.update": "Изменять канал"
+  "channel.create": "Создавать каналы",
+  "channel.update": "Изменять канал",
+  "channel.delete": "Удалять каналы",
+  "channel.manage_members": "Управлять участниками канала",
+  "message.moderate": "Модерировать чужие сообщения",
+  "invite.manage": "Управлять инвайтами",
+  "audit.read": "Читать журнал событий",
+  "member.manage_role": "Менять роли участников",
+  "member.kick": "Кикать участников",
+  "workspace.update": "Изменять воркспейс"
 };
 
 const ROLE_LABELS_RU: Record<string, string> = {
@@ -307,6 +346,7 @@ interface AppState {
   admin: AdminState;
   // D.4: channel permission overrides
   channelSettings: ChannelSettingsState;
+  workspaceRoles: WorkspaceRolesState;
   // Контекстное меню канала: ПКМ на элементе списка → плавающее меню
   // (Переименовать / Удалить / Скопировать ID). null = меню закрыто.
   channelMenu: { channelId: string; x: number; y: number } | null;
@@ -427,6 +467,15 @@ const state: AppState = {
     error: null,
     data: null,
     draft: {}
+  },
+  workspaceRoles: {
+    workspaceId: null,
+    loading: false,
+    saving: false,
+    error: null,
+    roles: [],
+    selectedRoleId: null,
+    draft: null
   },
   channelMenu: null,
   workspaceMenu: null,
@@ -1547,6 +1596,7 @@ function renderWorkspaceMenu(): string {
       <div class="channel-menu-header">${escapeHtml(ws.name)}</div>
       ${canManage ? `<button class="channel-menu-item" data-workspace-action="upload-icon" data-id="${ws.id}">${ws.avatarMediaId ? "Сменить иконку" : "Загрузить иконку"}</button>` : ""}
       ${canManage && ws.avatarMediaId ? `<button class="channel-menu-item" data-workspace-action="remove-icon" data-id="${ws.id}">Удалить иконку</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-workspace-action="manage-roles" data-id="${ws.id}">Настроить роли…</button>` : ""}
       <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">Скопировать ID</button>
     </div>
   `;
@@ -2622,7 +2672,334 @@ function renderModal(): string {
   if (state.modal === "notifications") return renderNotificationsModal();
   if (state.modal === "admin") return renderAdminModal();
   if (state.modal === "channelSettings") return renderChannelSettingsModal();
+  if (state.modal === "workspaceRoles") return renderWorkspaceRolesModal();
   return "";
+}
+
+// Полный список action-кодов для cherry-pick checkboxes. Должен совпадать
+// с permission.AllActions в бэке (порядок важен только для UI).
+const ALL_PERMISSION_ACTIONS = [
+  "channel.create", "channel.update", "channel.delete", "channel.manage_members",
+  "message.moderate", "invite.manage", "audit.read",
+  "member.manage_role", "member.kick",
+  "message.write", "message.react", "message.attach", "message.mention",
+  "workspace.update"
+];
+
+function renderWorkspaceRolesModal(): string {
+  const rs = state.workspaceRoles;
+  const ws = state.workspaces.find((w) => w.id === rs.workspaceId);
+  if (!ws) return "";
+  const selected = rs.roles.find((r) => r.id === rs.selectedRoleId);
+  const draft = rs.draft;
+
+  const list = `
+    <div class="roles-list">
+      <div class="roles-list-header">
+        <span>Роли</span>
+        <button id="role-create" class="ghost" title="Создать роль">+</button>
+      </div>
+      <ul>
+        ${rs.roles.map((r) => `
+          <li class="roles-list-item ${r.id === rs.selectedRoleId ? "active" : ""}" data-select-role="${r.id}">
+            <span class="role-color-dot" style="background:${r.color ?? "var(--text-mute)"};"></span>
+            <span class="role-name">${escapeHtml(r.name)}</span>
+            ${r.system ? `<span class="role-badge">sys</span>` : ""}
+            ${r.hoisted ? `<span class="role-badge">★</span>` : ""}
+            <span class="role-count">${r.memberUserIds.length}</span>
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  `;
+
+  const detail = (() => {
+    if (!selected || !draft) return `<div class="roles-empty">Выберите роль или создайте новую</div>`;
+    const dirty =
+      draft.name !== selected.name ||
+      draft.color !== (selected.color ?? "") ||
+      draft.position !== selected.position ||
+      draft.hoisted !== selected.hoisted ||
+      JSON.stringify([...draft.baseActionMask].sort()) !== JSON.stringify([...selected.baseActionMask].sort());
+    return `
+      <div class="roles-detail">
+        <div class="roles-detail-header">
+          <input id="role-name" class="role-name-input" value="${escapeHtml(draft.name)}" maxlength="64" ${selected.system && selected.code === "owner" ? "disabled" : ""} />
+          <span class="role-code-hint">code: ${escapeHtml(selected.code)}${selected.system ? " · system" : ""}</span>
+        </div>
+        <div class="roles-detail-row">
+          <label class="role-field">
+            <span>Цвет</span>
+            <input id="role-color" type="color" value="${escapeHtml(draft.color || "#888888")}" />
+            ${draft.color ? `<button id="role-color-clear" class="ghost" title="Без цвета">✕</button>` : ""}
+          </label>
+          <label class="role-field">
+            <span>Позиция</span>
+            <input id="role-position" type="number" min="0" step="1" value="${draft.position}" />
+          </label>
+          <label class="role-field role-field-check">
+            <input id="role-hoisted" type="checkbox" ${draft.hoisted ? "checked" : ""} />
+            <span>Отдельная секция в списке участников</span>
+          </label>
+        </div>
+        <div class="roles-detail-section">
+          <div class="roles-section-title">Права</div>
+          <div class="roles-actions-grid">
+            ${ALL_PERMISSION_ACTIONS.map((a) => `
+              <label class="role-action-check">
+                <input type="checkbox" data-role-action="${a}" ${draft.baseActionMask.includes(a) ? "checked" : ""} />
+                <span>${escapeHtml(ACTION_LABELS_RU[a] ?? a)}</span>
+              </label>
+            `).join("")}
+          </div>
+        </div>
+        <div class="roles-detail-section">
+          <div class="roles-section-title">Участники (${selected.memberUserIds.length})</div>
+          <div class="roles-members-grid">
+            ${renderRoleMembersAssignment(selected)}
+          </div>
+        </div>
+        <div class="roles-detail-actions">
+          <button id="role-save" class="primary" ${dirty && !rs.saving ? "" : "disabled"}>${rs.saving ? "Сохраняем…" : "Сохранить"}</button>
+          ${!selected.system ? `<button id="role-delete" class="danger">Удалить роль</button>` : ""}
+          ${rs.error ? `<span class="roles-error">${escapeHtml(rs.error)}</span>` : ""}
+        </div>
+      </div>
+    `;
+  })();
+
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide roles-modal" role="dialog">
+        <div class="modal-header">
+          <h3>Роли · ${escapeHtml(ws.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body roles-modal-body">
+          ${list}
+          ${detail}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function openWorkspaceRolesModal(workspaceId: string): Promise<void> {
+  state.modal = "workspaceRoles";
+  state.workspaceRoles = {
+    workspaceId,
+    loading: true,
+    saving: false,
+    error: null,
+    roles: [],
+    selectedRoleId: null,
+    draft: null
+  };
+  render();
+  // Гарантируем что текущий ws соответствует — иначе renderRoleMembersAssignment
+  // покажет state.members не от того воркспейса.
+  if (state.selectedWorkspaceId !== workspaceId) {
+    await selectWorkspace(workspaceId);
+  } else if (state.members.length === 0) {
+    await loadMembers();
+  }
+  await reloadWorkspaceRoles();
+}
+
+async function reloadWorkspaceRoles(): Promise<void> {
+  const wsId = state.workspaceRoles.workspaceId;
+  if (!wsId) return;
+  state.workspaceRoles.loading = true;
+  render();
+  try {
+    const data = await httpClient.get<{ items: WorkspaceRole[] }>(`/api/v1/workspaces/${wsId}/roles`);
+    state.workspaceRoles.roles = data.items ?? [];
+    if (!state.workspaceRoles.selectedRoleId && state.workspaceRoles.roles.length > 0) {
+      state.workspaceRoles.selectedRoleId = state.workspaceRoles.roles[0].id;
+    }
+    syncWorkspaceRoleDraft();
+    state.workspaceRoles.error = null;
+  } catch (err) {
+    state.workspaceRoles.error = describeError(err);
+  } finally {
+    state.workspaceRoles.loading = false;
+    render();
+  }
+}
+
+function syncWorkspaceRoleDraft(): void {
+  const rs = state.workspaceRoles;
+  const sel = rs.roles.find((r) => r.id === rs.selectedRoleId);
+  if (!sel) {
+    rs.draft = null;
+    return;
+  }
+  rs.draft = {
+    name: sel.name,
+    color: sel.color ?? "",
+    position: sel.position,
+    hoisted: sel.hoisted,
+    baseActionMask: [...sel.baseActionMask]
+  };
+}
+
+function attachWorkspaceRolesHandlers(): void {
+  if (state.modal !== "workspaceRoles") return;
+  const rs = state.workspaceRoles;
+
+  rootEl.querySelectorAll<HTMLElement>("[data-select-role]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.selectRole;
+      if (!id || rs.selectedRoleId === id) return;
+      rs.selectedRoleId = id;
+      rs.error = null;
+      syncWorkspaceRoleDraft();
+      render();
+    });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#role-create")?.addEventListener("click", async () => {
+    const wsId = rs.workspaceId;
+    if (!wsId) return;
+    const name = window.prompt("Имя новой роли:")?.trim();
+    if (!name) return;
+    const code = window.prompt("Код роли (a-z, 0-9, _-; уникальный в воркспейсе):", slugify(name))?.trim();
+    if (!code) return;
+    try {
+      const created = await httpClient.post<WorkspaceRole>(`/api/v1/workspaces/${wsId}/roles`, {
+        code,
+        name,
+        baseActionMask: ["message.write", "message.react", "message.attach", "message.mention"]
+      });
+      rs.selectedRoleId = created.id;
+      await reloadWorkspaceRoles();
+    } catch (err) {
+      rs.error = describeError(err);
+      render();
+    }
+  });
+
+  // Все правки draft'а — напрямую в state без render(), чтобы не дёргать
+  // фокус. render() зовём только перед сохранением и после ответа сервера.
+  const draft = rs.draft;
+  if (draft) {
+    rootEl.querySelector<HTMLInputElement>("#role-name")?.addEventListener("input", (ev) => {
+      draft.name = (ev.target as HTMLInputElement).value;
+    });
+    rootEl.querySelector<HTMLInputElement>("#role-color")?.addEventListener("input", (ev) => {
+      draft.color = (ev.target as HTMLInputElement).value;
+    });
+    rootEl.querySelector<HTMLButtonElement>("#role-color-clear")?.addEventListener("click", () => {
+      draft.color = "";
+      render();
+    });
+    rootEl.querySelector<HTMLInputElement>("#role-position")?.addEventListener("input", (ev) => {
+      const n = parseInt((ev.target as HTMLInputElement).value, 10);
+      draft.position = Number.isFinite(n) ? n : 0;
+    });
+    rootEl.querySelector<HTMLInputElement>("#role-hoisted")?.addEventListener("change", (ev) => {
+      draft.hoisted = (ev.target as HTMLInputElement).checked;
+    });
+    rootEl.querySelectorAll<HTMLInputElement>("[data-role-action]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const action = cb.dataset.roleAction;
+        if (!action) return;
+        if (cb.checked && !draft.baseActionMask.includes(action)) {
+          draft.baseActionMask.push(action);
+        } else if (!cb.checked) {
+          draft.baseActionMask = draft.baseActionMask.filter((a) => a !== action);
+        }
+      });
+    });
+  }
+
+  rootEl.querySelector<HTMLButtonElement>("#role-save")?.addEventListener("click", async () => {
+    const wsId = rs.workspaceId;
+    const sel = rs.roles.find((r) => r.id === rs.selectedRoleId);
+    if (!wsId || !sel || !rs.draft) return;
+    rs.saving = true;
+    rs.error = null;
+    render();
+    try {
+      const body: Record<string, unknown> = {
+        name: rs.draft.name.trim(),
+        position: rs.draft.position,
+        hoisted: rs.draft.hoisted,
+        baseActionMask: rs.draft.baseActionMask
+      };
+      // null цвета = «без цвета», иначе шлём hex.
+      body.color = rs.draft.color ? rs.draft.color : null;
+      const updated = await httpClient.patch<WorkspaceRole>(`/api/v1/workspaces/${wsId}/roles/${sel.id}`, body);
+      rs.roles = rs.roles.map((r) => (r.id === updated.id ? updated : r));
+      syncWorkspaceRoleDraft();
+    } catch (err) {
+      rs.error = describeError(err);
+    } finally {
+      rs.saving = false;
+      render();
+    }
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#role-delete")?.addEventListener("click", async () => {
+    const wsId = rs.workspaceId;
+    const sel = rs.roles.find((r) => r.id === rs.selectedRoleId);
+    if (!wsId || !sel) return;
+    if (!window.confirm(`Удалить роль «${sel.name}»? Назначения участникам исчезнут.`)) return;
+    try {
+      await httpClient.del(`/api/v1/workspaces/${wsId}/roles/${sel.id}`);
+      rs.selectedRoleId = null;
+      await reloadWorkspaceRoles();
+    } catch (err) {
+      rs.error = describeError(err);
+      render();
+    }
+  });
+
+  rootEl.querySelectorAll<HTMLInputElement>("[data-role-member]").forEach((cb) => {
+    cb.addEventListener("change", async () => {
+      const wsId = rs.workspaceId;
+      const sel = rs.roles.find((r) => r.id === rs.selectedRoleId);
+      const userId = cb.dataset.roleMember;
+      if (!wsId || !sel || !userId) return;
+      const previousChecked = !cb.checked;
+      try {
+        if (cb.checked) {
+          await httpClient.post(`/api/v1/workspaces/${wsId}/roles/${sel.id}/members/${userId}`);
+          sel.memberUserIds = [...sel.memberUserIds, userId];
+        } else {
+          await httpClient.del(`/api/v1/workspaces/${wsId}/roles/${sel.id}/members/${userId}`);
+          sel.memberUserIds = sel.memberUserIds.filter((x) => x !== userId);
+        }
+      } catch (err) {
+        cb.checked = previousChecked;
+        rs.error = describeError(err);
+        render();
+      }
+    });
+  });
+}
+
+function renderRoleMembersAssignment(role: WorkspaceRole): string {
+  // state.members — участники текущего канала. Для назначения нужны все
+  // участники воркспейса; на данный момент в state.members лежат участники
+  // ws (member-sidebar). Если пусто — лениво подсказываем загрузить.
+  if (state.members.length === 0) {
+    return `<div class="roles-empty">Откройте панель участников хотя бы раз, чтобы прогрузить список — он используется здесь же.</div>`;
+  }
+  const isOwnerRole = role.code === "owner";
+  const sorted = [...state.members].sort((a, b) =>
+    (a.displayName || a.username).localeCompare(b.displayName || b.username, "ru")
+  );
+  return sorted.map((m) => {
+    const has = role.memberUserIds.includes(m.userId);
+    return `
+      <label class="role-member-row${isOwnerRole ? " locked" : ""}">
+        <input type="checkbox" data-role-member="${escapeHtml(m.userId)}" ${has ? "checked" : ""} ${isOwnerRole ? "disabled" : ""} />
+        <span>${escapeHtml(m.displayName || m.username)}</span>
+        <span class="role-member-sub">@${escapeHtml(m.username)}</span>
+      </label>
+    `;
+  }).join("");
 }
 
 function renderNotificationsModal(): string {
@@ -3328,8 +3705,14 @@ function attachShellHandlers(): void {
         input.click();
         return;
       }
+      if (action === "manage-roles") {
+        await openWorkspaceRolesModal(id);
+        return;
+      }
     });
   });
+
+  attachWorkspaceRolesHandlers();
 
   rootEl.querySelector<HTMLButtonElement>("#toggle-member-sidebar")?.addEventListener("click", () => {
     state.memberSidebarOpen = !state.memberSidebarOpen;
