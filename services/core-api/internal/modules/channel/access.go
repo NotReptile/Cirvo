@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 )
 
 // Scope describes a channel's workspace context and visibility.
@@ -44,7 +45,12 @@ func Resolve(ctx context.Context, db *postgres.Pool, channelID, userID uuid.UUID
 			return Scope{}, false
 		}
 		if s.IsPrivate {
-			if !IsMember(ctx, db, channelID, userID) {
+			// Видимость приватного канала: либо явное членство (channel_members,
+			// per-user grant), либо role-grant через channel_role_overrides
+			// (permission.AuthorizeChannel игнорирует base_action_mask для
+			// ChannelView на приватных каналах — нужен явный grant).
+			if !IsMember(ctx, db, channelID, userID) &&
+				!permission.CanInChannel(ctx, db, s.WorkspaceID, channelID, userID, permission.ChannelView) {
 				return Scope{}, false
 			}
 		}

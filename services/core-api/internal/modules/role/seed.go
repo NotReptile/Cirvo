@@ -103,6 +103,7 @@ var defaultRoles = []defaultRole{
 			"message.moderate", "invite.manage", "audit.read", "member.manage_role", "member.kick",
 			"message.write", "message.react", "message.attach", "message.mention",
 			"workspace.update",
+			"channel.view",
 		},
 	},
 	{
@@ -116,6 +117,7 @@ var defaultRoles = []defaultRole{
 			"message.moderate", "invite.manage", "audit.read", "member.manage_role", "member.kick",
 			"message.write", "message.react", "message.attach", "message.mention",
 			"workspace.update",
+			"channel.view",
 		},
 	},
 	{
@@ -128,6 +130,7 @@ var defaultRoles = []defaultRole{
 			"channel.create", "channel.update", "channel.delete", "channel.manage_members",
 			"message.moderate", "invite.manage", "audit.read", "member.kick",
 			"message.write", "message.react", "message.attach", "message.mention",
+			"channel.view",
 		},
 	},
 	{
@@ -138,6 +141,7 @@ var defaultRoles = []defaultRole{
 		Hoisted:  false,
 		Actions: []string{
 			"message.write", "message.react", "message.attach", "message.mention",
+			"channel.view",
 		},
 	},
 }

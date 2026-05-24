@@ -114,13 +114,32 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Видимость каналов:
+	//   • public — все участники воркспейса;
+	//   • private — owner короткозамыкается, либо явное членство в
+	//     channel_members, либо роль юзера имеет 'channel.view' в granted_actions
+	//     соответствующего channel_role_overrides. base_action_mask на приватные
+	//     каналы НЕ распространяется (H.6).
 	rows, err := m.db.Query(r.Context(),
-		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at
-		 from channels
-		 where workspace_id = $1
-		   and (is_private = false
-		        or exists (select 1 from channel_members cm where cm.channel_id = id and cm.user_id = $2))
-		 order by position, created_at`,
+		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at
+		 from channels c
+		 where c.workspace_id = $1
+		   and (
+		     c.is_private = false
+		     or exists (select 1 from channel_members cm where cm.channel_id = c.id and cm.user_id = $2)
+		     or exists (
+		       select 1 from workspace_members wm
+		       where wm.workspace_id = $1 and wm.user_id = $2 and wm.role_code = 'owner'
+		     )
+		     or exists (
+		       select 1 from workspace_role_members wrm
+		       join channel_role_overrides cro
+		         on cro.role_id = wrm.role_id and cro.channel_id = c.id
+		       where wrm.workspace_id = $1 and wrm.user_id = $2
+		         and 'channel.view' = any(cro.granted_actions)
+		     )
+		   )
+		 order by c.position, c.created_at`,
 		workspaceID, userID,
 	)
 	if err != nil {

@@ -52,6 +52,13 @@ const (
 	MessageMention Action = "message.mention"
 
 	WorkspaceUpdate Action = "workspace.update"
+
+	// ChannelView — право видеть канал в списке и читать сообщения. Для
+	// PUBLIC-каналов наследуется из base_action_mask (есть у всех seeded
+	// ролей по умолчанию). Для PRIVATE-каналов AuthorizeChannel игнорирует
+	// base и требует явный grant в channel_role_overrides либо запись в
+	// channel_members.
+	ChannelView Action = "channel.view"
 )
 
 // AllActions — единый источник списка для UI / валидации. Совпадает с
@@ -71,10 +78,12 @@ var AllActions = []Action{
 	MessageAttach,
 	MessageMention,
 	WorkspaceUpdate,
+	ChannelView,
 }
 
 // ChannelActions — action'ы, доступные к override per channel.
 var ChannelActions = []Action{
+	ChannelView,
 	MessageWrite,
 	MessageReact,
 	MessageAttach,
@@ -93,9 +102,11 @@ var baseHardcoded = map[string]map[Action]struct{}{
 		ChannelCreate, ChannelUpdate, ChannelDelete, ChannelManageMembers,
 		MessageModerate, InviteManage, AuditRead, MemberKick,
 		MessageWrite, MessageReact, MessageAttach, MessageMention,
+		ChannelView,
 	),
 	roleMember: setOf(
 		MessageWrite, MessageReact, MessageAttach, MessageMention,
+		ChannelView,
 	),
 }
 
@@ -148,10 +159,13 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 
 	// Один проход: union base masks ролей юзера + флаги granted/denied из
 	// channel_role_overrides per role. Сравнение по role_id (новая колонка).
+	// Параллельно тащим channels.is_private — для ChannelView в приватном
+	// канале base игнорируется, см. ниже.
 	rows, err := db.Query(ctx,
-		`select wr.base_action_mask, coalesce(cro.granted_actions, '{}'), coalesce(cro.denied_actions, '{}')
+		`select wr.base_action_mask, coalesce(cro.granted_actions, '{}'), coalesce(cro.denied_actions, '{}'), c.is_private
 		 from workspace_role_members wrm
 		 join workspace_roles wr on wr.id = wrm.role_id
+		 join channels c on c.id = $3
 		 left join channel_role_overrides cro
 		   on cro.role_id = wrm.role_id and cro.channel_id = $3
 		 where wrm.workspace_id = $1 and wrm.user_id = $2`,
@@ -163,13 +177,16 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 	defer rows.Close()
 
 	actStr := string(action)
-	var baseAllowed, anyGranted, anyDenied bool
+	var baseAllowed, anyGranted, anyDenied, isPrivate, anyRow bool
 	for rows.Next() {
+		anyRow = true
 		var mask []string
 		var granted, denied []string
-		if err := rows.Scan(&mask, &granted, &denied); err != nil {
+		var priv bool
+		if err := rows.Scan(&mask, &granted, &denied, &priv); err != nil {
 			continue
 		}
+		isPrivate = priv
 		if containsStr(mask, actStr) {
 			baseAllowed = true
 		}
@@ -179,6 +196,16 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 		if containsStr(denied, actStr) {
 			anyDenied = true
 		}
+	}
+	// Для приватного канала view-доступ через base_action_mask не работает —
+	// иначе любая роль с дефолтным channel.view в base видела бы все
+	// приватные каналы. Только явный grant в override либо channel_members
+	// (последнее проверяет channel.Resolve, не permission).
+	if isPrivate && action == ChannelView {
+		baseAllowed = false
+	}
+	if !anyRow {
+		return role, true, fallbackCan(role, action)
 	}
 	allowed = (baseAllowed || anyGranted) && !anyDenied
 	return role, true, allowed
