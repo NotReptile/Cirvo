@@ -154,7 +154,23 @@ interface DMItem {
   unreadCount: number;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | null;
+
+// H.6: state модалки создания канала. roles загружается лениво (GET
+// /workspaces/{ws}/roles) при открытии для приватного канала. На submit:
+// POST /workspaces/{ws}/channels, и если приватный + выбраны роли —
+// PUT /channels/{id}/permissions с granted=['channel.view'].
+interface CreateChannelState {
+  workspaceId: string | null;
+  kind: "text" | "voice";
+  name: string;
+  isPrivate: boolean;
+  selectedRoles: Set<string>;
+  roles: WorkspaceRole[];
+  rolesLoading: boolean;
+  saving: boolean;
+  error: string | null;
+}
 
 interface WorkspaceRole {
   id: string;
@@ -424,6 +440,8 @@ interface AppState {
   dmFindError: string | null;
   dmOpening: boolean;
   dmUnreadTotal: number;
+  // H.6: модалка создания канала (заменила window.prompt).
+  createChannel: CreateChannelState;
 }
 
 export type ScreenShareQualityKey = "720p30" | "1080p30" | "1080p60" | "1440p30";
@@ -547,7 +565,18 @@ const state: AppState = {
   dmFindQuery: "",
   dmFindError: null,
   dmOpening: false,
-  dmUnreadTotal: 0
+  dmUnreadTotal: 0,
+  createChannel: {
+    workspaceId: null,
+    kind: "text",
+    name: "",
+    isPrivate: false,
+    selectedRoles: new Set(),
+    roles: [],
+    rolesLoading: false,
+    saving: false,
+    error: null
+  }
 };
 
 // LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
@@ -3246,7 +3275,197 @@ function renderModal(): string {
   if (state.modal === "channelSettings") return renderChannelSettingsModal();
   if (state.modal === "workspaceRoles") return renderWorkspaceRolesModal();
   if (state.modal === "welcomeChannel") return renderWelcomeChannelModal();
+  if (state.modal === "createChannel") return renderCreateChannelModal();
   return "";
+}
+
+// H.6: открыть модалку. Параллельно (не блокируя render) тянем список
+// ролей воркспейса — нужны для секции «Доступ» при isPrivate=true.
+function openCreateChannelModal(workspaceId: string, kind: "text" | "voice"): void {
+  state.createChannel = {
+    workspaceId,
+    kind,
+    name: "",
+    isPrivate: false,
+    selectedRoles: new Set(),
+    roles: state.createChannel.workspaceId === workspaceId ? state.createChannel.roles : [],
+    rolesLoading: true,
+    saving: false,
+    error: null
+  };
+  state.modal = "createChannel";
+  render();
+  void loadRolesForCreateChannel(workspaceId);
+  // фокус на input имени
+  requestAnimationFrame(() => {
+    rootEl.querySelector<HTMLInputElement>("#create-channel-name")?.focus();
+  });
+}
+
+async function loadRolesForCreateChannel(workspaceId: string): Promise<void> {
+  try {
+    const data = await httpClient.get<{ items: WorkspaceRole[] }>(`/api/v1/workspaces/${workspaceId}/roles`);
+    if (state.createChannel.workspaceId !== workspaceId) return; // race-guard
+    state.createChannel.roles = (data.items ?? []).sort((a, b) => b.position - a.position);
+    state.createChannel.rolesLoading = false;
+    render();
+  } catch (err) {
+    if (state.createChannel.workspaceId !== workspaceId) return;
+    state.createChannel.rolesLoading = false;
+    state.createChannel.error = describeError(err);
+    render();
+  }
+}
+
+function renderCreateChannelModal(): string {
+  const cc = state.createChannel;
+  const ws = state.workspaces.find((w) => w.id === cc.workspaceId);
+  if (!ws) return "";
+  const kindLabel = cc.kind === "voice" ? "голосовой" : "текстовый";
+  const rolesBlock = !cc.isPrivate
+    ? `<div class="modal-hint">Канал виден всем участникам воркспейса.</div>`
+    : cc.rolesLoading
+      ? `<div class="modal-hint">Загрузка ролей…</div>`
+      : cc.roles.length === 0
+        ? `<div class="modal-hint">Нет ролей в воркспейсе.</div>`
+        : `
+          <div class="cc-roles-label">Выбери роли, которые увидят канал</div>
+          <ul class="cc-roles-list">
+            ${cc.roles.map((r) => {
+              // owner-роль всегда видит — checkbox disabled+checked
+              const isOwner = r.code === "owner";
+              const checked = isOwner || cc.selectedRoles.has(r.id);
+              const colorDot = r.color
+                ? `<span class="cc-role-dot" style="background:${escapeHtml(r.color)}"></span>`
+                : `<span class="cc-role-dot cc-role-dot-empty"></span>`;
+              return `
+                <li class="cc-role-row">
+                  <label>
+                    <input type="checkbox" data-cc-role="${escapeHtml(r.id)}"
+                           ${checked ? "checked" : ""} ${isOwner ? "disabled" : ""} />
+                    ${colorDot}
+                    <span class="cc-role-name">${escapeHtml(r.name)}</span>
+                    ${isOwner ? `<span class="cc-role-pill">всегда</span>` : ""}
+                  </label>
+                </li>
+              `;
+            }).join("")}
+          </ul>
+        `;
+  const errBlock = cc.error ? `<div class="modal-error">${escapeHtml(cc.error)}</div>` : "";
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal cc-modal" role="dialog">
+        <div class="modal-header">
+          <h3>Создать ${kindLabel} канал · ${escapeHtml(ws.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body">
+          <label class="cc-field">
+            <span class="cc-field-label">Название</span>
+            <input id="create-channel-name" type="text" autocomplete="off"
+                   maxlength="64" placeholder="новый-канал" value="${escapeHtml(cc.name)}" />
+          </label>
+          <label class="cc-field cc-field-toggle">
+            <input id="create-channel-private" type="checkbox" ${cc.isPrivate ? "checked" : ""} />
+            <span class="cc-field-toggle-body">
+              <span class="cc-field-label">🔒 Приватный канал</span>
+              <span class="cc-field-hint">Видят только выбранные роли + админы. Можно сменить позже в настройках канала.</span>
+            </span>
+          </label>
+          <div class="cc-roles">${rolesBlock}</div>
+          ${errBlock}
+        </div>
+        <div class="modal-footer">
+          <button class="ghost" data-modal-close>Отмена</button>
+          <button id="create-channel-submit" class="primary" ${cc.saving ? "disabled" : ""}>
+            ${cc.saving ? "Создание…" : "Создать"}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function attachCreateChannelHandlers(): void {
+  if (state.modal !== "createChannel") return;
+  const nameInput = rootEl.querySelector<HTMLInputElement>("#create-channel-name");
+  nameInput?.addEventListener("input", () => {
+    state.createChannel.name = nameInput.value;
+    // не зовём render() — иначе фокус слетит. error чистим при наборе.
+    if (state.createChannel.error) {
+      state.createChannel.error = null;
+      // лёгкий update DOM-узла без render'а
+      const err = rootEl.querySelector<HTMLElement>(".modal-error");
+      if (err) err.remove();
+    }
+  });
+
+  const privateToggle = rootEl.querySelector<HTMLInputElement>("#create-channel-private");
+  privateToggle?.addEventListener("change", () => {
+    state.createChannel.isPrivate = privateToggle.checked;
+    render();
+  });
+
+  rootEl.querySelectorAll<HTMLInputElement>("[data-cc-role]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.ccRole;
+      if (!id) return;
+      const next = new Set(state.createChannel.selectedRoles);
+      if (cb.checked) next.add(id);
+      else next.delete(id);
+      state.createChannel.selectedRoles = next;
+    });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#create-channel-submit")?.addEventListener("click", () => {
+    void submitCreateChannel();
+  });
+}
+
+async function submitCreateChannel(): Promise<void> {
+  const cc = state.createChannel;
+  if (!cc.workspaceId) return;
+  const name = cc.name.trim();
+  if (!name) {
+    cc.error = "Введи название канала";
+    render();
+    return;
+  }
+  cc.saving = true;
+  cc.error = null;
+  render();
+  try {
+    const ch = await httpClient.post<Channel>(`/api/v1/workspaces/${cc.workspaceId}/channels`, {
+      kind: cc.kind,
+      name,
+      isPrivate: cc.isPrivate
+    });
+    // Для приватного канала с выбранными ролями — выдаём channel.view
+    // overrides отдельным запросом. owner всегда видит (короткое замыкание
+    // в backend permission-резолвере), поэтому его не включаем.
+    if (cc.isPrivate && cc.selectedRoles.size > 0) {
+      const overrides = cc.roles
+        .filter((r) => cc.selectedRoles.has(r.id) && r.code !== "owner")
+        .map((r) => ({ roleCode: r.code, granted: ["channel.view"], denied: [] }));
+      if (overrides.length > 0) {
+        try {
+          await httpClient.put(`/api/v1/channels/${ch.id}/permissions`, { overrides });
+        } catch (err) {
+          // Канал уже создан — не валим целиком, просто сообщим в status.
+          state.status = `Канал создан, но не удалось выдать доступ: ${describeError(err)}`;
+        }
+      }
+    }
+    state.channels = [...state.channels, ch];
+    state.modal = null;
+    cc.saving = false;
+    await selectChannel(ch.id);
+  } catch (err) {
+    cc.saving = false;
+    cc.error = describeError(err);
+    render();
+  }
 }
 
 // H.9: модалка выбора welcome-канала. state.workspaces содержит
@@ -4688,27 +4907,19 @@ function attachShellHandlers(): void {
     }
   });
 
-  rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-add").forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
+  // H.6: открыть модалку создания канала (заменила window.prompt). data-create-kind
+  // приходит с кнопки «+» рядом с заголовком категории (text/voice). Только
+  // ch-category-add в channels-block, не #dm-find-btn (тот тоже .ch-category-add
+  // — нужно явно фильтровать по data-create-kind).
+  rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-add[data-create-kind]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
       e.preventDefault();
       if (!state.selectedWorkspaceId) return;
       const kind = (btn.dataset.createKind as "text" | "voice" | undefined) ?? "text";
-      const promptLabel = kind === "voice" ? "Имя голосового канала" : "Имя текстового канала";
-      const name = window.prompt(promptLabel, "")?.trim();
-      if (!name) return;
-      try {
-        const ch = await httpClient.post<Channel>(`/api/v1/workspaces/${state.selectedWorkspaceId}/channels`, {
-          kind,
-          name
-        });
-        state.channels = [...state.channels, ch];
-        await selectChannel(ch.id);
-      } catch (err) {
-        state.status = describeError(err);
-        render();
-      }
+      openCreateChannelModal(state.selectedWorkspaceId, kind);
     });
   });
+  attachCreateChannelHandlers();
 
   rootEl.querySelector<HTMLButtonElement>("#toggle-invites")?.addEventListener("click", async (e) => {
     e.preventDefault();

@@ -2376,3 +2376,92 @@ input:focus { outline: none; border-color: var(--accent); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* H.6 — модалка создания канала (заменила window.prompt). Поля «название»,
+   тоггл «приватный», список ролей с чекбоксами под доступ. owner всегда
+   видит и отрисован как disabled+checked с пилюлей «всегда». */
+.cc-modal { max-width: 460px; }
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.modal-footer button { padding: 8px 16px; border-radius: 6px; border: 0; cursor: pointer; font-weight: 600; }
+.modal-footer .ghost { background: transparent; color: var(--text); }
+.modal-footer .ghost:hover { background: var(--bg); }
+.modal-footer .primary { background: var(--accent); color: #fff; }
+.modal-footer .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.modal-error {
+  color: #ed4245;
+  font-size: 13px;
+  padding: 8px 12px;
+  background: rgba(237, 66, 69, 0.08);
+  border-radius: 6px;
+  border-left: 3px solid #ed4245;
+  margin-top: 12px;
+}
+.cc-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.cc-field-label { font-size: 13px; font-weight: 600; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.5px; }
+.cc-field input[type="text"] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 14px;
+}
+.cc-field-toggle {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  background: var(--bg);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.cc-field-toggle input[type="checkbox"] { margin-top: 2px; }
+.cc-field-toggle-body { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.cc-field-hint { color: var(--text-mute); font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.cc-roles { margin-top: 8px; }
+.cc-roles-label { font-size: 13px; color: var(--text-mute); margin-bottom: 6px; }
+.cc-roles-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+}
+.cc-role-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cc-role-row label:hover { background: var(--bg); }
+.cc-role-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.cc-role-dot-empty { background: var(--border); }
+.cc-role-name { flex: 1; min-width: 0; font-size: 14px; }
+.cc-role-pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-mute);
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
