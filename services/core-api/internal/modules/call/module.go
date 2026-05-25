@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -21,9 +22,16 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
+
+// missedCallThreshold — звонок короче этого считается «пропущенным» (если
+// reason указывает на отказ либо short-cancel инициатором). Эмпирически
+// 5 секунд: даже на flaky-соединениях за это время ответившая сторона
+// успевает поднять трубку, дальше уже состоявшийся (но короткий) разговор.
+const missedCallThreshold = 5 * time.Second
 
 const (
 	KindOneToOne     = "one_to_one"
@@ -36,11 +44,15 @@ const (
 type Module struct {
 	db        *postgres.Pool
 	publisher *realtimebus.Publisher
+	messages  *message.Module
 	logger    *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, logger *slog.Logger) *Module {
-	return &Module{db: db, publisher: publisher, logger: logger}
+// NewModule. messages — для постинга `system_call`-плашки в DM-чат
+// после завершения 1-к-1 звонка (G.5.e). Может быть nil — тогда
+// system-плашки не публикуются, остальная функциональность работает.
+func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, messages *message.Module, logger *slog.Logger) *Module {
+	return &Module{db: db, publisher: publisher, messages: messages, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -114,6 +126,18 @@ func (m *Module) handleStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		peerID = &pid
+		// G.5.e: для 1-к-1 звонка резолвим (или создаём) DM-канал с пиром,
+		// чтобы после end можно было постнуть system_call-плашку в общий
+		// чат. Если клиент уже передал свой req.ChannelID (например, звонит
+		// прямо из DM-окна) — переиспользуем. Иначе ensureDMChannel.
+		if req.ChannelID == "" {
+			dmID, err := ensureDMChannel(r.Context(), m.db, userID, pid)
+			if err != nil {
+				m.logger.Warn("could not ensure dm channel for call", "error", err)
+			} else {
+				req.ChannelID = dmID.String()
+			}
+		}
 	}
 
 	if req.ChannelID != "" {
@@ -255,6 +279,18 @@ func (m *Module) handleEnd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	view := buildView(callID, kind, initiatorID, peerID, channelID, startedAt, &now, req.Reason)
+
+	// G.5.e: для 1-к-1 звонков пишем «📞 Звонок · MM:SS» (или «📞 Пропущенный
+	// звонок» при duration < 5s и reason указывает на отказ/cancel) в
+	// привязанный DM-channel. messages-модуль публикует событие message.created
+	// через per-UserID fanout (workspaceID=Nil — см. PostSystemMessage), оба
+	// клиента увидят плашку независимо от того, открыт ли у них этот DM.
+	if kind == KindOneToOne && channelID != nil && m.messages != nil {
+		body := formatCallSystemBody(now.Sub(startedAt), req.Reason)
+		if err := m.messages.PostSystemMessage(r.Context(), *channelID, uuid.Nil, initiatorID, "system_call", body); err != nil {
+			m.logger.Warn("could not post system_call message", "error", err, "callId", callID)
+		}
+	}
 
 	// realtime: пушим call.ended всем участникам, чтобы UI обоих пиров
 	// синхронно увидел финальный durationMs (а не локальный Date.now()).
@@ -445,4 +481,91 @@ func firstSharedWorkspace(ctx context.Context, db *postgres.Pool, a uuid.UUID, b
 		return uuid.Nil
 	}
 	return ws
+}
+
+// ensureDMChannel — find-or-create DM-канал между двумя юзерами. Копия
+// логики dm.handleOpen (нормализация пары + ON CONFLICT DO NOTHING +
+// race-проверка), но без HTTP-обёртки. Вызывается из handleStart, чтобы
+// 1-к-1 звонки могли писать system_call-плашки в общий DM-чат.
+//
+// Извлечь в dm-package общим helper'ом — отдельная рефакторинг-задача
+// (потребует добавления модуля-зависимости и/или package-level функции;
+// пока дублируем 30 строк ради независимости пакетов).
+func ensureDMChannel(ctx context.Context, db *postgres.Pool, a, b uuid.UUID) (uuid.UUID, error) {
+	if a.String() > b.String() {
+		a, b = b, a
+	}
+	var chID uuid.UUID
+	err := db.QueryRow(ctx,
+		`select channel_id from dm_channels where user_a = $1 and user_b = $2`, a, b,
+	).Scan(&chID)
+	if err == nil {
+		return chID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, err
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	newID := uuid.New()
+	now := time.Now().UTC()
+	dmName := "dm-" + a.String()[:8] + "-" + b.String()[:8]
+	if _, err := tx.Exec(ctx,
+		`insert into channels (id, workspace_id, kind, name, is_private, position, created_at, updated_at)
+		 values ($1, null, 'dm', $2, true, 0, $3, $3)`,
+		newID, dmName, now,
+	); err != nil {
+		return uuid.Nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`insert into dm_channels (channel_id, user_a, user_b, created_at) values ($1, $2, $3, $4)
+		 on conflict (user_a, user_b) do nothing`,
+		newID, a, b, now,
+	); err != nil {
+		return uuid.Nil, err
+	}
+	var dbID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`select channel_id from dm_channels where user_a = $1 and user_b = $2`, a, b,
+	).Scan(&dbID); err != nil {
+		return uuid.Nil, err
+	}
+	if dbID != newID {
+		_ = tx.Rollback(ctx)
+		return dbID, nil
+	}
+	if _, err := tx.Exec(ctx,
+		`insert into channel_members (channel_id, user_id, joined_at) values ($1, $2, $4), ($1, $3, $4)`,
+		newID, a, b, now,
+	); err != nil {
+		return uuid.Nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, err
+	}
+	return newID, nil
+}
+
+// formatCallSystemBody — текст плашки для system_call message. Короткие
+// звонки с reason'ом отклонения считаются пропущенными; иначе — длительность
+// в MM:SS. Час+ форматируется как HH:MM:SS чтобы не получилось «65:30».
+func formatCallSystemBody(d time.Duration, reason string) string {
+	if d < missedCallThreshold && (reason == "rejected" || reason == "missed" || reason == "cancelled" || reason == "no_answer") {
+		return "📞 Пропущенный звонок"
+	}
+	if d < 0 {
+		d = 0
+	}
+	total := int(d.Seconds())
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	if h > 0 {
+		return fmt.Sprintf("📞 Звонок · %02d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("📞 Звонок · %02d:%02d", m, s)
 }

@@ -1268,16 +1268,42 @@ func (m *Module) PostSystemMessage(ctx context.Context, channelID, workspaceID, 
 	if err != nil {
 		return err
 	}
+	// G.5.e: для DM-каналов (workspaceID == uuid.Nil — caller сигнализирует
+	// этим что канал не workspace-scoped) фан-аут идёт по UserID каждого
+	// channel_members, а не через WorkspaceID — публикация в WorkspaceID=""
+	// не доехала бы ни до кого. Логика синхронна с publishScope для DM выше.
 	if m.publisher != nil {
 		raw, mErr := json.Marshal(view)
-		if mErr == nil {
-			_ = m.publisher.Publish(context.Background(), realtimebus.Event{
-				Event:       "message.created",
-				WorkspaceID: workspaceID.String(),
-				ChannelID:   channelID.String(),
-				Payload:     raw,
-			})
+		if mErr != nil {
+			return nil
 		}
+		if workspaceID == uuid.Nil {
+			rows, qerr := m.db.Query(context.Background(),
+				`select user_id from channel_members where channel_id = $1`, channelID)
+			if qerr != nil {
+				return nil
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var uid uuid.UUID
+				if err := rows.Scan(&uid); err != nil {
+					continue
+				}
+				_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+					Event:     "message.created",
+					UserID:    uid.String(),
+					ChannelID: channelID.String(),
+					Payload:   raw,
+				})
+			}
+			return nil
+		}
+		_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+			Event:       "message.created",
+			WorkspaceID: workspaceID.String(),
+			ChannelID:   channelID.String(),
+			Payload:     raw,
+		})
 	}
 	return nil
 }
