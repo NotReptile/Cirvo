@@ -134,6 +134,26 @@ interface AuditEntry {
   createdAt: string;
 }
 
+// G.8: личные сообщения. peer — то же, что приходит из бэка (peerView).
+// Online/presence маскируется на бэке (invisible → offline).
+interface DMPeer {
+  userId: string;
+  username: string;
+  displayName?: string;
+  online: boolean;
+  avatarMediaId?: string;
+  presenceMode?: PresenceMode;
+  customStatus?: string;
+}
+
+interface DMItem {
+  channelId: string;
+  peer: DMPeer;
+  createdAt: string;
+  lastMessageAt?: string;
+  unreadCount: number;
+}
+
 type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | null;
 
 interface WorkspaceRole {
@@ -393,6 +413,17 @@ interface AppState {
   // toggleScreenShare; меняется через `<select>` рядом с кнопкой
   // «Поделиться экраном». Персистится в localStorage.
   screenShareQuality: ScreenShareQualityKey;
+  // G.8: личные сообщения. dmMode переключает ch-panel между списком
+  // каналов воркспейса и списком DM. dms — список DM (channelId+peer
+  // +unread+lastMessageAt). dmFindQuery — фильтр в home-экране DM.
+  // dmUnreadTotal — для badge на DM-rail-иконке.
+  dmMode: boolean;
+  dms: DMItem[];
+  dmsLoading: boolean;
+  dmFindQuery: string;
+  dmFindError: string | null;
+  dmOpening: boolean;
+  dmUnreadTotal: number;
 }
 
 export type ScreenShareQualityKey = "720p30" | "1080p30" | "1080p60" | "1440p30";
@@ -509,7 +540,14 @@ const state: AppState = {
   statusMenu: null,
   memberSidebarOpen: true,
   mutedChannels: new Set(),
-  screenShareQuality: loadScreenShareQuality()
+  screenShareQuality: loadScreenShareQuality(),
+  dmMode: false,
+  dms: [],
+  dmsLoading: false,
+  dmFindQuery: "",
+  dmFindError: null,
+  dmOpening: false,
+  dmUnreadTotal: 0
 };
 
 // LRU-кэш blob-URL'ов превью: ключ — оригинальный media-URL (с /thumb для
@@ -591,7 +629,12 @@ export function renderApp(
         members: [],
         pickerForMessageId: null,
         notifications: [],
-        notificationsUnread: 0
+        notificationsUnread: 0,
+        dmMode: false,
+        dms: [],
+        dmUnreadTotal: 0,
+        dmFindQuery: "",
+        dmFindError: null
       });
       render();
     }
@@ -611,6 +654,7 @@ async function bootstrapSession(): Promise<void> {
     state.me = await httpClient.get<Me>("/api/v1/users/me");
     await loadWorkspaces();
     void loadNotifications();
+    void loadDMs();
     void requestBrowserNotificationPermission();
     state.status = "";
     render();
@@ -702,6 +746,14 @@ async function selectChannel(id: string): Promise<void> {
   state.stickToBottom = true;
   state.selectedChannelLastReadAt = readState.lastReadAt ?? null;
   state.unread[id] = 0;
+  // G.8: если это DM — обнулим unread на айтеме и пересчитаем total для badge.
+  const dmIdx = state.dms.findIndex((d) => d.channelId === id);
+  if (dmIdx >= 0) {
+    const next = state.dms.slice();
+    next[dmIdx] = { ...next[dmIdx], unreadCount: 0 };
+    state.dms = next;
+    state.dmUnreadTotal = state.dms.reduce((acc, d) => acc + (d.unreadCount ?? 0), 0);
+  }
   render();
   // Авто-отметка прочитанным: последнее сообщение текущей выборки
   // (если оно не моё — иначе незачем). Не ждём ответа.
@@ -727,6 +779,78 @@ async function loadUnread(workspaceId: string): Promise<void> {
   } catch (err) {
     state.status = describeError(err);
   }
+}
+
+// G.8: загрузка DM-листа. Зовётся на bootstrap и при входе в DM-режим
+// (чтобы освежить lastMessageAt/unread, если что-то пришло пока юзер был в ws).
+async function loadDMs(): Promise<void> {
+  state.dmsLoading = true;
+  try {
+    const data = await httpClient.get<{ items: DMItem[] }>("/api/v1/dm");
+    state.dms = (data.items ?? []).map((d) => ({
+      ...d,
+      unreadCount: d.channelId === state.selectedChannelId ? 0 : d.unreadCount
+    }));
+    state.dmUnreadTotal = state.dms.reduce((acc, d) => acc + (d.unreadCount ?? 0), 0);
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    state.dmsLoading = false;
+    render();
+  }
+}
+
+// Find-or-create DM с пиром (по userId или username). На успех — открыть
+// канал. backend идемпотентен, повторный вызов вернёт существующий.
+async function openDMWith(req: { userId?: string; username?: string }): Promise<void> {
+  if (state.dmOpening) return;
+  state.dmOpening = true;
+  state.dmFindError = null;
+  render();
+  try {
+    const dm = await httpClient.post<DMItem>("/api/v1/dm", req);
+    // upsert в state.dms
+    const idx = state.dms.findIndex((d) => d.channelId === dm.channelId);
+    if (idx < 0) {
+      state.dms = [dm, ...state.dms];
+    } else {
+      const next = state.dms.slice();
+      next[idx] = { ...dm, unreadCount: 0 };
+      state.dms = next;
+    }
+    state.dmMode = true;
+    state.dmFindQuery = "";
+    await selectChannel(dm.channelId);
+  } catch (err) {
+    state.dmFindError = describeError(err);
+    render();
+  } finally {
+    state.dmOpening = false;
+    render();
+  }
+}
+
+// Переключение в DM-режим (клик на «домик» над ws-rail). Не сбрасываем
+// selectedChannelId — он может указывать на DM-канал (тогда сразу его
+// откроем). Иначе остаёмся на home-экране со списком DM.
+function enterDMMode(): void {
+  state.dmMode = true;
+  state.dmFindError = null;
+  // Если selectedChannelId указывает на workspace-канал — сбросим выбор,
+  // чтобы content показал home-экран DM (а не сообщения чужого канала).
+  const isDmChannel = state.dms.some((d) => d.channelId === state.selectedChannelId);
+  if (!isDmChannel) {
+    state.selectedChannelId = null;
+    state.messages = [];
+  }
+  render();
+  void loadDMs();
+}
+
+function exitDMMode(workspaceId: string): void {
+  state.dmMode = false;
+  state.dmFindError = null;
+  void selectWorkspace(workspaceId);
 }
 
 async function markChannelRead(channelId: string, messageId: string): Promise<void> {
@@ -1070,6 +1194,22 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
         ? { ...m, presenceMode: p.mode, online: p.mode !== "offline", customStatus: p.customStatus ?? "" }
         : m
     );
+    // G.8 + H.8.iv: синхронизация peer-присутствия в DM-списке. Бэк
+    // публикует presence.updated по DM-собеседникам через UserID-fanout,
+    // так что для всех DM с этим юзером надо обновить дот и customStatus.
+    state.dms = state.dms.map((d) =>
+      d.peer.userId === p.userId
+        ? {
+            ...d,
+            peer: {
+              ...d.peer,
+              presenceMode: p.mode,
+              online: p.mode !== "offline",
+              customStatus: p.customStatus ?? ""
+            }
+          }
+        : d
+    );
     render();
     return;
   }
@@ -1104,6 +1244,16 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     render();
     return;
   }
+  // G.8: dm.opened — фан-аут обоим участникам при создании DM (см.
+  // publishDMOpened на бэке). Если у нас в state.dms ещё нет канала —
+  // тянем свежий список (с peer.username/displayName/avatarMediaId).
+  if (event.event === "dm.opened") {
+    const p = event.payload as { channelId: string };
+    if (!state.dms.some((d) => d.channelId === p.channelId)) {
+      void loadDMs();
+    }
+    return;
+  }
   // C.5: события для не-активных каналов обрабатываем отдельно (unread).
   if (event.channelId && event.channelId !== state.selectedChannelId) {
     if (event.event === "message.created") {
@@ -1113,12 +1263,43 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
       // через notification.created, обрабатываются выше.
       if (msg.authorId !== state.me?.id && !state.mutedChannels.has(event.channelId)) {
         state.unread[event.channelId] = (state.unread[event.channelId] ?? 0) + 1;
+        // G.8: если канал — DM, синхронно обновим DMItem (unread + lastMessageAt)
+        // и перечитаем суммарный counter для badge на DM-rail-иконке.
+        const dmIdx = state.dms.findIndex((d) => d.channelId === event.channelId);
+        if (dmIdx >= 0) {
+          const next = state.dms.slice();
+          next[dmIdx] = {
+            ...next[dmIdx],
+            unreadCount: (next[dmIdx].unreadCount ?? 0) + 1,
+            lastMessageAt: msg.createdAt
+          };
+          state.dms = next;
+          state.dmUnreadTotal = state.dms.reduce((acc, d) => acc + (d.unreadCount ?? 0), 0);
+        }
         render();
+      } else if (msg.authorId === state.me?.id) {
+        // Своё сообщение в фоновом DM — обновляем только lastMessageAt
+        // (для сортировки списка), unread не трогаем.
+        const dmIdx = state.dms.findIndex((d) => d.channelId === event.channelId);
+        if (dmIdx >= 0) {
+          const next = state.dms.slice();
+          next[dmIdx] = { ...next[dmIdx], lastMessageAt: msg.createdAt };
+          state.dms = next;
+          render();
+        }
       }
     } else if (event.event === "channel.read") {
       const p = event.payload as { userId: string; channelId: string };
       if (p.userId === state.me?.id) {
         state.unread[p.channelId] = 0;
+        // G.8: синхронизация DM-айтема (мульти-клиент: прочитал на телефоне).
+        const dmIdx = state.dms.findIndex((d) => d.channelId === p.channelId);
+        if (dmIdx >= 0) {
+          const next = state.dms.slice();
+          next[dmIdx] = { ...next[dmIdx], unreadCount: 0 };
+          state.dms = next;
+          state.dmUnreadTotal = state.dms.reduce((acc, d) => acc + (d.unreadCount ?? 0), 0);
+        }
         render();
       }
     }
@@ -1231,7 +1412,8 @@ async function toggleReaction(messageId: string, emoji: string): Promise<void> {
 const PRESERVED_INPUT_SELECTORS = [
   '#send-form input[name="body"]',
   "#search-input",
-  "#admin-user-search"
+  "#admin-user-search",
+  "#dm-find-input"
 ];
 
 interface InputSnapshot {
@@ -1438,15 +1620,28 @@ function updateAuthVisibility(form: HTMLFormElement, mode: "login" | "register")
 function renderShell(): void {
   const me = state.me;
   const selectedChannel = state.channels.find((c) => c.id === state.selectedChannelId);
+  const selectedDM = state.dms.find((d) => d.channelId === state.selectedChannelId);
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
   const canModerate = !!selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
+  const dmMode = state.dmMode;
+  // member-sidebar только для workspace-каналов
+  const showMembers = !!selectedChannel && state.memberSidebarOpen && !dmMode;
+
+  const dmBadge = state.dmUnreadTotal > 0
+    ? `<span class="ws-rail-badge">${state.dmUnreadTotal > 99 ? "99+" : state.dmUnreadTotal}</span>`
+    : "";
 
   rootEl.innerHTML = `
-    <div class="shell${selectedChannel && state.memberSidebarOpen ? " with-members" : ""}">
+    <div class="shell${showMembers ? " with-members" : ""}">
       <aside class="ws-rail">
+        <button id="ws-rail-dm" class="ws-rail-icon ws-rail-home${dmMode ? " active" : ""}" title="Личные сообщения" aria-label="Личные сообщения">
+          ${icon("users")}
+          ${dmBadge}
+        </button>
+        <div class="ws-rail-divider"></div>
         ${state.workspaces
           .map((ws) => {
-            const active = ws.id === state.selectedWorkspaceId ? " active" : "";
+            const active = !dmMode && ws.id === state.selectedWorkspaceId ? " active" : "";
             const mediaAttr = ws.avatarMediaId ? ` data-avatar-media="${escapeHtml(ws.avatarMediaId)}"` : "";
             return `
           <button class="ws-rail-icon${active}" data-ws="${ws.id}"${mediaAttr} title="${escapeHtml(ws.name)}" aria-label="${escapeHtml(ws.name)}">
@@ -1461,11 +1656,15 @@ function renderShell(): void {
       </aside>
       <aside class="ch-panel">
         <header class="ch-panel-header">
-          <span class="ch-panel-title">${selectedWorkspace ? escapeHtml(selectedWorkspace.name) : "Нет воркспейса"}</span>
+          <span class="ch-panel-title">${dmMode ? "Личные сообщения" : (selectedWorkspace ? escapeHtml(selectedWorkspace.name) : "Нет воркспейса")}</span>
         </header>
         <div class="ch-panel-body">
-          ${state.selectedWorkspaceId ? renderChannelsBlock() : `<div class="ch-panel-empty">Выбери воркспейс слева или создай новый кнопкой +.</div>`}
-          ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}
+          ${
+            dmMode
+              ? renderDMSidebarList()
+              : `${state.selectedWorkspaceId ? renderChannelsBlock() : `<div class="ch-panel-empty">Выбери воркспейс слева или создай новый кнопкой +.</div>`}
+                 ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}`
+          }
           ${renderVoiceStrip()}
         </div>
         <footer class="user-strip">
@@ -1492,9 +1691,17 @@ function renderShell(): void {
         </footer>
       </aside>
       <main class="content">
-        ${selectedChannel ? renderChannelView(selectedChannel) : renderEmpty()}
+        ${
+          selectedChannel
+            ? renderChannelView(selectedChannel)
+            : selectedDM
+              ? renderDMChannelView(selectedDM)
+              : dmMode
+                ? renderDMHome()
+                : renderEmpty()
+        }
       </main>
-      ${selectedChannel && state.memberSidebarOpen ? renderMemberSidebar() : ""}
+      ${showMembers ? renderMemberSidebar() : ""}
       ${state.status ? `<div class="status-bar">${escapeHtml(state.status)}</div>` : ""}
       ${renderModal()}
       ${renderCallOverlay()}
@@ -2051,6 +2258,155 @@ function renderChannelCategory(
       ${addBtn}
     </div>
     <ul class="channel-list">${items}</ul>
+  `;
+}
+
+// G.8: список DM в ch-panel-body (заменяет renderChannelsBlock в dm-mode).
+function renderDMSidebarList(): string {
+  if (state.dmsLoading && state.dms.length === 0) {
+    return `<div class="ch-panel-empty">Загрузка…</div>`;
+  }
+  const items = [...state.dms]
+    .sort((a, b) => {
+      const at = a.lastMessageAt ?? a.createdAt;
+      const bt = b.lastMessageAt ?? b.createdAt;
+      return bt.localeCompare(at);
+    })
+    .map((d) => {
+      const active = d.channelId === state.selectedChannelId ? " active" : "";
+      const unread = d.unreadCount > 0 ? ` has-unread` : "";
+      const muted = state.mutedChannels.has(d.channelId) ? " muted" : "";
+      const name = d.peer.displayName || d.peer.username;
+      const badge = d.unreadCount > 0
+        ? `<span class="unread-badge">${d.unreadCount > 99 ? "99+" : d.unreadCount}</span>`
+        : "";
+      const effMode = d.peer.presenceMode ?? (d.peer.online ? "online" : "offline");
+      return `
+        <li class="dm-item${active}${unread}${muted}" data-dm="${escapeHtml(d.channelId)}">
+          <span class="dm-item-avatar">
+            ${renderAvatar({
+              avatarMediaId: d.peer.avatarMediaId,
+              fallbackText: name,
+              sizePx: 28
+            })}
+            <span class="presence-dot ${presenceDotClass(effMode)}"></span>
+          </span>
+          <span class="dm-item-body">
+            <span class="dm-item-name">${escapeHtml(name)}</span>
+            ${d.peer.customStatus ? `<span class="dm-item-sub">${escapeHtml(d.peer.customStatus)}</span>` : ""}
+          </span>
+          ${badge}
+          <button class="ghost dm-item-close" data-dm-close="${escapeHtml(d.channelId)}" title="Скрыть из списка" aria-label="Скрыть">${icon("x", { size: 14 })}</button>
+        </li>
+      `;
+    })
+    .join("");
+  return `
+    <div class="section-title dm-list-title">
+      <span>Прямые сообщения</span>
+      <button id="dm-find-btn" class="ghost ch-category-add" title="Найти или начать беседу" aria-label="Найти">${icon("plus")}</button>
+    </div>
+    ${state.dms.length === 0
+      ? `<div class="ch-panel-empty">Пока нет личных бесед. Нажми <strong>+</strong> или открой DM из профиля участника.</div>`
+      : `<ul class="dm-list">${items}</ul>`}
+  `;
+}
+
+// G.8: home-экран DM (когда в dm-mode, но никакой DM не выбран).
+// Поле поиска по username + список DM в виде крупных карточек.
+function renderDMHome(): string {
+  const errBlock = state.dmFindError
+    ? `<div class="dm-home-error">${escapeHtml(state.dmFindError)}</div>`
+    : "";
+  const sorted = [...state.dms].sort((a, b) => {
+    const at = a.lastMessageAt ?? a.createdAt;
+    const bt = b.lastMessageAt ?? b.createdAt;
+    return bt.localeCompare(at);
+  });
+  const cards = sorted.length === 0
+    ? `<div class="dm-home-empty">Нет начатых бесед. Введи username сверху, чтобы начать первую.</div>`
+    : `<ul class="dm-home-list">
+        ${sorted.map((d) => {
+          const name = d.peer.displayName || d.peer.username;
+          const effMode = d.peer.presenceMode ?? (d.peer.online ? "online" : "offline");
+          return `
+            <li class="dm-home-card" data-dm="${escapeHtml(d.channelId)}">
+              <span class="dm-home-avatar">
+                ${renderAvatar({ avatarMediaId: d.peer.avatarMediaId, fallbackText: name, sizePx: 48 })}
+                <span class="presence-dot ${presenceDotClass(effMode)}"></span>
+              </span>
+              <span class="dm-home-card-body">
+                <span class="dm-home-card-name">${escapeHtml(name)}</span>
+                <span class="dm-home-card-sub">${d.peer.customStatus ? escapeHtml(d.peer.customStatus) : "@" + escapeHtml(d.peer.username)}</span>
+              </span>
+              ${d.unreadCount > 0 ? `<span class="unread-badge">${d.unreadCount > 99 ? "99+" : d.unreadCount}</span>` : ""}
+            </li>
+          `;
+        }).join("")}
+      </ul>`;
+  return `
+    <div class="dm-home">
+      <header class="dm-home-header">
+        <h2>Личные сообщения</h2>
+        <form id="dm-find-form" class="dm-home-find">
+          <input id="dm-find-input"
+                 name="query"
+                 placeholder="Найти или начать беседу — введи username"
+                 autocomplete="off"
+                 maxlength="64"
+                 value="${escapeHtml(state.dmFindQuery)}" />
+          <button type="submit" ${state.dmOpening ? "disabled" : ""}>${state.dmOpening ? "…" : "Открыть"}</button>
+        </form>
+        ${errBlock}
+      </header>
+      ${cards}
+    </div>
+  `;
+}
+
+// G.8: рендер DM-канала. Использует ту же машинерию (message-list +
+// composer + reply-bar + mention-popup), что и обычный text-канал, но с
+// собственным header'ом (peer avatar + name + online-dot, без settings).
+// canSend всегда true — DM-канал всегда принимает сообщения.
+function renderDMChannelView(dm: DMItem): string {
+  const name = dm.peer.displayName || dm.peer.username;
+  const effMode = dm.peer.presenceMode ?? (dm.peer.online ? "online" : "offline");
+  const sub = dm.peer.customStatus || "@" + dm.peer.username;
+  return `
+    <header class="channel-header dm-channel-header">
+      <div class="dm-header-info">
+        <span class="dm-header-avatar">
+          ${renderAvatar({ avatarMediaId: dm.peer.avatarMediaId, fallbackText: name, sizePx: 36 })}
+          <span class="presence-dot ${presenceDotClass(effMode)}"></span>
+        </span>
+        <div>
+          <h2>${escapeHtml(name)}</h2>
+          <div class="topic">${escapeHtml(sub)}</div>
+        </div>
+      </div>
+    </header>
+    <div id="drop-zone" class="drop-zone" hidden>
+      <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
+    </div>
+    <div id="message-list" class="message-list">
+      ${renderMessagesWithDivider()}
+    </div>
+    ${renderJumpToUnread()}
+    ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
+    ${renderReplyBar()}
+    <div id="mention-popup" class="mention-popup" hidden></div>
+    <form id="send-form" class="send-form">
+      <label class="attach-btn" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
+        ${icon("paperclip")}
+        <input type="file" id="attach-input" multiple hidden />
+      </label>
+      <input
+        name="body"
+        autocomplete="off"
+        placeholder="Сообщение для ${escapeHtml(name)}"
+      />
+      <button type="submit">${state.uploadInFlight ? "…" : "↑"}</button>
+    </form>
   `;
 }
 
@@ -3529,6 +3885,7 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
         }
       </td>
       <td>
+        ${!isSelf ? `<button class="ghost member-dm" data-user-id="${m.userId}" title="Личное сообщение">${icon("reply")}</button>` : ""}
         ${showCall ? `<button class="ghost member-call" data-user-id="${m.userId}" title="Позвонить">${icon("phone")}</button>` : ""}
         ${showKick ? `<button class="ghost member-kick" data-user-id="${m.userId}" title="Удалить">${icon("trash")}</button>` : ""}
       </td>
@@ -3815,6 +4172,25 @@ function attachShellHandlers(): void {
     });
   });
 
+  rootEl.querySelectorAll<HTMLButtonElement>(".member-dm").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const userId = btn.dataset.userId;
+      if (!userId) return;
+      state.modal = null;
+      void openDMWith({ userId });
+    });
+  });
+
+  // G.8: клик по карточке в member-sidebar → открыть DM (а не модалку
+  // members, как раньше). Self-клик игнорится — это твоя же карточка.
+  rootEl.querySelectorAll<HTMLElement>(".member-sidebar-item[data-member-user]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const userId = el.getAttribute("data-member-user");
+      if (!userId || userId === state.me?.id) return;
+      void openDMWith({ userId });
+    });
+  });
+
   rootEl.querySelectorAll<HTMLButtonElement>(".member-call").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const userId = btn.dataset.userId;
@@ -3927,10 +4303,19 @@ function attachShellHandlers(): void {
 
   syncCallTimer();
 
+  rootEl.querySelector<HTMLButtonElement>("#ws-rail-dm")?.addEventListener("click", () => {
+    enterDMMode();
+  });
+
   rootEl.querySelectorAll<HTMLElement>("[data-ws]").forEach((el) => {
     el.addEventListener("click", () => {
       const id = el.dataset.ws;
-      if (id && id !== state.selectedWorkspaceId) void selectWorkspace(id);
+      if (!id) return;
+      if (state.dmMode) {
+        exitDMMode(id);
+      } else if (id !== state.selectedWorkspaceId) {
+        void selectWorkspace(id);
+      }
     });
     el.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
@@ -3960,6 +4345,64 @@ function attachShellHandlers(): void {
       render();
     });
   });
+
+  // G.8: клик на DM-айтем в sidebar или home-карточку
+  rootEl.querySelectorAll<HTMLElement>("[data-dm]").forEach((el) => {
+    el.addEventListener("click", (ev) => {
+      // Игнорим клик на кнопке закрытия — обрабатывается отдельным listener'ом.
+      if ((ev.target as HTMLElement).closest("[data-dm-close]")) return;
+      const id = el.dataset.dm;
+      if (id && id !== state.selectedChannelId) void selectChannel(id);
+    });
+  });
+
+  // Скрытие DM из списка (клиентский UX-фильтр; backend всё ещё хранит канал,
+  // в любой момент можно открыть заново через find). Не путать с «удалить
+  // DM навсегда» — этого нет ни на бэке, ни в Discord-like UX.
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-dm-close]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.dmClose;
+      if (!id) return;
+      state.dms = state.dms.filter((d) => d.channelId !== id);
+      if (state.selectedChannelId === id) {
+        state.selectedChannelId = null;
+        state.messages = [];
+      }
+      // Не пересчитываем dmUnreadTotal — скрытый DM продолжит приходить
+      // через realtime и заново появится при openDMWith или dm.opened.
+      render();
+    });
+  });
+
+  // Кнопка «+» в DM-sidebar — сбросить выбор и показать home (фокус инпута).
+  rootEl.querySelector<HTMLButtonElement>("#dm-find-btn")?.addEventListener("click", () => {
+    state.selectedChannelId = null;
+    state.messages = [];
+    state.dmFindError = null;
+    render();
+    rootEl.querySelector<HTMLInputElement>("#dm-find-input")?.focus();
+  });
+
+  // Форма «Найти или начать беседу» на home-экране DM.
+  const dmFindForm = rootEl.querySelector<HTMLFormElement>("#dm-find-form");
+  const dmFindInput = rootEl.querySelector<HTMLInputElement>("#dm-find-input");
+  if (dmFindForm && dmFindInput) {
+    dmFindInput.addEventListener("input", () => {
+      state.dmFindQuery = dmFindInput.value;
+      // не вызываем render(), чтобы не сбросить каретку — query фиксируется при submit
+    });
+    dmFindForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const raw = dmFindInput.value.trim().toLowerCase().replace(/^@/, "");
+      if (!raw) {
+        state.dmFindError = "Введи username";
+        render();
+        return;
+      }
+      void openDMWith({ username: raw });
+    });
+  }
 
   rootEl.querySelector<HTMLElement>("[data-channel-menu-close]")?.addEventListener("click", () => {
     state.channelMenu = null;
@@ -4056,15 +4499,6 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#toggle-member-sidebar")?.addEventListener("click", () => {
     state.memberSidebarOpen = !state.memberSidebarOpen;
     render();
-  });
-
-  // Клик по участнику в правой панели — открыть members-модалку
-  // (если придумается per-user детальный view, заменим на отдельную модалку).
-  rootEl.querySelectorAll<HTMLElement>(".member-sidebar-item").forEach((el) => {
-    el.addEventListener("click", () => {
-      state.modal = "members";
-      render();
-    });
   });
 
   rootEl.querySelector<HTMLElement>("[data-voice-volume-close]")?.addEventListener("click", () => {

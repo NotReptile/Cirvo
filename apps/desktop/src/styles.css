@@ -2191,3 +2191,188 @@ input:focus { outline: none; border-color: var(--accent); }
 .modal-hint { color: var(--text-mute); font-size: 13px; margin: 0 0 12px; }
 
 
+
+/* G.8 — личные сообщения (DM). DM-иконка над ws-rail, sidebar-список,
+   home-экран «Найти или начать беседу», dedicated header DM-канала. */
+.ws-rail-home {
+  background: #1e2025;
+  color: #c2c5ca;
+}
+.ws-rail-home:hover { background: var(--accent); color: #fff; border-radius: 14px; }
+.ws-rail-home.active {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 14px;
+}
+.ws-rail-badge {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: #ed4245;
+  color: #fff;
+  border: 2px solid #0b0d12;
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ws-rail-divider {
+  width: 32px;
+  height: 2px;
+  background: #2a2d33;
+  border-radius: 1px;
+  margin: 2px 0 4px;
+}
+
+.dm-list-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-right: 4px;
+}
+.dm-list-title span { flex: 1; min-width: 0; }
+.dm-list {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-mute);
+  position: relative;
+}
+.dm-item:hover { background: var(--bg); color: var(--text); }
+.dm-item.active { background: rgba(88, 101, 242, 0.18); color: var(--text); }
+.dm-item.has-unread .dm-item-name { color: var(--text); font-weight: 600; }
+.dm-item.muted { opacity: 0.5; }
+.dm-item.muted .unread-badge { display: none; }
+.dm-item-avatar { position: relative; flex-shrink: 0; }
+.dm-item-avatar .presence-dot { width: 10px; height: 10px; right: -2px; bottom: -2px; }
+.dm-item-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+.dm-item-name {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dm-item-sub {
+  font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dm-item-close {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--text-mute);
+}
+.dm-item:hover .dm-item-close { display: inline-flex; }
+.dm-item-close:hover { background: var(--bg-elev); color: var(--text); }
+
+/* Home-экран DM (когда никакой DM не выбран). */
+.dm-home {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 32px 48px;
+  gap: 24px;
+  overflow-y: auto;
+}
+.dm-home-header { display: flex; flex-direction: column; gap: 12px; }
+.dm-home-header h2 { margin: 0; font-size: 20px; }
+.dm-home-find {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.dm-home-find input {
+  flex: 1;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--text);
+  font-size: 14px;
+}
+.dm-home-find input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.dm-home-find button {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dm-home-find button:disabled { opacity: 0.5; cursor: not-allowed; }
+.dm-home-error { color: #ed4245; font-size: 13px; }
+.dm-home-empty {
+  color: var(--text-mute);
+  font-size: 14px;
+  padding: 24px;
+  text-align: center;
+}
+.dm-home-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dm-home-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.dm-home-card:hover { background: var(--bg-elev); }
+.dm-home-avatar { position: relative; flex-shrink: 0; }
+.dm-home-avatar .presence-dot { width: 14px; height: 14px; right: 0; bottom: 0; }
+.dm-home-card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.dm-home-card-name { font-weight: 600; font-size: 15px; }
+.dm-home-card-sub { color: var(--text-mute); font-size: 12px; }
+
+/* Заголовок DM-канала: peer-аватар + имя + presence. */
+.dm-channel-header {
+  align-items: center;
+}
+.dm-header-info { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.dm-header-avatar { position: relative; flex-shrink: 0; }
+.dm-header-avatar .presence-dot { width: 12px; height: 12px; right: -2px; bottom: -2px; }
+.dm-header-info h2 { margin: 0; font-size: 16px; }
+.dm-header-info .topic {
+  font-size: 12px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
