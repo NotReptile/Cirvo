@@ -2562,3 +2562,89 @@ input:focus { outline: none; border-color: var(--accent); }
   border-radius: 4px;
 }
 .ch-panel-settings:hover { background: var(--bg); color: var(--text); }
+
+/* H.11 — нативный desktop-look. Без выделения UI-chrome'а, без outline
+   при кликах мышью (keyboard-focus сохраняется), без drag-призраков
+   картинок, кастомные тонкие скроллбары под тему. Полировка — поверх
+   всего предыдущего CSS, поэтому может быть в конце файла без риска
+   побить компонентные стили (использует селекторы по тегам/классам). */
+
+html, body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: default;
+  overscroll-behavior: none;
+}
+
+/* Текст, который пользователь должен мочь выделить и скопировать:
+   сообщения, цитаты, body уведомлений, поисковые сниппеты, аудит-теги,
+   topic канала, code/pre, и все input/textarea/contenteditable.
+   Курсор тоже text для зон чтения, чтобы было ощущение «здесь живёт текст». */
+.message-body,
+.message-body *,
+.reply-snippet,
+.topic,
+.dm-header-info h2,
+.dm-header-info .topic,
+.channel-header h2,
+.notif-snippet,
+.notif-title,
+.search-hit-body,
+.member-name,
+.member-sub,
+.cc-field-hint,
+.modal-hint,
+.message-system-text,
+code, pre,
+input, textarea, [contenteditable="true"], [contenteditable=""] {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+/* Кнопки и интерактивные — pointer cursor вместо текстового. */
+button, label.attach-btn, [role="button"], a, summary,
+.dm-item, .dm-home-card, .channel-list li, .member-sidebar-item,
+.ws-rail-icon, .ws-settings-tab, .auth-tab {
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+}
+button:disabled, button[disabled] { cursor: not-allowed; }
+
+/* Картинки и аватары не должны таскаться браузером (drag-призраки
+   срывают UX в десктопном клиенте — особенно на ws-rail и в сообщениях). */
+img {
+  -webkit-user-drag: none;
+  user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Outline только при keyboard-focus. Клик мышью не должен рисовать
+   обводку (нативные приложения так делают). :focus-visible поддержан
+   во всех WebView2/WKWebView/WebKitGTK, которыми оборачивается Tauri. */
+*:focus { outline: none; }
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Кастомные scrollbar'ы (WebKit). Тонкие 10px, прозрачный трек,
+   thumb — accent при hover'е. Firefox-fallback через scrollbar-color. */
+* { scrollbar-width: thin; scrollbar-color: #2a2f3a transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: #2a2f3a;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: #3b4250; background-clip: padding-box; }
+*::-webkit-scrollbar-corner { background: transparent; }
