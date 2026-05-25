@@ -463,6 +463,23 @@ interface AppState {
   createChannel: CreateChannelState;
   // H.10: модалка настроек воркспейса (шестерёнка в ch-panel-header).
   workspaceSettings: WorkspaceSettingsState;
+  // G.10: профиль-модалка в Discord-стиле. profileEdit определяет какое
+  // поле в режиме inline-edit (null = просмотр). Все draft'ы / ошибка
+  // живут тут, а не в отдельной модалке-форме — UI остаётся одной картой.
+  profileEdit: ProfileEditState;
+}
+
+interface ProfileEditState {
+  field: "displayName" | "password" | null;
+  draftDisplayName: string;
+  currentPassword: string;
+  newPassword: string;
+  confirmPassword: string;
+  saving: boolean;
+  error: string | null;
+  // one-shot status под кнопкой сохранения (например, «Пароль обновлён»),
+  // живёт до следующего открытия редактора или закрытия модалки.
+  okMessage: string | null;
 }
 
 export type ScreenShareQualityKey = "720p30" | "1080p30" | "1080p60" | "1440p30";
@@ -606,6 +623,16 @@ const state: AppState = {
     error: null,
     deleteTyped: "",
     welcomeSaving: false
+  },
+  profileEdit: {
+    field: null,
+    draftDisplayName: "",
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+    saving: false,
+    error: null,
+    okMessage: null
   }
 };
 
@@ -3620,6 +3647,137 @@ async function deleteWorkspace(): Promise<void> {
   }
 }
 
+// G.10: enter/leave inline-edit mode для поля профиля. Сбрасываем draft'ы
+// и error при каждом переходе — чтобы открытие «Изменить пароль» не показало
+// ошибку от прошлой попытки.
+function startProfileEdit(field: "displayName" | "password"): void {
+  state.profileEdit = {
+    field,
+    draftDisplayName: state.me?.displayName ?? "",
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+    saving: false,
+    error: null,
+    okMessage: null
+  };
+  render();
+  // фокус на первое поле редактора
+  requestAnimationFrame(() => {
+    const sel = field === "displayName" ? "#profile-display-input" : "#profile-pw-current";
+    rootEl.querySelector<HTMLInputElement>(sel)?.focus();
+  });
+}
+
+function cancelProfileEdit(): void {
+  state.profileEdit.field = null;
+  state.profileEdit.error = null;
+  state.profileEdit.okMessage = null;
+  render();
+}
+
+function attachProfileEditHandlers(): void {
+  if (state.modal !== "profile") return;
+
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-profile-edit]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const f = btn.dataset.profileEdit as "displayName" | "password" | undefined;
+      if (f) startProfileEdit(f);
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-profile-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => cancelProfileEdit());
+  });
+
+  // --- displayName edit ---
+  const dnInput = rootEl.querySelector<HTMLInputElement>("#profile-display-input");
+  dnInput?.addEventListener("input", () => {
+    state.profileEdit.draftDisplayName = dnInput.value;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#profile-display-save")?.addEventListener("click", () => {
+    void saveDisplayName();
+  });
+
+  // --- password edit (live state без render()) ---
+  const pwCur = rootEl.querySelector<HTMLInputElement>("#profile-pw-current");
+  pwCur?.addEventListener("input", () => { state.profileEdit.currentPassword = pwCur.value; });
+  const pwNew = rootEl.querySelector<HTMLInputElement>("#profile-pw-new");
+  pwNew?.addEventListener("input", () => { state.profileEdit.newPassword = pwNew.value; });
+  const pwConfirm = rootEl.querySelector<HTMLInputElement>("#profile-pw-confirm");
+  pwConfirm?.addEventListener("input", () => { state.profileEdit.confirmPassword = pwConfirm.value; });
+  rootEl.querySelector<HTMLButtonElement>("#profile-pw-save")?.addEventListener("click", () => {
+    void savePassword();
+  });
+}
+
+async function saveDisplayName(): Promise<void> {
+  const pe = state.profileEdit;
+  const trimmed = pe.draftDisplayName.trim();
+  pe.saving = true;
+  pe.error = null;
+  render();
+  try {
+    const updated = await httpClient.put<Me & { updatedAt: string }>("/api/v1/users/me", {
+      displayName: trimmed
+    });
+    state.me = {
+      id: updated.id, email: updated.email, username: updated.username,
+      displayName: updated.displayName, isRoot: state.me?.isRoot,
+      avatarMediaId: updated.avatarMediaId ?? state.me?.avatarMediaId,
+      presenceMode: state.me?.presenceMode,
+      customStatus: state.me?.customStatus
+    };
+    state.profileEdit.field = null;
+    state.profileEdit.saving = false;
+    state.status = "Имя обновлено";
+    render();
+  } catch (err) {
+    pe.saving = false;
+    pe.error = describeError(err);
+    render();
+  }
+}
+
+async function savePassword(): Promise<void> {
+  const pe = state.profileEdit;
+  if (pe.currentPassword === "") {
+    pe.error = "Введи текущий пароль";
+    render();
+    return;
+  }
+  if (pe.newPassword.length < 8) {
+    pe.error = "Новый пароль — минимум 8 символов";
+    render();
+    return;
+  }
+  if (pe.newPassword !== pe.confirmPassword) {
+    pe.error = "Подтверждение не совпадает с новым паролем";
+    render();
+    return;
+  }
+  pe.saving = true;
+  pe.error = null;
+  pe.okMessage = null;
+  render();
+  try {
+    await httpClient.post("/api/v1/users/me/password", {
+      currentPassword: pe.currentPassword,
+      newPassword: pe.newPassword
+    });
+    state.profileEdit.field = null;
+    state.profileEdit.saving = false;
+    state.profileEdit.currentPassword = "";
+    state.profileEdit.newPassword = "";
+    state.profileEdit.confirmPassword = "";
+    state.status = "Пароль обновлён";
+    render();
+  } catch (err) {
+    pe.saving = false;
+    pe.error = describeError(err);
+    render();
+  }
+}
+
 // H.6: открыть модалку. Параллельно (не блокируя render) тянем список
 // ролей воркспейса — нужны для секции «Доступ» при isPrivate=true.
 function openCreateChannelModal(workspaceId: string, kind: "text" | "voice"): void {
@@ -4343,46 +4501,159 @@ function renderAuditModal(): string {
   `;
 }
 
+// G.10: профиль-модалка в Discord-стиле — карточка с акцентным баннером
+// (там же кнопка change-avatar), крупным аватаром поверх границы баннера,
+// именем+username под ним, и списком inline-edit полей. Только один field
+// активен одновременно (state.profileEdit.field), остальные показывают
+// статичное значение и кнопку «Изменить».
 function renderProfileModal(): string {
   const me = state.me;
   if (!me) return "";
+  const editing = state.profileEdit.field;
+  const displayName = me.displayName || me.username;
   return `
+    <input id="profile-avatar-input" type="file" accept="image/*" hidden />
     <div class="modal-backdrop" data-modal-close>
-      <div class="modal" role="dialog">
-        <div class="modal-header">
-          <h3>Профиль</h3>
-          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+      <div class="modal profile-card" role="dialog">
+        <div class="profile-banner">
+          <button class="ghost modal-close-btn profile-close" data-modal-close aria-label="Закрыть">✕</button>
         </div>
-        <div class="modal-body">
-          <div class="profile-avatar-row">
+        <div class="profile-card-head">
+          <div class="profile-card-avatar-wrap">
             ${renderAvatar({
               avatarMediaId: me.avatarMediaId,
-              fallbackText: me.displayName || me.username,
+              fallbackText: displayName,
               sizePx: 96,
-              className: "profile-avatar"
+              className: "profile-card-avatar"
             })}
-            <div class="profile-avatar-actions">
-              <label class="ghost profile-avatar-upload">
-                <input id="profile-avatar-input" type="file" accept="image/*" hidden />
-                Загрузить фото
-              </label>
-              ${me.avatarMediaId ? `<button id="profile-avatar-remove" class="ghost">Удалить</button>` : ""}
-            </div>
+            <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="Сменить аватар">
+              ${icon("pencil", { size: 14 })}
+            </button>
           </div>
-          <form id="profile-form" class="profile-form">
-            <label>Email
-              <input value="${escapeHtml(me.email)}" disabled />
-            </label>
-            <label>Имя пользователя
-              <input value="${escapeHtml(me.username)}" disabled />
-            </label>
-            <label>Отображаемое имя
-              <input name="displayName" value="${escapeHtml(me.displayName ?? "")}" maxlength="64" />
-            </label>
-            <button type="submit" class="primary">Сохранить</button>
-          </form>
+          <div class="profile-card-name">
+            <div class="profile-card-display">${escapeHtml(displayName)}</div>
+            <div class="profile-card-username">@${escapeHtml(me.username)}</div>
+          </div>
+          ${me.avatarMediaId
+            ? `<button id="profile-avatar-remove" class="ghost profile-card-avatar-remove" title="Удалить аватар">${icon("trash", { size: 16 })}</button>`
+            : ""}
+        </div>
+        <div class="profile-card-fields">
+          ${renderProfileField({
+            label: "Отображаемое имя",
+            value: me.displayName || "—",
+            field: "displayName",
+            editing: editing === "displayName",
+            body: renderProfileEditDisplayName(me.displayName ?? "")
+          })}
+          ${renderProfileField({
+            label: "Имя пользователя",
+            value: "@" + me.username,
+            field: "username",
+            editing: false,
+            disabled: true,
+            disabledHint: "Username нельзя сменить — стабильный идентификатор для упоминаний @user.",
+            body: ""
+          })}
+          ${renderProfileField({
+            label: "Электронная почта",
+            value: me.email,
+            field: "email",
+            editing: false,
+            disabled: true,
+            disabledHint: "Смена email требует подтверждения по почте — не реализовано (F.6).",
+            body: ""
+          })}
+          ${renderProfileField({
+            label: "Пароль",
+            value: "••••••••",
+            field: "password",
+            editing: editing === "password",
+            body: renderProfileEditPassword()
+          })}
         </div>
       </div>
+    </div>
+  `;
+}
+
+interface ProfileFieldOpts {
+  label: string;
+  value: string;
+  field: "displayName" | "username" | "email" | "password";
+  editing: boolean;
+  disabled?: boolean;
+  disabledHint?: string;
+  body: string;
+}
+
+function renderProfileField(opts: ProfileFieldOpts): string {
+  if (opts.editing) {
+    return `
+      <div class="profile-field profile-field-editing" data-profile-field="${opts.field}">
+        <div class="profile-field-label">${escapeHtml(opts.label)}</div>
+        ${opts.body}
+      </div>
+    `;
+  }
+  const action = opts.disabled
+    ? `<span class="profile-field-disabled" title="${escapeHtml(opts.disabledHint ?? "")}">недоступно</span>`
+    : `<button class="ghost profile-field-edit" data-profile-edit="${opts.field}">Изменить</button>`;
+  return `
+    <div class="profile-field" data-profile-field="${opts.field}">
+      <div class="profile-field-info">
+        <div class="profile-field-label">${escapeHtml(opts.label)}</div>
+        <div class="profile-field-value${opts.disabled ? " is-disabled" : ""}">${escapeHtml(opts.value)}</div>
+        ${opts.disabled && opts.disabledHint ? `<div class="profile-field-hint">${escapeHtml(opts.disabledHint)}</div>` : ""}
+      </div>
+      ${action}
+    </div>
+  `;
+}
+
+function renderProfileEditDisplayName(currentValue: string): string {
+  const pe = state.profileEdit;
+  const errBlock = pe.error ? `<div class="modal-error">${escapeHtml(pe.error)}</div>` : "";
+  return `
+    <input id="profile-display-input" type="text" maxlength="64"
+           placeholder="${escapeHtml(currentValue || "Как тебя видят другие")}"
+           value="${escapeHtml(pe.draftDisplayName)}" />
+    ${errBlock}
+    <div class="profile-field-actions">
+      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button id="profile-display-save" class="primary" ${pe.saving ? "disabled" : ""}>
+        ${pe.saving ? "Сохранение…" : "Сохранить"}
+      </button>
+    </div>
+  `;
+}
+
+function renderProfileEditPassword(): string {
+  const pe = state.profileEdit;
+  const errBlock = pe.error ? `<div class="modal-error">${escapeHtml(pe.error)}</div>` : "";
+  const okBlock = pe.okMessage ? `<div class="profile-field-ok">${escapeHtml(pe.okMessage)}</div>` : "";
+  return `
+    <div class="profile-pw-grid">
+      <label>
+        <span class="profile-pw-label">Текущий пароль</span>
+        <input id="profile-pw-current" type="password" autocomplete="current-password" value="${escapeHtml(pe.currentPassword)}" />
+      </label>
+      <label>
+        <span class="profile-pw-label">Новый пароль (мин. 8)</span>
+        <input id="profile-pw-new" type="password" autocomplete="new-password" minlength="8" value="${escapeHtml(pe.newPassword)}" />
+      </label>
+      <label>
+        <span class="profile-pw-label">Подтверждение</span>
+        <input id="profile-pw-confirm" type="password" autocomplete="new-password" minlength="8" value="${escapeHtml(pe.confirmPassword)}" />
+      </label>
+    </div>
+    ${errBlock}
+    ${okBlock}
+    <div class="profile-field-actions">
+      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button id="profile-pw-save" class="primary" ${pe.saving ? "disabled" : ""}>
+        ${pe.saving ? "Сохранение…" : "Сохранить пароль"}
+      </button>
     </div>
   `;
 }
@@ -4618,27 +4889,11 @@ function attachShellHandlers(): void {
     });
   });
 
-  rootEl.querySelector<HTMLFormElement>("#profile-form")?.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const form = e.currentTarget as HTMLFormElement;
-    const data = new FormData(form);
-    const displayName = String(data.get("displayName") ?? "").trim();
-    try {
-      const updated = await httpClient.put<Me & { updatedAt: string }>("/api/v1/users/me", {
-        displayName
-      });
-      state.me = {
-        id: updated.id, email: updated.email, username: updated.username,
-        displayName: updated.displayName, isRoot: state.me?.isRoot,
-        avatarMediaId: updated.avatarMediaId ?? state.me?.avatarMediaId
-      };
-      state.modal = null;
-      state.status = "Профиль обновлён";
-      render();
-    } catch (err) {
-      state.status = describeError(err);
-      render();
-    }
+  attachProfileEditHandlers();
+
+  // G.10: кнопка «карандаш» поверх аватара триггерит hidden file-input.
+  rootEl.querySelector<HTMLButtonElement>("#profile-avatar-upload")?.addEventListener("click", () => {
+    rootEl.querySelector<HTMLInputElement>("#profile-avatar-input")?.click();
   });
 
   // H.1: загрузка аватара. Двухступенчато: (1) POST /uploads c image-файлом

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
@@ -46,6 +47,7 @@ func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, logger *slog
 
 func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("PUT /api/v1/users/me", m.handleUpdateMe)
+	router.Protected("POST /api/v1/users/me/password", m.handleChangePassword)
 	router.Protected("PUT /api/v1/users/me/status", m.handleUpdateStatus)
 	router.Protected("PUT /api/v1/users/me/avatar", m.handleUpdateAvatar)
 	router.Protected("DELETE /api/v1/users/me/avatar", m.handleRemoveAvatar)
@@ -253,6 +255,72 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+// handleChangePassword — G.10. Смена своего пароля: требует current-проверки
+// (защита от случая угнанной активной сессии — атакующий не знает старого
+// пароля и не сменит на свой). Минимальная длина нового — 8 (синхронно с
+// auth.handleRegister). После успеха существующие refresh-токены не
+// инвалидируем — это семантически удобно (юзер сменил пароль на своём
+// девайсе, не хочет логиниться заново), но можно добавить отдельным шагом
+// «выйти со всех устройств» в backlog.
+type changePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
+func (m *Module) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	var req changePasswordRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	if req.CurrentPassword == "" {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "currentPassword is required")
+		return
+	}
+	if len(req.NewPassword) < 8 {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "newPassword must be at least 8 chars")
+		return
+	}
+	if req.NewPassword == req.CurrentPassword {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "new password must differ from current")
+		return
+	}
+	var currentHash string
+	if err := m.db.QueryRow(r.Context(),
+		`select password_hash from users where id = $1`, userID,
+	).Scan(&currentHash); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if err := passwords.Verify(currentHash, req.CurrentPassword); err != nil {
+		// Не палим, что именно не так — единое сообщение под и mismatch, и
+		// внутреннюю bcrypt-ошибку.
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "current password is incorrect")
+		return
+	}
+	newHash, err := passwords.Hash(req.NewPassword)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not hash password")
+		return
+	}
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update users set password_hash = $1, updated_at = $2 where id = $3`,
+		newHash, now, userID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update password")
+		return
+	}
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:    userID,
+		Action:     auditlog.ActionProfileUpdated,
+		TargetType: "user",
+		TargetID:   userID.String(),
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleUpdateAvatar привязывает уже загруженный media-объект как аватар
