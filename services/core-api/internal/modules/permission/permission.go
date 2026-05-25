@@ -52,6 +52,10 @@ const (
 	MessageMention Action = "message.mention"
 
 	WorkspaceUpdate Action = "workspace.update"
+	// WorkspaceDelete — удаление воркспейса целиком (cascade). По
+	// Discord-семантике даётся только owner-роли; admin'у нет (он может
+	// всё внутри, но не может убить сервер). Backfill — миграция 23.
+	WorkspaceDelete Action = "workspace.delete"
 
 	// ChannelView — право видеть канал в списке и читать сообщения. Для
 	// PUBLIC-каналов наследуется из base_action_mask (есть у всех seeded
@@ -78,6 +82,7 @@ var AllActions = []Action{
 	MessageAttach,
 	MessageMention,
 	WorkspaceUpdate,
+	WorkspaceDelete,
 	ChannelView,
 }
 
@@ -97,7 +102,15 @@ var ChannelActions = []Action{
 // предыдущим хардкодом до перехода на jsonb-маски.
 var baseHardcoded = map[string]map[Action]struct{}{
 	roleOwner: allActions(),
-	roleAdmin: allActions(),
+	// admin отличается от owner только отсутствием WorkspaceDelete:
+	// удалить воркспейс может только владелец (Discord-семантика).
+	roleAdmin: setOf(
+		ChannelCreate, ChannelUpdate, ChannelDelete, ChannelManageMembers,
+		MessageModerate, InviteManage, AuditRead, MemberManageRole, MemberKick,
+		MessageWrite, MessageReact, MessageAttach, MessageMention,
+		WorkspaceUpdate,
+		ChannelView,
+	),
 	roleModerator: setOf(
 		ChannelCreate, ChannelUpdate, ChannelDelete, ChannelManageMembers,
 		MessageModerate, InviteManage, AuditRead, MemberKick,

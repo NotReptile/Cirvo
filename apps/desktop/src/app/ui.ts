@@ -154,7 +154,26 @@ interface DMItem {
   unreadCount: number;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | null;
+
+// H.10: workspaceSettings — модалка с табами Обзор/Welcome/Роли/Удалить.
+// Для не-owner'а вкладка «Удалить» скрыта (permission.WorkspaceDelete
+// выдаётся только owner-роли).
+type WorkspaceSettingsTab = "overview" | "welcome" | "roles" | "delete";
+
+interface WorkspaceSettingsState {
+  workspaceId: string | null;
+  tab: WorkspaceSettingsTab;
+  draftName: string;
+  saving: boolean;
+  error: string | null;
+  // typed-confirm: имя воркспейса должно быть набрано точно, чтобы
+  // активировалась кнопка «Удалить» (anti-mistake).
+  deleteTyped: string;
+  // PATCH /welcome-channel редактируется отдельно — без отдельного draft'а,
+  // потому что save идёт сразу при смене <select>.
+  welcomeSaving: boolean;
+}
 
 // H.6: state модалки создания канала. roles загружается лениво (GET
 // /workspaces/{ws}/roles) при открытии для приватного канала. На submit:
@@ -442,6 +461,8 @@ interface AppState {
   dmUnreadTotal: number;
   // H.6: модалка создания канала (заменила window.prompt).
   createChannel: CreateChannelState;
+  // H.10: модалка настроек воркспейса (шестерёнка в ch-panel-header).
+  workspaceSettings: WorkspaceSettingsState;
 }
 
 export type ScreenShareQualityKey = "720p30" | "1080p30" | "1080p60" | "1440p30";
@@ -576,6 +597,15 @@ const state: AppState = {
     rolesLoading: false,
     saving: false,
     error: null
+  },
+  workspaceSettings: {
+    workspaceId: null,
+    tab: "overview",
+    draftName: "",
+    saving: false,
+    error: null,
+    deleteTyped: "",
+    welcomeSaving: false
   }
 };
 
@@ -1686,6 +1716,9 @@ function renderShell(): void {
       <aside class="ch-panel">
         <header class="ch-panel-header">
           <span class="ch-panel-title">${dmMode ? "Личные сообщения" : (selectedWorkspace ? escapeHtml(selectedWorkspace.name) : "Нет воркспейса")}</span>
+          ${!dmMode && selectedWorkspace && ["owner", "admin"].includes(selectedWorkspace.role ?? "")
+            ? `<button id="open-ws-settings" class="ghost ch-panel-settings" title="Настройки воркспейса" aria-label="Настройки воркспейса">${icon("settings")}</button>`
+            : ""}
         </header>
         <div class="ch-panel-body">
           ${
@@ -3276,7 +3309,315 @@ function renderModal(): string {
   if (state.modal === "workspaceRoles") return renderWorkspaceRolesModal();
   if (state.modal === "welcomeChannel") return renderWelcomeChannelModal();
   if (state.modal === "createChannel") return renderCreateChannelModal();
+  if (state.modal === "workspaceSettings") return renderWorkspaceSettingsModal();
   return "";
+}
+
+// H.10: модалка настроек воркспейса. Табы:
+//   - Обзор: name (PATCH), slug (readonly), иконка (PUT/DELETE /avatar)
+//   - Welcome: select text-канала (PUT /welcome-channel)
+//   - Роли: shortcut к существующей workspaceRoles-модалке
+//   - Удалить: danger-zone, только owner; typed-confirm + DELETE
+function openWorkspaceSettings(workspaceId: string): void {
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return;
+  state.workspaceSettings = {
+    workspaceId,
+    tab: "overview",
+    draftName: ws.name,
+    saving: false,
+    error: null,
+    deleteTyped: "",
+    welcomeSaving: false
+  };
+  state.modal = "workspaceSettings";
+  render();
+}
+
+const WS_TABS: { id: WorkspaceSettingsTab; label: string }[] = [
+  { id: "overview", label: "Обзор" },
+  { id: "welcome", label: "Канал приветствия" },
+  { id: "roles", label: "Роли" },
+  { id: "delete", label: "Удалить" }
+];
+
+function renderWorkspaceSettingsModal(): string {
+  const wsSet = state.workspaceSettings;
+  const ws = state.workspaces.find((w) => w.id === wsSet.workspaceId);
+  if (!ws) return "";
+  const isOwner = ws.role === "owner";
+  const tabs = WS_TABS.filter((t) => t.id !== "delete" || isOwner);
+  const tabBar = tabs.map((t) => {
+    const active = t.id === wsSet.tab ? " active" : "";
+    const danger = t.id === "delete" ? " danger" : "";
+    return `<button class="ws-settings-tab${active}${danger}" data-ws-tab="${t.id}">${escapeHtml(t.label)}</button>`;
+  }).join("");
+  let body = "";
+  if (wsSet.tab === "overview") body = renderWSOverviewTab(ws);
+  else if (wsSet.tab === "welcome") body = renderWSWelcomeTab(ws);
+  else if (wsSet.tab === "roles") body = renderWSRolesTab(ws);
+  else if (wsSet.tab === "delete") body = renderWSDeleteTab(ws);
+  const errBlock = wsSet.error ? `<div class="modal-error">${escapeHtml(wsSet.error)}</div>` : "";
+  return `
+    <input id="ws-settings-avatar-input" type="file" accept="image/*" hidden />
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal ws-settings-modal" role="dialog">
+        <div class="modal-header">
+          <h3>Настройки · ${escapeHtml(ws.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="ws-settings-shell">
+          <nav class="ws-settings-tabs">${tabBar}</nav>
+          <div class="ws-settings-body">
+            ${body}
+            ${errBlock}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderWSOverviewTab(ws: Workspace): string {
+  const wsSet = state.workspaceSettings;
+  const avatarBlock = `
+    <div class="ws-settings-avatar-block">
+      ${renderAvatar({
+        avatarMediaId: ws.avatarMediaId,
+        fallbackText: ws.name,
+        sizePx: 96,
+        className: "ws-settings-avatar"
+      })}
+      <div class="ws-settings-avatar-actions">
+        <button id="ws-settings-avatar-upload" class="ghost">${ws.avatarMediaId ? "Сменить иконку" : "Загрузить иконку"}</button>
+        ${ws.avatarMediaId ? `<button id="ws-settings-avatar-remove" class="ghost danger">Удалить</button>` : ""}
+        <div class="cc-field-hint">PNG/JPG, до 25 MiB. Будет видна всем участникам.</div>
+      </div>
+    </div>
+  `;
+  return `
+    ${avatarBlock}
+    <label class="cc-field">
+      <span class="cc-field-label">Название</span>
+      <input id="ws-settings-name" type="text" maxlength="64" value="${escapeHtml(wsSet.draftName)}" />
+    </label>
+    <label class="cc-field">
+      <span class="cc-field-label">Адрес (slug)</span>
+      <input type="text" value="${escapeHtml(ws.slug)}" disabled />
+      <span class="cc-field-hint">Slug нельзя сменить — это стабильный идентификатор, на нём держатся ссылки и инвайты.</span>
+    </label>
+    <div class="modal-footer">
+      <button id="ws-settings-save" class="primary" ${wsSet.saving || wsSet.draftName.trim() === ws.name ? "disabled" : ""}>
+        ${wsSet.saving ? "Сохранение…" : "Сохранить"}
+      </button>
+    </div>
+  `;
+}
+
+function renderWSWelcomeTab(ws: Workspace): string {
+  const textChannels = state.channels.filter((c) => c.workspaceId === ws.id && c.kind === "text");
+  const current = ws.welcomeChannelId ?? "";
+  const options = [
+    `<option value="">— не присылать —</option>`,
+    ...textChannels.map((c) => `<option value="${c.id}"${c.id === current ? " selected" : ""}>#${escapeHtml(c.name)}</option>`)
+  ].join("");
+  return `
+    <p class="modal-hint">Канал, в который автоматически прилетает плашка «X присоединился к серверу» при принятии инвайта.</p>
+    <label class="cc-field">
+      <span class="cc-field-label">Welcome-канал</span>
+      <select id="ws-settings-welcome" class="cc-field-select" ${state.workspaceSettings.welcomeSaving ? "disabled" : ""}>${options}</select>
+      ${state.workspaceSettings.welcomeSaving ? `<span class="cc-field-hint">Сохранение…</span>` : ""}
+    </label>
+  `;
+}
+
+function renderWSRolesTab(ws: Workspace): string {
+  return `
+    <p class="modal-hint">Кастомные роли, права и назначения участников.</p>
+    <button id="ws-settings-open-roles" class="primary">Открыть редактор ролей · ${escapeHtml(ws.name)}</button>
+  `;
+}
+
+function renderWSDeleteTab(ws: Workspace): string {
+  const wsSet = state.workspaceSettings;
+  const matches = wsSet.deleteTyped.trim() === ws.name;
+  return `
+    <div class="ws-settings-danger">
+      <h4>Удалить воркспейс</h4>
+      <p class="modal-hint">Это действие <strong>необратимо</strong>. Будут удалены все каналы, сообщения, вложения, роли и инвайты. Восстановить нельзя.</p>
+      <label class="cc-field">
+        <span class="cc-field-label">Введи название «${escapeHtml(ws.name)}» для подтверждения</span>
+        <input id="ws-settings-delete-input" type="text" autocomplete="off" placeholder="${escapeHtml(ws.name)}" value="${escapeHtml(wsSet.deleteTyped)}" />
+      </label>
+      <div class="modal-footer">
+        <button id="ws-settings-delete-btn" class="danger" ${matches && !wsSet.saving ? "" : "disabled"}>
+          ${wsSet.saving ? "Удаление…" : "Удалить воркспейс навсегда"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function attachWorkspaceSettingsHandlers(): void {
+  if (state.modal !== "workspaceSettings") return;
+  const wsSet = state.workspaceSettings;
+  const ws = state.workspaces.find((w) => w.id === wsSet.workspaceId);
+  if (!ws) return;
+
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-ws-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.wsTab as WorkspaceSettingsTab;
+      state.workspaceSettings.tab = tab;
+      state.workspaceSettings.error = null;
+      render();
+    });
+  });
+
+  // --- Обзор ---
+  const nameInput = rootEl.querySelector<HTMLInputElement>("#ws-settings-name");
+  nameInput?.addEventListener("input", () => {
+    state.workspaceSettings.draftName = nameInput.value;
+    // обновим только Save-кнопку (без render() чтобы фокус не слетел)
+    const btn = rootEl.querySelector<HTMLButtonElement>("#ws-settings-save");
+    if (btn) btn.disabled = state.workspaceSettings.saving || nameInput.value.trim() === ws.name || !nameInput.value.trim();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#ws-settings-save")?.addEventListener("click", () => {
+    void saveWorkspaceName();
+  });
+
+  // Avatar upload — переиспользуем поток workspaceMenu (POST /uploads
+  // → PUT /workspaces/{id}/avatar). Кнопка триггерит hidden input.
+  rootEl.querySelector<HTMLButtonElement>("#ws-settings-avatar-upload")?.addEventListener("click", () => {
+    rootEl.querySelector<HTMLInputElement>("#ws-settings-avatar-input")?.click();
+  });
+  rootEl.querySelector<HTMLInputElement>("#ws-settings-avatar-input")?.addEventListener("change", async (e) => {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      state.workspaceSettings.error = "Иконка должна быть картинкой";
+      render();
+      return;
+    }
+    try {
+      state.status = "Загрузка иконки…";
+      render();
+      const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
+      const updated = await httpClient.put<Workspace>(`/api/v1/workspaces/${ws.id}/avatar`, { mediaId: uploaded.id });
+      state.workspaces = state.workspaces.map((w) => (w.id === ws.id ? { ...w, avatarMediaId: updated.avatarMediaId } : w));
+      state.status = "Иконка обновлена";
+      render();
+    } catch (err) {
+      state.workspaceSettings.error = describeError(err);
+      state.status = "";
+      render();
+    } finally {
+      input.value = "";
+    }
+  });
+  rootEl.querySelector<HTMLButtonElement>("#ws-settings-avatar-remove")?.addEventListener("click", async () => {
+    try {
+      const updated = await httpClient.del<Workspace>(`/api/v1/workspaces/${ws.id}/avatar`);
+      state.workspaces = state.workspaces.map((w) => (w.id === ws.id ? { ...w, avatarMediaId: updated.avatarMediaId } : w));
+      state.status = "Иконка удалена";
+      render();
+    } catch (err) {
+      state.workspaceSettings.error = describeError(err);
+      render();
+    }
+  });
+
+  // --- Welcome ---
+  const welcomeSelect = rootEl.querySelector<HTMLSelectElement>("#ws-settings-welcome");
+  welcomeSelect?.addEventListener("change", async () => {
+    const value = welcomeSelect.value || null;
+    state.workspaceSettings.welcomeSaving = true;
+    render();
+    try {
+      const updated = await httpClient.put<Workspace>(`/api/v1/workspaces/${ws.id}/welcome-channel`, { channelId: value });
+      state.workspaces = state.workspaces.map((w) => (w.id === ws.id ? { ...w, welcomeChannelId: updated.welcomeChannelId } : w));
+      state.status = "Welcome-канал обновлён";
+    } catch (err) {
+      state.workspaceSettings.error = describeError(err);
+    } finally {
+      state.workspaceSettings.welcomeSaving = false;
+      render();
+    }
+  });
+
+  // --- Роли ---
+  rootEl.querySelector<HTMLButtonElement>("#ws-settings-open-roles")?.addEventListener("click", () => {
+    // Закрываем эту модалку и открываем roles-модалку. openWorkspaceRolesModal
+    // сам ставит state.modal = "workspaceRoles" и тянет роли.
+    void openWorkspaceRolesModal(ws.id);
+  });
+
+  // --- Удалить ---
+  const delInput = rootEl.querySelector<HTMLInputElement>("#ws-settings-delete-input");
+  delInput?.addEventListener("input", () => {
+    state.workspaceSettings.deleteTyped = delInput.value;
+    // обновим только кнопку — render() сбросил бы каретку
+    const btn = rootEl.querySelector<HTMLButtonElement>("#ws-settings-delete-btn");
+    if (btn) btn.disabled = state.workspaceSettings.saving || delInput.value.trim() !== ws.name;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#ws-settings-delete-btn")?.addEventListener("click", () => {
+    void deleteWorkspace();
+  });
+}
+
+async function saveWorkspaceName(): Promise<void> {
+  const wsSet = state.workspaceSettings;
+  const ws = state.workspaces.find((w) => w.id === wsSet.workspaceId);
+  if (!ws) return;
+  const name = wsSet.draftName.trim();
+  if (!name || name === ws.name) return;
+  wsSet.saving = true;
+  wsSet.error = null;
+  render();
+  try {
+    const updated = await httpClient.patch<Workspace>(`/api/v1/workspaces/${ws.id}`, { name });
+    state.workspaces = state.workspaces.map((w) => (w.id === ws.id ? { ...w, name: updated.name } : w));
+    state.workspaceSettings.draftName = updated.name;
+    state.status = "Воркспейс обновлён";
+  } catch (err) {
+    wsSet.error = describeError(err);
+  } finally {
+    wsSet.saving = false;
+    render();
+  }
+}
+
+async function deleteWorkspace(): Promise<void> {
+  const wsSet = state.workspaceSettings;
+  const ws = state.workspaces.find((w) => w.id === wsSet.workspaceId);
+  if (!ws) return;
+  if (wsSet.deleteTyped.trim() !== ws.name) return;
+  wsSet.saving = true;
+  wsSet.error = null;
+  render();
+  try {
+    await httpClient.del(`/api/v1/workspaces/${ws.id}`);
+    // Локальная очистка: убираем ws и его каналы, переключаемся на первый
+    // оставшийся (или ни на что, если воркспейсов больше нет).
+    state.workspaces = state.workspaces.filter((w) => w.id !== ws.id);
+    state.channels = state.channels.filter((c) => c.workspaceId !== ws.id);
+    if (state.selectedWorkspaceId === ws.id) {
+      state.selectedWorkspaceId = null;
+      state.selectedChannelId = null;
+      state.messages = [];
+    }
+    state.modal = null;
+    state.status = `Воркспейс «${ws.name}» удалён`;
+    if (state.workspaces.length > 0) {
+      await selectWorkspace(state.workspaces[0].id);
+    } else {
+      render();
+    }
+  } catch (err) {
+    wsSet.error = describeError(err);
+    wsSet.saving = false;
+    render();
+  }
 }
 
 // H.6: открыть модалку. Параллельно (не блокируя render) тянем список
@@ -4920,6 +5261,11 @@ function attachShellHandlers(): void {
     });
   });
   attachCreateChannelHandlers();
+  attachWorkspaceSettingsHandlers();
+
+  rootEl.querySelector<HTMLButtonElement>("#open-ws-settings")?.addEventListener("click", () => {
+    if (state.selectedWorkspaceId) openWorkspaceSettings(state.selectedWorkspaceId);
+  });
 
   rootEl.querySelector<HTMLButtonElement>("#toggle-invites")?.addEventListener("click", async (e) => {
     e.preventDefault();

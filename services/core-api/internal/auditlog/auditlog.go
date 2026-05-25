@@ -13,6 +13,7 @@ import (
 const (
 	ActionWorkspaceCreated     = "workspace.created"
 	ActionWorkspaceUpdated     = "workspace.updated"
+	ActionWorkspaceDeleted     = "workspace.deleted"
 	ActionWorkspaceMemberAdded = "workspace.member.added"
 	ActionChannelCreated       = "channel.created"
 	ActionChannelUpdated       = "channel.updated"

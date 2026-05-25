@@ -102,7 +102,7 @@ var defaultRoles = []defaultRole{
 			"channel.create", "channel.update", "channel.delete", "channel.manage_members",
 			"message.moderate", "invite.manage", "audit.read", "member.manage_role", "member.kick",
 			"message.write", "message.react", "message.attach", "message.mention",
-			"workspace.update",
+			"workspace.update", "workspace.delete",
 			"channel.view",
 		},
 	},

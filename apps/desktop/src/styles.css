@@ -2465,3 +2465,100 @@ input:focus { outline: none; border-color: var(--accent); }
   padding: 2px 6px;
   border-radius: 4px;
 }
+
+/* H.10 — модалка настроек воркспейса. Двух-панельная: слева табы,
+   справа содержимое. Tab «Удалить» окрашен в danger. */
+.ws-settings-modal { max-width: 640px; width: 90vw; }
+.ws-settings-shell {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  min-height: 360px;
+}
+.ws-settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 8px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  border-bottom-left-radius: 8px;
+}
+.ws-settings-tab {
+  background: transparent;
+  border: 0;
+  color: var(--text-mute);
+  text-align: left;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+.ws-settings-tab:hover { background: var(--bg-elev); color: var(--text); }
+.ws-settings-tab.active { background: rgba(88, 101, 242, 0.18); color: var(--text); }
+.ws-settings-tab.danger { color: #ed4245; margin-top: auto; }
+.ws-settings-tab.danger:hover { background: rgba(237, 66, 69, 0.12); }
+.ws-settings-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  max-height: 70vh;
+}
+.ws-settings-avatar-block {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.ws-settings-avatar { font-size: 36px !important; }
+.ws-settings-avatar-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.ws-settings-avatar-actions .ghost {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.ws-settings-avatar-actions .ghost.danger { color: #ed4245; border-color: rgba(237, 66, 69, 0.3); }
+.cc-field input:disabled {
+  background: var(--bg-elev);
+  color: var(--text-mute);
+  cursor: not-allowed;
+}
+.cc-field-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text);
+  font-size: 14px;
+}
+.ws-settings-danger {
+  border: 1px solid rgba(237, 66, 69, 0.3);
+  background: rgba(237, 66, 69, 0.06);
+  border-radius: 8px;
+  padding: 16px;
+}
+.ws-settings-danger h4 {
+  margin: 0 0 8px;
+  color: #ed4245;
+  font-size: 15px;
+}
+.modal-footer button.danger {
+  background: #ed4245;
+  color: #fff;
+}
+.modal-footer button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
+.ch-panel-settings {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+  border-radius: 4px;
+}
+.ch-panel-settings:hover { background: var(--bg); color: var(--text); }

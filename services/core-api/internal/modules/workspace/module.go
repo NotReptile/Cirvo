@@ -45,6 +45,8 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/workspaces", m.handleList)
 	router.Protected("POST /api/v1/workspaces", m.handleCreate)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}", m.handleGet)
+	router.Protected("PATCH /api/v1/workspaces/{workspaceId}", m.handlePatch)
+	router.Protected("DELETE /api/v1/workspaces/{workspaceId}", m.handleDelete)
 	router.Protected("PUT /api/v1/workspaces/{workspaceId}/avatar", m.handleUpdateAvatar)
 	router.Protected("DELETE /api/v1/workspaces/{workspaceId}/avatar", m.handleRemoveAvatar)
 	router.Protected("PUT /api/v1/workspaces/{workspaceId}/welcome-channel", m.handleSetWelcomeChannel)
@@ -450,6 +452,116 @@ func (m *Module) handleSetWelcomeChannel(w http.ResponseWriter, r *http.Request)
 	})
 
 	m.writeWorkspaceView(w, r, workspaceID, actorID)
+}
+
+// handlePatch — H.10. Обновляет name воркспейса. slug менять нельзя
+// (стабильный идентификатор, ломает существующие invite-flow если кто-то
+// раздаёт URL'ы). avatarMediaId и welcomeChannelId — отдельные endpoint'ы
+// (PUT /avatar, PUT /welcome-channel) с собственной валидацией; этот
+// эндпоинт их не дублирует, чтобы клиенту проще было выдавать через UI
+// последовательность PATCH-ов с понятным rollback'ом per-операция.
+type patchRequest struct {
+	Name *string `json:"name,omitempty"`
+}
+
+func (m *Module) handlePatch(w http.ResponseWriter, r *http.Request) {
+	actorID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUIDParam(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, actorID, permission.WorkspaceUpdate)
+	if !isMember {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+	if !allowed {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only owner or admin can update workspace")
+		return
+	}
+
+	var req patchRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+
+	// PATCH-семантика: pointer-поля. Если name не указан или пустой после
+	// trim'а — отказываем (на текущий момент это единственное обновляемое
+	// поле, бессмысленный PATCH = 400).
+	if req.Name == nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nothing to update")
+		return
+	}
+	name := strings.TrimSpace(*req.Name)
+	if name == "" || len(name) > 64 {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "name must be 1..64 chars")
+		return
+	}
+
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update workspaces set name = $1, updated_at = $2 where id = $3`,
+		name, now, workspaceID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update workspace")
+		return
+	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     actorID,
+		WorkspaceID: workspaceID,
+		Action:      auditlog.ActionWorkspaceUpdated,
+		TargetType:  "workspace",
+		TargetID:    workspaceID.String(),
+	})
+
+	m.writeWorkspaceView(w, r, workspaceID, actorID)
+}
+
+// handleDelete — H.10. Удаляет воркспейс целиком (cascade по FK в схеме
+// сносит channels/messages/invites/members/role-assignments). Audit-запись
+// уйдёт вместе с воркспейсом (workspace_id FK cascade), но мы её всё равно
+// пишем — для случая если админ-панель наблюдает audit-стрим в реальном
+// времени, событие успеет долететь.
+//
+// permission.WorkspaceDelete — отдельная action-константа, выдана только
+// owner-роли (миграция 23 + seed.go). admin не может удалить сервер.
+func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
+	actorID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUIDParam(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, actorID, permission.WorkspaceDelete)
+	if !isMember {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+	if !allowed {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only owner can delete workspace")
+		return
+	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     actorID,
+		WorkspaceID: workspaceID,
+		Action:      auditlog.ActionWorkspaceDeleted,
+		TargetType:  "workspace",
+		TargetID:    workspaceID.String(),
+	})
+
+	if _, err := m.db.Exec(r.Context(),
+		`delete from workspaces where id = $1`,
+		workspaceID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not delete workspace")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (m *Module) writeWorkspaceView(w http.ResponseWriter, r *http.Request, workspaceID, userID uuid.UUID) {
