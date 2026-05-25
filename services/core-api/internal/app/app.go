@@ -50,6 +50,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 	}
 
 	server.registerBaseRoutes()
+	messageMod := message.NewModule(container.DB, container.Publisher, container.Settings, container.Logger)
 	server.registerModules(
 		auth.NewModule(container.DB, container.JWT, container.Limiter, container.Settings, container.Logger),
 		call.NewModule(container.DB, container.Publisher, container.Logger),
@@ -58,10 +59,10 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		role.NewModule(container.DB, container.Logger),
 		channel.NewModule(container.DB, container.Publisher, container.Settings, container.Logger),
 		dm.NewModule(container.DB, container.Publisher, container.Logger),
-		message.NewModule(container.DB, container.Publisher, container.Settings, container.Logger),
+		messageMod,
 		notification.NewModule(container.DB, container.Logger),
 		attachment.NewModule(container.DB, container.ObjectStore, container.Limiter, container.Settings, container.Logger),
-		invite.NewModule(container.DB, container.Limiter, container.Logger),
+		invite.NewModule(container.DB, container.Limiter, messageMod, container.Logger),
 		voice.NewModule(container.DB, container.Publisher, container.Logger),
 		audit.NewModule(container.DB),
 		ice.NewModule(),

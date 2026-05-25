@@ -2149,3 +2149,45 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .status-menu-actions { display: flex; justify-content: flex-end; gap: 6px; padding: 0 4px; }
 
+/* H.9 — system-сообщения (плашки). Без аватара, без hover-действий,
+   inline-flex с иконкой слева и приглушённым цветом. */
+.message.message-system {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  margin: 2px -12px;
+  color: var(--text-mute);
+  font-size: 13px;
+  background: transparent !important;
+  cursor: default;
+}
+.message.message-system:hover { background: transparent !important; }
+.message-system-icon {
+  display: inline-flex;
+  width: 28px;
+  justify-content: center;
+  color: #3ba55c;
+  flex-shrink: 0;
+}
+.message-system-text { flex: 1; }
+.message-system-time {
+  font-size: 11px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+/* H.9 — модалка выбора welcome-канала. Узкая (380px), один select. */
+.welcome-channel-modal { max-width: 420px; }
+.welcome-channel-field { display: flex; flex-direction: column; gap: 6px; }
+.welcome-channel-field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  color: var(--text);
+  font-size: 14px;
+}
+.modal-hint { color: var(--text-mute); font-size: 13px; margin: 0 0 12px; }
+
+

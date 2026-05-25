@@ -18,6 +18,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
@@ -37,13 +38,14 @@ const (
 var codeEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 type Module struct {
-	db      *postgres.Pool
-	limiter *ratelimit.Limiter
-	logger  *slog.Logger
+	db       *postgres.Pool
+	limiter  *ratelimit.Limiter
+	messages *message.Module
+	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, limiter *ratelimit.Limiter, logger *slog.Logger) *Module {
-	return &Module{db: db, limiter: limiter, logger: logger}
+func NewModule(db *postgres.Pool, limiter *ratelimit.Limiter, messages *message.Module, logger *slog.Logger) *Module {
+	return &Module{db: db, limiter: limiter, messages: messages, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -432,12 +434,61 @@ func (m *Module) handleAccept(w http.ResponseWriter, r *http.Request) {
 			TargetType:  "user",
 			TargetID:    userID.String(),
 		})
+		// H.9: если у воркспейса задан welcome-канал — постим плашку
+		// system_join. Только для НОВОГО члена (alreadyMember=false), чтобы
+		// повторное использование инвайта тем же юзером не флудило канал.
+		m.postWelcomeJoin(bgCtx, wsID, userID)
 	}
 
 	sharedhttp.WriteJSON(w, http.StatusOK, acceptResponse{
 		WorkspaceID: wsID.String(),
 		Role:        existingRole,
 	})
+}
+
+// postWelcomeJoin читает workspaces.welcome_channel_id и, если он задан,
+// постит system_join плашку через message.PostSystemMessage. Body — это
+// fallback-текст для старых клиентов, не знающих про kind: «<displayName>
+// присоединился к серверу».
+//
+// Ошибки на best-effort'е: лог + продолжаем, чтобы баги в чате не валили
+// invite.accept (юзер уже в воркспейсе после commit).
+func (m *Module) postWelcomeJoin(ctx context.Context, workspaceID, userID uuid.UUID) {
+	if m.messages == nil {
+		return
+	}
+	var welcomeID *uuid.UUID
+	if err := m.db.QueryRow(ctx,
+		`select welcome_channel_id from workspaces where id = $1`, workspaceID,
+	).Scan(&welcomeID); err != nil || welcomeID == nil {
+		return
+	}
+	// Канал мог стать voice или удалиться между настройкой и accept'ом —
+	// проверяем kind в момент публикации. На delete cascade set null
+	// welcome_channel_id уже обнулится; здесь страхуемся от ручной правки.
+	var chKind string
+	if err := m.db.QueryRow(ctx,
+		`select kind from channels where id = $1`, *welcomeID,
+	).Scan(&chKind); err != nil || chKind != "text" {
+		return
+	}
+	var (
+		displayName *string
+		username    string
+	)
+	if err := m.db.QueryRow(ctx,
+		`select display_name, username from users where id = $1`, userID,
+	).Scan(&displayName, &username); err != nil {
+		return
+	}
+	name := username
+	if displayName != nil && strings.TrimSpace(*displayName) != "" {
+		name = *displayName
+	}
+	body := name + " присоединился к серверу"
+	if err := m.messages.PostSystemMessage(ctx, *welcomeID, workspaceID, userID, "system_join", body); err != nil {
+		m.logger.Warn("welcome join post failed", "error", err, "workspaceId", workspaceID, "channelId", welcomeID)
+	}
 }
 
 func generateCode() (string, error) {

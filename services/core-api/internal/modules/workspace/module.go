@@ -47,19 +47,21 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/workspaces/{workspaceId}", m.handleGet)
 	router.Protected("PUT /api/v1/workspaces/{workspaceId}/avatar", m.handleUpdateAvatar)
 	router.Protected("DELETE /api/v1/workspaces/{workspaceId}/avatar", m.handleRemoveAvatar)
+	router.Protected("PUT /api/v1/workspaces/{workspaceId}/welcome-channel", m.handleSetWelcomeChannel)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/members", m.handleListMembers)
 	router.Protected("PATCH /api/v1/workspaces/{workspaceId}/members/{userId}", m.handleUpdateMember)
 	router.Protected("DELETE /api/v1/workspaces/{workspaceId}/members/{userId}", m.handleRemoveMember)
 }
 
 type workspaceView struct {
-	ID            string    `json:"id"`
-	Slug          string    `json:"slug"`
-	Name          string    `json:"name"`
-	OwnerID       string    `json:"ownerId"`
-	Role          string    `json:"role,omitempty"`
-	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
-	CreatedAt     time.Time `json:"createdAt"`
+	ID               string    `json:"id"`
+	Slug             string    `json:"slug"`
+	Name             string    `json:"name"`
+	OwnerID          string    `json:"ownerId"`
+	Role             string    `json:"role,omitempty"`
+	AvatarMediaID    string    `json:"avatarMediaId,omitempty"`
+	WelcomeChannelID string    `json:"welcomeChannelId,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 type avatarRequest struct {
@@ -74,7 +76,7 @@ type createRequest struct {
 func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	userID := authctx.MustUserID(r.Context())
 	rows, err := m.db.Query(r.Context(),
-		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id
+		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id, w.welcome_channel_id
 		 from workspaces w
 		 join workspace_members m on m.workspace_id = w.id and m.user_id = $1
 		 order by w.created_at`,
@@ -90,8 +92,8 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v workspaceView
 		var id, ownerID uuid.UUID
-		var avatarID *uuid.UUID
-		if err := rows.Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID); err != nil {
+		var avatarID, welcomeID *uuid.UUID
+		if err := rows.Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID, &welcomeID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -99,6 +101,9 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		v.OwnerID = ownerID.String()
 		if avatarID != nil {
 			v.AvatarMediaID = avatarID.String()
+		}
+		if welcomeID != nil {
+			v.WelcomeChannelID = welcomeID.String()
 		}
 		items = append(items, v)
 	}
@@ -221,14 +226,14 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 
 	var v workspaceView
 	var id, ownerID uuid.UUID
-	var avatarID *uuid.UUID
+	var avatarID, welcomeID *uuid.UUID
 	err := m.db.QueryRow(r.Context(),
-		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id
+		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id, w.welcome_channel_id
 		 from workspaces w
 		 join workspace_members m on m.workspace_id = w.id and m.user_id = $2
 		 where w.id = $1`,
 		workspaceID, userID,
-	).Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID)
+	).Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID, &welcomeID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
@@ -241,6 +246,9 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 	v.OwnerID = ownerID.String()
 	if avatarID != nil {
 		v.AvatarMediaID = avatarID.String()
+	}
+	if welcomeID != nil {
+		v.WelcomeChannelID = welcomeID.String()
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, v)
 }
@@ -360,17 +368,101 @@ func (m *Module) handleRemoveAvatar(w http.ResponseWriter, r *http.Request) {
 	m.writeWorkspaceView(w, r, workspaceID, actorID)
 }
 
+// handleSetWelcomeChannel — H.9. Привязывает text-канал воркспейса как
+// welcome-channel; PUT с body {"channelId": null|""} — отвязка.
+// Только owner/admin (через permission.WorkspaceUpdate). Канал должен
+// принадлежать ЭТОМУ воркспейсу и иметь kind='text' — иначе 400.
+type welcomeChannelRequest struct {
+	ChannelID *string `json:"channelId"`
+}
+
+func (m *Module) handleSetWelcomeChannel(w http.ResponseWriter, r *http.Request) {
+	actorID := authctx.MustUserID(r.Context())
+	workspaceID, ok := parseUUIDParam(r, "workspaceId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
+		return
+	}
+	_, isMember, allowed := permission.Authorize(r.Context(), m.db, workspaceID, actorID, permission.WorkspaceUpdate)
+	if !isMember {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+	if !allowed {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only owner or admin can set welcome channel")
+		return
+	}
+
+	var req welcomeChannelRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+
+	var channelID *uuid.UUID
+	if req.ChannelID != nil && strings.TrimSpace(*req.ChannelID) != "" {
+		parsed, err := uuid.Parse(strings.TrimSpace(*req.ChannelID))
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid channelId")
+			return
+		}
+		// Валидируем: канал в этом воркспейсе и kind=text.
+		var (
+			chWS   *uuid.UUID
+			chKind string
+		)
+		if err := m.db.QueryRow(r.Context(),
+			`select workspace_id, kind from channels where id = $1`, parsed,
+		).Scan(&chWS, &chKind); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel not found")
+				return
+			}
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+			return
+		}
+		if chWS == nil || *chWS != workspaceID {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel does not belong to workspace")
+			return
+		}
+		if chKind != "text" {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "welcome channel must be a text channel")
+			return
+		}
+		channelID = &parsed
+	}
+
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update workspaces set welcome_channel_id = $1, updated_at = $2 where id = $3`,
+		channelID, now, workspaceID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update welcome channel")
+		return
+	}
+
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:     actorID,
+		WorkspaceID: workspaceID,
+		Action:      auditlog.ActionWorkspaceUpdated,
+		TargetType:  "workspace",
+		TargetID:    workspaceID.String(),
+	})
+
+	m.writeWorkspaceView(w, r, workspaceID, actorID)
+}
+
 func (m *Module) writeWorkspaceView(w http.ResponseWriter, r *http.Request, workspaceID, userID uuid.UUID) {
 	var v workspaceView
 	var id, ownerID uuid.UUID
-	var avatarID *uuid.UUID
+	var avatarID, welcomeID *uuid.UUID
 	err := m.db.QueryRow(r.Context(),
-		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id
+		`select w.id, w.slug, w.name, w.owner_user_id, w.created_at, m.role_code, w.avatar_media_id, w.welcome_channel_id
 		 from workspaces w
 		 join workspace_members m on m.workspace_id = w.id and m.user_id = $2
 		 where w.id = $1`,
 		workspaceID, userID,
-	).Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID)
+	).Scan(&id, &v.Slug, &v.Name, &ownerID, &v.CreatedAt, &v.Role, &avatarID, &welcomeID)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload workspace")
 		return
@@ -379,6 +471,9 @@ func (m *Module) writeWorkspaceView(w http.ResponseWriter, r *http.Request, work
 	v.OwnerID = ownerID.String()
 	if avatarID != nil {
 		v.AvatarMediaID = avatarID.String()
+	}
+	if welcomeID != nil {
+		v.WelcomeChannelID = welcomeID.String()
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, v)
 }

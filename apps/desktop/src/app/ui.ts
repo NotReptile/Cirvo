@@ -32,6 +32,7 @@ interface Workspace {
   ownerId: string;
   role?: string;
   avatarMediaId?: string;
+  welcomeChannelId?: string;
   createdAt: string;
 }
 
@@ -74,11 +75,16 @@ interface ReplySnippet {
   deleted?: boolean;
 }
 
+// H.9: kind — 'user' (дефолт; обычное сообщение) или 'system_*' (плашки).
+// Старые сервера до миграции 22 поле не возвращают; считаем тогда 'user'.
+type MessageKind = "user" | "system_join" | "system_call" | "system_channel_event";
+
 interface Message {
   id: string;
   channelId: string;
   authorId: string;
   body: string;
+  kind?: MessageKind;
   createdAt: string;
   editedAt?: string;
   deletedAt?: string;
@@ -128,7 +134,7 @@ interface AuditEntry {
   createdAt: string;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | null;
 
 interface WorkspaceRole {
   id: string;
@@ -1771,6 +1777,7 @@ function renderWorkspaceMenu(): string {
       ${canManage ? `<button class="channel-menu-item" data-workspace-action="upload-icon" data-id="${ws.id}">${ws.avatarMediaId ? "Сменить иконку" : "Загрузить иконку"}</button>` : ""}
       ${canManage && ws.avatarMediaId ? `<button class="channel-menu-item" data-workspace-action="remove-icon" data-id="${ws.id}">Удалить иконку</button>` : ""}
       ${canManage ? `<button class="channel-menu-item" data-workspace-action="manage-roles" data-id="${ws.id}">Настроить роли…</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-workspace-action="welcome-channel" data-id="${ws.id}">Канал приветствия…</button>` : ""}
       <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">Скопировать ID</button>
     </div>
   `;
@@ -2745,6 +2752,12 @@ function renderBody(body: string): string {
 }
 
 function renderMessage(m: Message): string {
+  // H.9: system-сообщения — плашка без аватара/реакций/edit/reply. body —
+  // fallback-текст с бэка; resolveSystemText даёт более точную русскую
+  // формулировку, если автор в state.members (свежие данные).
+  if (m.kind && m.kind !== "user") {
+    return renderSystemMessage(m);
+  }
   const isMine = state.me?.id === m.authorId;
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
   const canModerate = !!selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
@@ -2837,6 +2850,35 @@ function renderMessage(m: Message): string {
   `;
 }
 
+function renderSystemMessage(m: Message): string {
+  // Иконка по kind. system_join — стрелка-вход; system_call — телефон;
+  // system_channel_event — pencil (реорг канала). Старые kind'ы кроме
+  // 'user' могут прилететь от свежего бэка с обновлённой матрицей —
+  // fallback на info-точку.
+  const iconName =
+    m.kind === "system_join"
+      ? "log-out"
+      : m.kind === "system_call"
+        ? "phone"
+        : m.kind === "system_channel_event"
+          ? "pencil"
+          : "smile";
+  // Имя автора режется через state.members (свежий displayName) с
+  // фолбэком на body (бэк уже подставил displayName при создании).
+  const authorName = describePeer(m.authorId);
+  // body уже содержит читабельный текст. Если в state.members есть
+  // displayName новее, чем на момент join'а, не подменяем — body —
+  // зафиксированный «срез истории», как и должно быть для плашки.
+  const text = m.body || `${authorName} (${m.kind})`;
+  return `
+    <div class="message message-system" data-id="${m.id}">
+      <span class="message-system-icon">${icon(iconName, { size: 16 })}</span>
+      <span class="message-system-text">${escapeHtml(text)}</span>
+      <span class="message-system-time">${formatTime(m.createdAt)}</span>
+    </div>
+  `;
+}
+
 function renderModal(): string {
   if (!state.modal) return "";
   if (state.modal === "profile") return renderProfileModal();
@@ -2847,7 +2889,68 @@ function renderModal(): string {
   if (state.modal === "admin") return renderAdminModal();
   if (state.modal === "channelSettings") return renderChannelSettingsModal();
   if (state.modal === "workspaceRoles") return renderWorkspaceRolesModal();
+  if (state.modal === "welcomeChannel") return renderWelcomeChannelModal();
   return "";
+}
+
+// H.9: модалка выбора welcome-канала. state.workspaces содержит
+// welcomeChannelId — отрисовываем select из text-каналов воркспейса.
+function renderWelcomeChannelModal(): string {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  if (!ws) return "";
+  const textChannels = state.channels.filter((c) => c.workspaceId === ws.id && c.kind === "text");
+  const current = ws.welcomeChannelId ?? "";
+  const opts = textChannels
+    .map((c) => `<option value="${c.id}"${c.id === current ? " selected" : ""}>#${escapeHtml(c.name)}</option>`)
+    .join("");
+  return `
+    <div class="modal-backdrop" data-modal-close></div>
+    <div class="modal welcome-channel-modal" role="dialog" aria-modal="true">
+      <header class="modal-header">
+        <h3>Канал приветствия</h3>
+        <button class="ghost" data-modal-close aria-label="Закрыть">✕</button>
+      </header>
+      <div class="modal-body">
+        <p class="modal-hint">Сюда будет приходить плашка «X присоединился к серверу», когда новый участник принимает инвайт.</p>
+        <label class="welcome-channel-field">
+          <span>Канал</span>
+          <select id="welcome-channel-select">
+            <option value=""${current === "" ? " selected" : ""}>— не присылать —</option>
+            ${opts}
+          </select>
+        </label>
+      </div>
+      <footer class="modal-footer">
+        <button class="ghost" data-modal-close>Отмена</button>
+        <button id="welcome-channel-save" class="primary">Сохранить</button>
+      </footer>
+    </div>
+  `;
+}
+
+async function openWelcomeChannelModal(workspaceId: string): Promise<void> {
+  if (state.selectedWorkspaceId !== workspaceId) {
+    await selectWorkspace(workspaceId);
+  }
+  state.modal = "welcomeChannel";
+  render();
+}
+
+async function saveWelcomeChannel(workspaceId: string, channelId: string | null): Promise<void> {
+  try {
+    const updated = await httpClient.put<Workspace>(
+      `/api/v1/workspaces/${workspaceId}/welcome-channel`,
+      { channelId: channelId || null }
+    );
+    state.workspaces = state.workspaces.map((w) =>
+      w.id === workspaceId ? { ...w, welcomeChannelId: updated.welcomeChannelId } : w
+    );
+    state.modal = null;
+    state.status = channelId ? "Канал приветствия обновлён" : "Канал приветствия отключён";
+  } catch (err) {
+    state.status = describeError(err);
+  }
+  render();
 }
 
 // Полный список action-кодов для cherry-pick checkboxes. Должен совпадать
@@ -3934,10 +4037,21 @@ function attachShellHandlers(): void {
         await openWorkspaceRolesModal(id);
         return;
       }
+      if (action === "welcome-channel") {
+        await openWelcomeChannelModal(id);
+        return;
+      }
     });
   });
 
   attachWorkspaceRolesHandlers();
+
+  rootEl.querySelector<HTMLButtonElement>("#welcome-channel-save")?.addEventListener("click", () => {
+    const sel = rootEl.querySelector<HTMLSelectElement>("#welcome-channel-select");
+    const wsId = state.selectedWorkspaceId;
+    if (!sel || !wsId) return;
+    void saveWelcomeChannel(wsId, sel.value || null);
+  });
 
   rootEl.querySelector<HTMLButtonElement>("#toggle-member-sidebar")?.addEventListener("click", () => {
     state.memberSidebarOpen = !state.memberSidebarOpen;

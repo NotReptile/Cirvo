@@ -48,7 +48,7 @@ var mentionRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})`)
 // scanMessageWithReactions работал одинаково. $N плейсхолдеры:
 // $1 — viewer userID (для bool_or в reactions). Каждый вызов добавит
 // свои дополнительные параметры в where после этой константы.
-const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body,
+const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body, m.kind,
         coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
         coalesce(
           (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine))
@@ -153,6 +153,7 @@ type messageView struct {
 	ChannelID       string                 `json:"channelId"`
 	AuthorID        string                 `json:"authorId"`
 	Body            string                 `json:"body"`
+	Kind            string                 `json:"kind,omitempty"`
 	ClientMessageID string                 `json:"clientMessageId,omitempty"`
 	CreatedAt       time.Time              `json:"createdAt"`
 	EditedAt        *time.Time             `json:"editedAt,omitempty"`
@@ -614,11 +615,12 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 		channelID uuid.UUID
 		authorID  uuid.UUID
 		deletedAt *time.Time
+		kind      string
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select channel_id, author_user_id, deleted_at from messages where id = $1`,
+		`select channel_id, author_user_id, deleted_at, kind from messages where id = $1`,
 		messageID,
-	).Scan(&channelID, &authorID, &deletedAt)
+	).Scan(&channelID, &authorID, &deletedAt, &kind)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "message not found")
@@ -629,6 +631,12 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	if deletedAt != nil {
 		sharedhttp.WriteError(w, r, http.StatusConflict, sharedhttp.CodeConflict, "message already deleted")
+		return
+	}
+	if kind != "user" {
+		// H.9: system_join/system_call/system_channel_event — служебные плашки.
+		// Тело сформировано бэком, юзер не может редактировать.
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "system messages are not editable")
 		return
 	}
 	scope, ok := channel.Resolve(r.Context(), m.db, channelID, userID)
@@ -710,11 +718,12 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		channelID uuid.UUID
 		authorID  uuid.UUID
 		deletedAt *time.Time
+		kind      string
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select channel_id, author_user_id, deleted_at from messages where id = $1`,
+		`select channel_id, author_user_id, deleted_at, kind from messages where id = $1`,
 		messageID,
-	).Scan(&channelID, &authorID, &deletedAt)
+	).Scan(&channelID, &authorID, &deletedAt, &kind)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "message not found")
@@ -732,7 +741,14 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
 		return
 	}
-	if authorID != userID {
+	// H.9: system-сообщения может убирать только moderator+ (author —
+	// формальный участник события, не должен мочь стирать историю плашек).
+	if kind != "user" {
+		if _, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, userID, permission.MessageModerate); !allowed {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only moderator can delete system messages")
+			return
+		}
+	} else if authorID != userID {
 		if _, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, userID, permission.MessageModerate); !allowed {
 			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "only author or moderator can delete")
 			return
@@ -789,6 +805,14 @@ func (m *Module) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 	if scope.Kind != "dm" &&
 		!permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageReact) {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "reactions are disabled in this channel")
+		return
+	}
+	// H.9: реакции на system-сообщения запрещены.
+	var msgKind string
+	if err := m.db.QueryRow(r.Context(),
+		`select kind from messages where id = $1`, messageID,
+	).Scan(&msgKind); err == nil && msgKind != "user" {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "reactions on system messages are not allowed")
 		return
 	}
 
@@ -1166,7 +1190,7 @@ func (m *Module) handleSearch(w http.ResponseWriter, r *http.Request) {
 func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 	var (
 		id, chID, authID uuid.UUID
-		body, cmid       string
+		body, cmid, kind string
 		created          time.Time
 		edited           *time.Time
 		reactionsJSON    []byte
@@ -1176,7 +1200,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		channelName      string
 		highlight        string
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
 		return messageView{}, "", "", err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1203,6 +1227,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		ChannelID:       chID.String(),
 		AuthorID:        authID.String(),
 		Body:            body,
+		Kind:            kind,
 		ClientMessageID: cmid,
 		CreatedAt:       created,
 		EditedAt:        edited,
@@ -1211,6 +1236,50 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		ReplyTo:         reply,
 		Mentions:        mentions,
 	}, channelName, highlight, nil
+}
+
+// PostSystemMessage — H.9: вставляет system-сообщение в канал и публикует
+// `message.created` через realtimebus. Используется invite.handleAccept
+// (system_join), будущим B.5-финалом (system_call), реоргом каналов
+// (system_channel_event).
+//
+// authorUserID — кто стал причиной события (для join это новый юзер,
+// для call — инициатор). body — fallback-текст, который покажется на
+// старых клиентах не знающих про kind. Не пишет в audit/mentions/reactions/
+// notification_jobs — это служебные плашки, не юзерский контент.
+//
+// channelID должен указывать на существующий text-канал; вызывающая
+// сторона валидирует kind заранее (см. PUT welcome-channel в workspace/).
+func (m *Module) PostSystemMessage(ctx context.Context, channelID, workspaceID, authorUserID uuid.UUID, kind, body string) error {
+	if kind == "user" {
+		return errors.New("PostSystemMessage: kind must be system_*")
+	}
+	id := uuid.New()
+	now := time.Now().UTC()
+	_, err := m.db.Exec(ctx,
+		`insert into messages (id, channel_id, author_user_id, body, kind, created_at)
+		 values ($1, $2, $3, $4, $5, $6)`,
+		id, channelID, authorUserID, body, kind, now,
+	)
+	if err != nil {
+		return err
+	}
+	view, err := m.loadMessageView(ctx, id, authorUserID)
+	if err != nil {
+		return err
+	}
+	if m.publisher != nil {
+		raw, mErr := json.Marshal(view)
+		if mErr == nil {
+			_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+				Event:       "message.created",
+				WorkspaceID: workspaceID.String(),
+				ChannelID:   channelID.String(),
+				Payload:     raw,
+			})
+		}
+	}
+	return nil
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -1252,7 +1321,7 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 	)
 	var (
 		mid, chID, authID uuid.UUID
-		body, cmid        string
+		body, cmid, kind  string
 		created           time.Time
 		edited            *time.Time
 		reactionsJSON     []byte
@@ -1260,7 +1329,7 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		replyJSON         []byte
 		mentionsJSON      []byte
 	)
-	if err := row.Scan(&mid, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1287,6 +1356,7 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		ChannelID:       chID.String(),
 		AuthorID:        authID.String(),
 		Body:            body,
+		Kind:            kind,
 		ClientMessageID: cmid,
 		CreatedAt:       created,
 		EditedAt:        edited,
@@ -1357,7 +1427,7 @@ func (m *Module) publishScope(eventName string, scope channel.Scope, channelID u
 func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 	var (
 		id, chID, authID uuid.UUID
-		body, cmid       string
+		body, cmid, kind string
 		created          time.Time
 		edited           *time.Time
 		reactionsJSON    []byte
@@ -1365,7 +1435,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		replyJSON        []byte
 		mentionsJSON     []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1392,6 +1462,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		ChannelID:       chID.String(),
 		AuthorID:        authID.String(),
 		Body:            body,
+		Kind:            kind,
 		ClientMessageID: cmid,
 		CreatedAt:       created,
 		EditedAt:        edited,
