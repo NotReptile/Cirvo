@@ -505,31 +505,12 @@ input:focus { outline: none; border-color: var(--accent); }
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 0;
 }
+.message-list > .message + .message:not(.message-grouped) { margin-top: 14px; }
 .message { display: flex; flex-direction: column; gap: 2px; }
 .message-meta { display: flex; gap: 8px; font-size: 12px; color: var(--text-mute); align-items: center; }
 .author { font-weight: 600; color: var(--text); }
-.author-presence-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  display: inline-block;
-}
-.author-presence-dot.online { background: #3ba55c; }
-.author-presence-dot.idle { background: #faa61a; }
-.author-presence-dot.dnd { background: #ed4245; }
-.author-presence-dot.offline { background: #80848e; }
-.author-custom-status {
-  font-size: 11px;
-  color: var(--text-mute);
-  font-style: italic;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .message-body { white-space: pre-wrap; word-break: break-word; }
 
 /* H.4: reply snippet — Discord-стиль шапки. Curved-arrow слева, мини-аватар
@@ -721,7 +702,7 @@ input:focus { outline: none; border-color: var(--accent); }
 
 .message {
   position: relative;
-  padding: 4px 12px;
+  padding: 2px 12px;
   margin: 0 -12px;
   border-radius: 4px;
   transition: background 80ms ease;
@@ -2811,18 +2792,28 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   -webkit-user-select: text;
   user-select: text;
 }
+/* Trash-кнопка теперь маленький overlay в левом нижнем углу аватара,
+   виден только при hover'е на .profile-card-avatar-wrap. */
 .profile-card-avatar-remove {
-  width: 32px;
-  height: 32px;
+  position: absolute;
+  left: -2px;
+  bottom: -2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #36373d;
+  color: var(--text-mute);
+  border: 3px solid var(--bg-elev);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
-  color: var(--text-mute);
+  cursor: pointer;
   padding: 0;
-  align-self: center;
+  opacity: 0;
+  transition: opacity 120ms, background 120ms, color 120ms;
 }
-.profile-card-avatar-remove:hover { background: rgba(237,66,69,0.12); color: #ed4245; }
+.profile-card-avatar-wrap:hover .profile-card-avatar-remove { opacity: 1; }
+.profile-card-avatar-remove:hover { background: #ed4245; color: #fff; }
 
 .profile-card-fields {
   background: var(--bg);
@@ -2929,4 +2920,171 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   color: #3ba55c;
   font-size: 13px;
   padding: 6px 0;
+}
+
+/* Discord-style user profile popup */
+.user-profile-popup {
+  width: 340px;
+  max-width: 90vw;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+.user-profile-banner {
+  height: 80px;
+  background: linear-gradient(135deg, var(--accent), #5b6eae, #2c3148);
+}
+.user-profile-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.35);
+  color: #fff;
+  border: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.user-profile-close:hover { background: rgba(0,0,0,0.55); }
+.user-profile-avatar-row {
+  display: flex;
+  padding: 0 16px;
+  margin-top: -44px;
+  position: relative;
+  z-index: 1;
+}
+.user-profile-avatar-wrap {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  border: 6px solid var(--bg-elev);
+  background: var(--bg-elev);
+}
+.user-profile-avatar { width: 100%; height: 100%; }
+.user-profile-dot {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 4px solid var(--bg-elev);
+}
+.user-profile-card {
+  margin: 12px 16px 16px;
+  padding: 14px;
+  background: rgba(0,0,0,0.25);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.user-profile-name { font-size: 18px; font-weight: 700; color: var(--text); }
+.user-profile-username { font-size: 13px; color: var(--text-mute); }
+.user-profile-status {
+  font-size: 13px;
+  color: var(--text);
+  background: rgba(255,255,255,0.04);
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+.user-profile-role { display: flex; }
+.user-profile-actions { display: flex; gap: 8px; margin-top: 4px; }
+.user-profile-actions button {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 0;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.user-profile-actions .primary { background: var(--accent); color: #fff; }
+.user-profile-actions .primary:hover { background: var(--accent-hover); }
+.user-profile-actions .ghost { background: rgba(255,255,255,0.06); color: var(--text); }
+.user-profile-actions .ghost:hover { background: rgba(255,255,255,0.1); }
+
+.profile-card-footer {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding: 12px 18px 18px;
+  display: flex;
+  justify-content: flex-end;
+}
+.profile-logout-btn {
+  background: transparent;
+  color: #ed4245;
+  border: 1px solid rgba(237,66,69,0.4);
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.profile-logout-btn:hover {
+  background: rgba(237,66,69,0.12);
+  color: #fff;
+  border-color: #ed4245;
+}
+
+/* Discord-style voice inline-list под voice-каналом в sidebar */
+.voice-inline-list {
+  list-style: none;
+  margin: 2px 0 8px 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.voice-inline-participant {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-mute);
+  position: relative;
+}
+.voice-inline-participant:hover { background: rgba(255,255,255,0.04); color: var(--text); }
+.voice-inline-participant.self { color: var(--text); }
+.voice-inline-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-inline-live {
+  background: #ed4245;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+.voice-tile-live {
+  background: #ed4245;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  margin-left: 4px;
 }

@@ -9,6 +9,23 @@ import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./s
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
 
+// setTransientStatus — статусная подсказка (например, «Иконка обновлена»),
+// которая сама исчезает через 3.5с. Без этого надписи зависают пока не
+// случится следующее обновление state.
+let _statusTimer: ReturnType<typeof setTimeout> | null = null;
+function setTransientStatus(msg: string): void {
+  state.status = msg;
+  if (_statusTimer) clearTimeout(_statusTimer);
+  _statusTimer = setTimeout(() => {
+    if (state.status === msg) {
+      state.status = "";
+      render();
+    }
+    _statusTimer = null;
+  }, 3500);
+  render();
+}
+
 // Draft per-channel в localStorage. Незавершённый текст переживает
 // переключение каналов и refresh. Чистится при успешной отправке.
 const DRAFT_KEY_PREFIX = "rucord:draft:";
@@ -173,7 +190,7 @@ interface DMItem {
   unreadCount: number;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | null;
+type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | null;
 
 // H.10: workspaceSettings — модалка с табами Обзор/Welcome/Роли/Удалить.
 // Для не-owner'а вкладка «Удалить» скрыта (permission.WorkspaceDelete
@@ -459,6 +476,7 @@ interface AppState {
   // Правая панель участников (Discord-style). На широких экранах открыта
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
+  userProfileTarget: string | null;
   // Клиентский mute каналов: Set channelId. Подавляет browser-notification
   // и unread-индикатор для канала. Не персистится на бэке (MVP) —
   // на refresh сбрасывается, как в Discord-default-state до сохранения.
@@ -614,6 +632,7 @@ const state: AppState = {
   voiceVolumeMenu: null,
   statusMenu: null,
   memberSidebarOpen: true,
+  userProfileTarget: null,
   mutedChannels: new Set(),
   screenShareQuality: loadScreenShareQuality(),
   dmMode: false,
@@ -688,6 +707,41 @@ const mediaBlobCache = {
     }
   }
 };
+
+// GIF play-on-hover для ws-rail: статичный first-frame блоба, нарисованный
+// в canvas и сохранённый как data:URL. По default используем его в <img>,
+// на hover свапаем src на анимированный blob URL. Только для ws-rail-icon;
+// в чате/member-sidebar gif играется всегда (юзер уже смотрит).
+const gifStaticCache = new Map<string, string>();
+function insertWsRailImg(slot: HTMLButtonElement, animatedUrl: string, staticUrl?: string): void {
+  const def = staticUrl ?? animatedUrl;
+  const escAnim = escapeHtml(animatedUrl);
+  const escDef = escapeHtml(def);
+  slot.insertAdjacentHTML(
+    "afterbegin",
+    `<img class="ws-rail-img" src="${escDef}" data-anim-src="${escAnim}" data-static-src="${escDef}" alt="" />`
+  );
+}
+
+function extractFirstFrame(blob: Blob, blobUrl: string): Promise<string | null> {
+  if (blob.type !== "image/gif") return Promise.resolve(null);
+  return new Promise<string | null>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth || 64;
+        c.height = img.naturalHeight || 64;
+        const ctx = c.getContext("2d");
+        if (!ctx) { resolve(null); return; }
+        ctx.drawImage(img, 0, 0);
+        resolve(c.toDataURL("image/png"));
+      } catch { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = blobUrl;
+  });
+}
 
 let rootEl: HTMLElement;
 let httpClient: HttpClient;
@@ -1853,8 +1907,7 @@ function renderShell(): void {
           <div class="user-strip-actions">
             ${renderBellButton()}
             ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">${icon("shield")}</button>` : ""}
-            <button id="open-profile" class="ghost" title="Профиль" aria-label="Профиль">${icon("settings")}</button>
-            <button id="logout-btn" class="ghost" title="Выйти">⎋</button>
+            <button id="open-profile" class="ghost" title="Настройки" aria-label="Настройки">${icon("settings")}</button>
           </div>
         </footer>
       </aside>
@@ -2411,12 +2464,14 @@ function renderChannelCategory(
         .filter(Boolean)
         .join(" ");
       const badge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : "";
+      const inlineList = kind === "voice" ? renderVoiceInlineParticipants(ch.id) : "";
       return `
         <li class="${cls}" data-ch="${ch.id}">
           <span class="channel-prefix">${channelPrefix(ch)}</span>
           <span class="channel-name">${escapeHtml(ch.name)}</span>
           ${badge}
         </li>
+        ${inlineList}
       `;
     })
     .join("");
@@ -2427,6 +2482,41 @@ function renderChannelCategory(
     </div>
     <ul class="channel-list">${items}</ul>
   `;
+}
+
+// Discord-style: участники voice-канала видны прямо в sidebar под названием.
+// Источник: voiceSnapshot (если ты в этом канале) либо voicePeek (если канал
+// выбран как «просмотр»). Для остальных каналов не показываем — для этого
+// нужен периодический polling /voice/participants, отложено.
+function renderVoiceInlineParticipants(channelId: string): string {
+  const voice = state.voiceSnapshot;
+  type P = { sessionId: string; userId: string; username?: string; displayName?: string; screenSharing?: boolean };
+  let participants: P[] = [];
+  let selfSessionId: string | null = null;
+  if (voice && voice.channelId === channelId) {
+    participants = voice.participants;
+    selfSessionId = voice.selfSessionId;
+  } else if (state.voicePeek?.channelId === channelId) {
+    participants = state.voicePeek.participants;
+  }
+  if (participants.length === 0) return "";
+  const items = participants
+    .map((p) => {
+      const member = state.members.find((m) => m.userId === p.userId);
+      const avatarMediaId = p.userId === state.me?.id ? state.me?.avatarMediaId : member?.avatarMediaId;
+      const name = p.displayName?.trim() || p.username || member?.displayName || member?.username || p.userId.slice(0, 8);
+      const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
+      const live = !!p.screenSharing || (isSelf && !!voice?.screenSharing);
+      return `
+        <li class="voice-inline-participant${isSelf ? " self" : ""}" data-voice-jump-user="${escapeHtml(p.userId)}">
+          ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 24 })}
+          <span class="voice-inline-name">${escapeHtml(name)}</span>
+          ${live ? `<span class="voice-inline-live">В ЭФИРЕ</span>` : ""}
+        </li>
+      `;
+    })
+    .join("");
+  return `<ul class="voice-inline-list">${items}</ul>`;
 }
 
 // G.8: список DM в ch-panel-body (заменяет renderChannelsBlock в dm-mode).
@@ -2724,7 +2814,8 @@ function renderVoiceChannelView(channel: Channel): string {
       <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
       <div class="voice-tile-overlay">
         <span class="voice-dot"></span>
-        <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}${sharing ? " · 🖥 экран" : ""}</span>
+        <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
+        ${sharing ? `<span class="voice-tile-live">В ЭФИРЕ</span>` : ""}
       </div>
     </div>`;
   };
@@ -3314,15 +3405,9 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   const authorAvatarId = m.authorId === state.me?.id
     ? state.me?.avatarMediaId
     : authorMember?.avatarMediaId;
-  const authorPresence: PresenceMode | undefined = m.authorId === state.me?.id
-    ? state.me?.presenceMode
-    : authorMember?.presenceMode;
   const authorCustomStatus = m.authorId === state.me?.id
     ? state.me?.customStatus
     : authorMember?.customStatus;
-  const authorDot = authorPresence
-    ? `<span class="author-presence-dot ${presenceDotClass(authorPresence)}" aria-hidden="true"></span>`
-    : "";
   const authorTitle = authorCustomStatus ? ` title="${escapeHtml(authorCustomStatus)}"` : "";
   const avatarHtml = renderAvatar({
     avatarMediaId: authorAvatarId,
@@ -3364,7 +3449,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
         </span>
       </div>`
     : `<div class="message-meta">
-        ${authorDot}<span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}${authorCustomStatus ? `<span class="author-custom-status" title="${escapeHtml(authorCustomStatus)}">${escapeHtml(authorCustomStatus)}</span>` : ""}
+        <span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}
         <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
@@ -3459,7 +3544,62 @@ function renderModal(): string {
   if (state.modal === "welcomeChannel") return renderWelcomeChannelModal();
   if (state.modal === "createChannel") return renderCreateChannelModal();
   if (state.modal === "workspaceSettings") return renderWorkspaceSettingsModal();
+  if (state.modal === "userProfile") return renderUserProfilePopup();
   return "";
+}
+
+// Discord-style user profile popup — компактная карточка для просмотра
+// чужого профиля. Открывается кликом по member-sidebar и по author'у в
+// сообщении (TODO). Read-only с двумя action'ами: «Сообщение» (DM) и
+// «Позвонить». Источник данных — state.members[userId], плюс fallback
+// на state.dms.peer для DM-сценариев.
+function renderUserProfilePopup(): string {
+  const userId = state.userProfileTarget;
+  if (!userId) return "";
+  const member = state.members.find((m) => m.userId === userId);
+  const dm = state.dms.find((d) => d.peer.userId === userId);
+  const name = member?.displayName || member?.username || dm?.peer.displayName || dm?.peer.username || "Пользователь";
+  const username = member?.username || dm?.peer.username || "";
+  const avatarMediaId = member?.avatarMediaId || dm?.peer.avatarMediaId;
+  const presenceMode = member?.presenceMode || dm?.peer.presenceMode;
+  const customStatus = member?.customStatus || dm?.peer.customStatus;
+  const role = member?.role;
+  const isSelf = userId === state.me?.id;
+  const inCall = state.callSnapshot !== null;
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal user-profile-popup" role="dialog">
+        <div class="user-profile-banner"></div>
+        <button class="user-profile-close" data-modal-close title="Закрыть">✕</button>
+        <div class="user-profile-avatar-row">
+          <div class="user-profile-avatar-wrap">
+            ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 80, className: "user-profile-avatar" })}
+            ${presenceMode ? `<span class="user-profile-dot ${presenceDotClass(presenceMode)}"></span>` : ""}
+          </div>
+        </div>
+        <div class="user-profile-card">
+          <div class="user-profile-name">${escapeHtml(name)}</div>
+          ${username ? `<div class="user-profile-username">@${escapeHtml(username)}</div>` : ""}
+          ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
+          ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(role)}</span></div>` : ""}
+          ${
+            isSelf
+              ? ""
+              : `<div class="user-profile-actions">
+                  <button class="primary user-profile-dm" data-user-id="${escapeHtml(userId)}">${icon("reply")} Сообщение</button>
+                  ${!inCall ? `<button class="ghost user-profile-call" data-user-id="${escapeHtml(userId)}">${icon("phone")} Позвонить</button>` : ""}
+                </div>`
+          }
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function openUserProfile(userId: string): void {
+  state.userProfileTarget = userId;
+  state.modal = "userProfile";
+  render();
 }
 
 // H.10: модалка настроек воркспейса. Табы:
@@ -3654,8 +3794,7 @@ function attachWorkspaceSettingsHandlers(): void {
       const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
       const updated = await httpClient.put<Workspace>(`/api/v1/workspaces/${ws.id}/avatar`, { mediaId: uploaded.id });
       state.workspaces = state.workspaces.map((w) => (w.id === ws.id ? { ...w, avatarMediaId: updated.avatarMediaId } : w));
-      state.status = "Иконка обновлена";
-      render();
+      setTransientStatus("Иконка обновлена");
     } catch (err) {
       state.workspaceSettings.error = describeError(err);
       state.status = "";
@@ -3668,8 +3807,7 @@ function attachWorkspaceSettingsHandlers(): void {
     try {
       const updated = await httpClient.del<Workspace>(`/api/v1/workspaces/${ws.id}/avatar`);
       state.workspaces = state.workspaces.map((w) => (w.id === ws.id ? { ...w, avatarMediaId: updated.avatarMediaId } : w));
-      state.status = "Иконка удалена";
-      render();
+      setTransientStatus("Иконка удалена");
     } catch (err) {
       state.workspaceSettings.error = describeError(err);
       render();
@@ -3727,7 +3865,7 @@ async function saveWorkspaceName(): Promise<void> {
     const updated = await httpClient.patch<Workspace>(`/api/v1/workspaces/${ws.id}`, { name });
     state.workspaces = state.workspaces.map((w) => (w.id === ws.id ? { ...w, name: updated.name } : w));
     state.workspaceSettings.draftName = updated.name;
-    state.status = "Воркспейс обновлён";
+    setTransientStatus("Воркспейс обновлён");
   } catch (err) {
     wsSet.error = describeError(err);
   } finally {
@@ -3851,8 +3989,7 @@ async function saveDisplayName(): Promise<void> {
     };
     state.profileEdit.field = null;
     state.profileEdit.saving = false;
-    state.status = "Имя обновлено";
-    render();
+    setTransientStatus("Имя обновлено");
   } catch (err) {
     pe.saving = false;
     pe.error = describeError(err);
@@ -3891,8 +4028,7 @@ async function savePassword(): Promise<void> {
     state.profileEdit.currentPassword = "";
     state.profileEdit.newPassword = "";
     state.profileEdit.confirmPassword = "";
-    state.status = "Пароль обновлён";
-    render();
+    setTransientStatus("Пароль обновлён");
   } catch (err) {
     pe.saving = false;
     pe.error = describeError(err);
@@ -4651,14 +4787,14 @@ function renderProfileModal(): string {
             <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="Сменить аватар">
               ${icon("pencil", { size: 14 })}
             </button>
+            ${me.avatarMediaId
+              ? `<button id="profile-avatar-remove" class="profile-card-avatar-remove" title="Удалить аватар">${icon("trash", { size: 12 })}</button>`
+              : ""}
           </div>
           <div class="profile-card-name">
             <div class="profile-card-display">${escapeHtml(displayName)}</div>
             <div class="profile-card-username">@${escapeHtml(me.username)}</div>
           </div>
-          ${me.avatarMediaId
-            ? `<button id="profile-avatar-remove" class="ghost profile-card-avatar-remove" title="Удалить аватар">${icon("trash", { size: 16 })}</button>`
-            : ""}
         </div>
         <div class="profile-card-fields">
           ${renderProfileField({
@@ -4693,6 +4829,9 @@ function renderProfileModal(): string {
             editing: editing === "password",
             body: renderProfileEditPassword()
           })}
+        </div>
+        <div class="profile-card-footer">
+          <button id="profile-logout-btn" class="profile-logout-btn">${icon("log-out")} Выйти из аккаунта</button>
         </div>
       </div>
     </div>
@@ -4847,7 +4986,8 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
 }
 
 function attachShellHandlers(): void {
-  rootEl.querySelector<HTMLButtonElement>("#logout-btn")?.addEventListener("click", () => {
+  rootEl.querySelector<HTMLButtonElement>("#profile-logout-btn")?.addEventListener("click", () => {
+    if (!confirm("Выйти из аккаунта?")) return;
     void httpClient.logout();
   });
 
@@ -5048,8 +5188,7 @@ function attachShellHandlers(): void {
           displayName: updated.displayName ?? state.me.displayName
         };
       }
-      state.status = "Аватар обновлён";
-      render();
+      setTransientStatus("Аватар обновлён");
     } catch (err) {
       state.status = describeError(err);
       render();
@@ -5065,8 +5204,7 @@ function attachShellHandlers(): void {
       if (state.me) {
         state.me = { ...state.me, avatarMediaId: undefined, displayName: updated.displayName ?? state.me.displayName };
       }
-      state.status = "Аватар удалён";
-      render();
+      setTransientStatus("Аватар удалён");
     } catch (err) {
       state.status = describeError(err);
       render();
@@ -5118,14 +5256,35 @@ function attachShellHandlers(): void {
     });
   });
 
-  // G.8: клик по карточке в member-sidebar → открыть DM (а не модалку
-  // members, как раньше). Self-клик игнорится — это твоя же карточка.
+  // Клик по карточке в member-sidebar → Discord-style profile-popup
+  // с кнопками «Сообщение» и «Позвонить». Self-клик игнорится.
   rootEl.querySelectorAll<HTMLElement>(".member-sidebar-item[data-member-user]").forEach((el) => {
     el.addEventListener("click", () => {
       const userId = el.getAttribute("data-member-user");
       if (!userId || userId === state.me?.id) return;
-      void openDMWith({ userId });
+      openUserProfile(userId);
     });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>(".user-profile-dm")?.addEventListener("click", (ev) => {
+    const userId = (ev.currentTarget as HTMLButtonElement).dataset.userId;
+    if (!userId) return;
+    state.modal = null;
+    state.userProfileTarget = null;
+    void openDMWith({ userId });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>(".user-profile-call")?.addEventListener("click", async (ev) => {
+    const userId = (ev.currentTarget as HTMLButtonElement).dataset.userId;
+    if (!userId) return;
+    try {
+      state.modal = null;
+      state.userProfileTarget = null;
+      await callMgr.placeCall(userId);
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
   });
 
   rootEl.querySelectorAll<HTMLButtonElement>(".member-call").forEach((btn) => {
@@ -5618,7 +5777,7 @@ function attachShellHandlers(): void {
       await loadWorkspaces();
       realtimeClient.reconnect();
       await selectWorkspace(res.workspaceId);
-      state.status = "Вы вступили в воркспейс";
+      setTransientStatus("Вы вступили в воркспейс");
     } catch (err) {
       state.status = describeError(err);
       render();
@@ -5678,8 +5837,7 @@ function attachShellHandlers(): void {
       const code = btn.dataset.code ?? "";
       try {
         await navigator.clipboard.writeText(code);
-        state.status = "Код скопирован";
-        render();
+        setTransientStatus("Код скопирован");
       } catch {
         state.status = code;
         render();
@@ -5892,11 +6050,26 @@ function attachShellHandlers(): void {
   rootEl.querySelectorAll<HTMLButtonElement>(".ws-rail-icon[data-avatar-media]").forEach((slot) => {
     const mediaId = slot.dataset.avatarMedia;
     if (!mediaId) return;
+    // GIF hover-swap: один обработчик на slot, переключает src между static и
+    // animated. Срабатывает только если у img есть data-anim-src ≠ data-static-src
+    // (для не-gif этот атрибут будет одинаковым → swap no-op).
+    if (!slot.dataset.hoverBound) {
+      slot.dataset.hoverBound = "1";
+      slot.addEventListener("mouseenter", () => {
+        const img = slot.querySelector<HTMLImageElement>(".ws-rail-img");
+        if (img && img.dataset.animSrc) img.src = img.dataset.animSrc;
+      });
+      slot.addEventListener("mouseleave", () => {
+        const img = slot.querySelector<HTMLImageElement>(".ws-rail-img");
+        if (img && img.dataset.staticSrc) img.src = img.dataset.staticSrc;
+      });
+    }
     if (slot.querySelector("img")) return;
     const url = `/api/v1/media/${mediaId}`;
     const cached = mediaBlobCache.get(url);
     if (cached) {
-      slot.insertAdjacentHTML("afterbegin", `<img class="ws-rail-img" src="${cached}" alt="" />`);
+      const staticFrame = gifStaticCache.get(url);
+      insertWsRailImg(slot, cached, staticFrame);
       return;
     }
     void (async () => {
@@ -5904,11 +6077,13 @@ function attachShellHandlers(): void {
         const blob = await httpClient.getBlob(url);
         const blobUrl = URL.createObjectURL(blob);
         mediaBlobCache.set(url, blobUrl);
+        const staticFrame = await extractFirstFrame(blob, blobUrl);
+        if (staticFrame) gifStaticCache.set(url, staticFrame);
         rootEl.querySelectorAll<HTMLButtonElement>(
           `.ws-rail-icon[data-avatar-media="${CSS.escape(mediaId)}"]`
         ).forEach((s) => {
           if (s.querySelector("img")) return;
-          s.insertAdjacentHTML("afterbegin", `<img class="ws-rail-img" src="${blobUrl}" alt="" />`);
+          insertWsRailImg(s, blobUrl, staticFrame ?? undefined);
         });
       } catch {
         // letter остаётся видимой
@@ -6760,7 +6935,7 @@ async function saveChannelPermissions(): Promise<void> {
     );
     state.channelSettings.data = data;
     state.channelSettings.draft = buildDraftFromOverrides(data);
-    state.status = "Права канала сохранены";
+    setTransientStatus("Права канала сохранены");
   } catch (err) {
     state.channelSettings.error = describeError(err);
   } finally {
