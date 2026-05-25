@@ -742,6 +742,7 @@ async function bootstrapSession(): Promise<void> {
     void loadNotifications();
     void loadDMs();
     void requestBrowserNotificationPermission();
+    startIdleAutoDetect();
     state.status = "";
     render();
   } catch (err) {
@@ -1133,12 +1134,62 @@ async function saveStatus(mode: PresenceMode, customStatus: string): Promise<voi
       state.me.presenceMode = (updated.presenceMode as PresenceMode | undefined) ?? mode;
       state.me.customStatus = updated.customStatus ?? "";
     }
+    // H.8.i: сбрасываем флаг автоматически выставленного idle когда юзер
+    // (или мы сами) уводит mode прочь от idle. Иначе idleAutoSet может
+    // протечь через ручные переключения, и activity-handler ложно сочтёт
+    // следующий manual-idle нашим.
+    if (mode !== "idle") {
+      idleAutoSet = false;
+    }
     state.statusMenu = null;
     render();
   } catch (err) {
     state.status = describeError(err);
     render();
   }
+}
+
+// H.8.i: idle auto-detect. После 5 минут без mousemove/keydown/click
+// клиент сам переводит presence в "idle" (если юзер был "online"). На
+// первый input — возвращает в "online", но только если idle поставили
+// мы автоматически (idleAutoSet=true). Если юзер вручную выбрал idle/
+// dnd/invisible — не трогаем; auto-режим работает только в паре
+// online↔idle.
+const IDLE_THRESHOLD_MS = 5 * 60_000;
+const IDLE_CHECK_INTERVAL_MS = 30_000;
+let idleLastActivity = Date.now();
+let idleAutoSet = false;
+let idleTimer: ReturnType<typeof setInterval> | null = null;
+let idleListenersAttached = false;
+
+function startIdleAutoDetect(): void {
+  if (idleListenersAttached) return;
+  idleListenersAttached = true;
+  const onActivity = () => {
+    idleLastActivity = Date.now();
+    // Если мы сами выставили idle ранее — возвращаем online на любой ввод.
+    if (idleAutoSet && state.me?.presenceMode === "idle") {
+      idleAutoSet = false;
+      void saveStatus("online", state.me.customStatus ?? "");
+    }
+  };
+  window.addEventListener("mousemove", onActivity, { passive: true });
+  window.addEventListener("mousedown", onActivity, { passive: true });
+  window.addEventListener("keydown", onActivity, { passive: true });
+  window.addEventListener("touchstart", onActivity, { passive: true });
+  window.addEventListener("focus", onActivity);
+
+  if (idleTimer) clearInterval(idleTimer);
+  idleTimer = setInterval(() => {
+    const me = state.me;
+    if (!me) return;
+    // Только переход online → idle. dnd/invisible/idle (выставлен вручную)
+    // не трогаем, чтобы не перетереть осознанный выбор.
+    if (me.presenceMode !== "online") return;
+    if (Date.now() - idleLastActivity < IDLE_THRESHOLD_MS) return;
+    idleAutoSet = true;
+    void saveStatus("idle", me.customStatus ?? "");
+  }, IDLE_CHECK_INTERVAL_MS);
 }
 
 async function requestBrowserNotificationPermission(): Promise<void> {
