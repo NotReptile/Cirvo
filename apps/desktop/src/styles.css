@@ -508,8 +508,28 @@ input:focus { outline: none; border-color: var(--accent); }
   gap: 12px;
 }
 .message { display: flex; flex-direction: column; gap: 2px; }
-.message-meta { display: flex; gap: 8px; font-size: 12px; color: var(--text-mute); }
+.message-meta { display: flex; gap: 8px; font-size: 12px; color: var(--text-mute); align-items: center; }
 .author { font-weight: 600; color: var(--text); }
+.author-presence-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+}
+.author-presence-dot.online { background: #3ba55c; }
+.author-presence-dot.idle { background: #faa61a; }
+.author-presence-dot.dnd { background: #ed4245; }
+.author-presence-dot.offline { background: #80848e; }
+.author-custom-status {
+  font-size: 11px;
+  color: var(--text-mute);
+  font-style: italic;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .message-body { white-space: pre-wrap; word-break: break-word; }
 
 /* H.4: reply snippet — Discord-стиль шапки. Curved-arrow слева, мини-аватар
@@ -596,6 +616,25 @@ input:focus { outline: none; border-color: var(--accent); }
   white-space: pre;
 }
 .md-code-block code { background: none; border: none; padding: 0; }
+
+.spoiler {
+  background: #202225;
+  color: transparent;
+  border-radius: 3px;
+  padding: 0 2px;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+  user-select: none;
+}
+.spoiler:hover { background: #2c2f33; }
+.spoiler.revealed {
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  cursor: text;
+  user-select: text;
+}
+.spoiler.revealed * { color: inherit; }
+.spoiler * { color: transparent; }
 
 .mention-popup {
   position: relative;
@@ -1940,6 +1979,41 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .message-avatar {
   margin-top: 2px;
+  flex-shrink: 0;
+}
+
+/* Group consecutive messages by author (Discord-pattern): подряд идущие
+   сообщения одного автора в 7-минутном окне склеиваются — avatar и
+   header-meta только у первого, у остальных только тело + hover-timestamp. */
+.message.message-grouped {
+  margin-top: 0 !important;
+  padding-top: 1px;
+  padding-bottom: 1px;
+}
+.message.message-grouped + .message:not(.message-grouped) {
+  margin-top: 8px;
+}
+.message-avatar-spacer {
+  width: 40px;
+  height: 1.4em;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+  opacity: 0;
+  transition: opacity 100ms;
+}
+.message.message-grouped:hover .message-avatar-spacer { opacity: 1; }
+.grouped-timestamp {
+  font-size: 11px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+.message-meta-grouped {
+  min-height: 0;
+}
+.message-meta-grouped .message-actions {
+  /* action-bar остаётся как absolute overlay, отдельная meta-строка не нужна */
 }
 .message-content {
   display: flex;

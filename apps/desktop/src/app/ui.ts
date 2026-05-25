@@ -9,6 +9,25 @@ import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./s
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
 
+// Draft per-channel в localStorage. Незавершённый текст переживает
+// переключение каналов и refresh. Чистится при успешной отправке.
+const DRAFT_KEY_PREFIX = "rucord:draft:";
+function loadDraft(channelId: string | null | undefined): string {
+  if (!channelId) return "";
+  try {
+    return localStorage.getItem(DRAFT_KEY_PREFIX + channelId) ?? "";
+  } catch {
+    return "";
+  }
+}
+function saveDraft(channelId: string | null | undefined, value: string): void {
+  if (!channelId) return;
+  try {
+    if (value) localStorage.setItem(DRAFT_KEY_PREFIX + channelId, value);
+    else localStorage.removeItem(DRAFT_KEY_PREFIX + channelId);
+  } catch {}
+}
+
 // H.8: presenceMode — выбранный юзером режим. "online"/"idle"/"dnd"/
 // "invisible". Для других юзеров invisible маскируется на бэке как
 // "offline" (см. effective_mode). У state.me хранится реальный режим.
@@ -1559,6 +1578,7 @@ interface InputSnapshot {
   selStart: number | null;
   selEnd: number | null;
   hadFocus: boolean;
+  channelTag: string | null;
 }
 
 function snapshotPreservedInputs(): InputSnapshot[] {
@@ -1571,7 +1591,8 @@ function snapshotPreservedInputs(): InputSnapshot[] {
       value: el.value,
       selStart: el.selectionStart,
       selEnd: el.selectionEnd,
-      hadFocus: document.activeElement === el
+      hadFocus: document.activeElement === el,
+      channelTag: state.selectedChannelId
     });
   }
   return out;
@@ -1581,6 +1602,13 @@ function restorePreservedInputs(snapshots: InputSnapshot[]): void {
   for (const snap of snapshots) {
     const el = rootEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(snap.selector);
     if (!el) continue;
+    // Composer: при смене канала старый текст не переносим — draft per-channel
+    // уже зашит в новый input через value-атрибут (см. loadDraft в renderChannelView).
+    const isComposer = snap.selector === '#send-form input[name="body"]';
+    const channelChanged = isComposer && snap.channelTag !== state.selectedChannelId;
+    if (channelChanged) {
+      continue;
+    }
     // Не затираем, если новый input уже содержит значение (например, программно
     // очищенный composer после успешной отправки — там value="" намеренно).
     if (snap.value && !el.value) {
@@ -2544,6 +2572,7 @@ function renderDMChannelView(dm: DMItem): string {
         name="body"
         autocomplete="off"
         placeholder="Сообщение для ${escapeHtml(name)}"
+        value="${escapeHtml(loadDraft(dm.channelId))}"
       />
       <button type="submit">${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
@@ -2642,6 +2671,7 @@ function renderChannelView(channel: Channel): string {
         autocomplete="off"
         placeholder="${canSend ? `Сообщение в #${channel.name}` : "Этот канал не принимает сообщения"}"
         ${canSend ? "" : "disabled"}
+        value="${escapeHtml(canSend ? loadDraft(channel.id) : "")}"
       />
       <button type="submit" ${canSend ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
@@ -3159,22 +3189,37 @@ function pluralizeNew(n: number): string {
 // мы автомаркаем канал прочитанным после загрузки.
 function renderMessagesWithDivider(): string {
   const cutoff = state.selectedChannelLastReadAt ? Date.parse(state.selectedChannelLastReadAt) : NaN;
+  const GROUP_WINDOW_MS = 7 * 60 * 1000;
   let dividerInserted = false;
-  return state.messages
-    .map((m) => {
-      let prefix = "";
-      if (
-        !dividerInserted &&
-        !Number.isNaN(cutoff) &&
-        Date.parse(m.createdAt) > cutoff &&
-        m.authorId !== state.me?.id
-      ) {
-        prefix = `<div class="new-messages-divider"><span>Новые сообщения</span></div>`;
-        dividerInserted = true;
-      }
-      return prefix + renderMessage(m);
-    })
-    .join("");
+  let prev: Message | null = null;
+  const out: string[] = [];
+  for (const m of state.messages) {
+    let dividerHere = false;
+    if (
+      !dividerInserted &&
+      !Number.isNaN(cutoff) &&
+      Date.parse(m.createdAt) > cutoff &&
+      m.authorId !== state.me?.id
+    ) {
+      out.push(`<div class="new-messages-divider"><span>Новые сообщения</span></div>`);
+      dividerInserted = true;
+      dividerHere = true;
+    }
+    const isSystem = !!m.kind && m.kind !== "user";
+    const prevIsSystem = prev ? !!prev.kind && prev.kind !== "user" : false;
+    const grouped =
+      !!prev &&
+      !dividerHere &&
+      !isSystem &&
+      !prevIsSystem &&
+      prev.authorId === m.authorId &&
+      !m.replyTo &&
+      state.editingMessageId !== m.id &&
+      Date.parse(m.createdAt) - Date.parse(prev.createdAt) < GROUP_WINDOW_MS;
+    out.push(renderMessage(m, grouped));
+    prev = m;
+  }
+  return out.join("");
 }
 
 // MENTION_RE_GLOBAL — синхронен с backend mentionRe: `@<slug>`, slug по
@@ -3186,6 +3231,7 @@ const INLINE_CODE_RE = /`([^`\n]+)`/g;
 const URL_RE = /\bhttps?:\/\/[^\s<>`]+/g;
 const BOLD_RE = /\*\*([^*\n]+?)\*\*/g;
 const ITALIC_RE = /(^|[^A-Za-z0-9_])_([^_\n]+?)_(?=[^A-Za-z0-9_]|$)/g;
+const SPOILER_RE = /\|\|([^|\n]+?)\|\|/g;
 
 // renderBody — C.3 markdown + C.2 mentions + autolinks. Безопасно:
 // весь пользовательский текст проходит через escapeHtml, разметка
@@ -3242,12 +3288,13 @@ function renderBody(body: string): string {
   //    escapeHtml не входят, поэтому регулярки видят их как есть.
   text = text.replace(BOLD_RE, "<strong>$1</strong>");
   text = text.replace(ITALIC_RE, "$1<em>$2</em>");
+  text = text.replace(SPOILER_RE, '<span class="spoiler" data-spoiler>$1</span>');
 
   // 7) Возврат плейсхолдеров.
   return text.replace(/(\d+)/g, (_, idx: string) => placeholders[Number(idx)] ?? "");
 }
 
-function renderMessage(m: Message): string {
+function renderMessage(m: Message, grouped: boolean = false): string {
   // H.9: system-сообщения — плашка без аватара/реакций/edit/reply. body —
   // fallback-текст с бэка; resolveSystemText даёт более точную русскую
   // формулировку, если автор в state.members (свежие данные).
@@ -3267,6 +3314,16 @@ function renderMessage(m: Message): string {
   const authorAvatarId = m.authorId === state.me?.id
     ? state.me?.avatarMediaId
     : authorMember?.avatarMediaId;
+  const authorPresence: PresenceMode | undefined = m.authorId === state.me?.id
+    ? state.me?.presenceMode
+    : authorMember?.presenceMode;
+  const authorCustomStatus = m.authorId === state.me?.id
+    ? state.me?.customStatus
+    : authorMember?.customStatus;
+  const authorDot = authorPresence
+    ? `<span class="author-presence-dot ${presenceDotClass(authorPresence)}" aria-hidden="true"></span>`
+    : "";
+  const authorTitle = authorCustomStatus ? ` title="${escapeHtml(authorCustomStatus)}"` : "";
   const avatarHtml = renderAvatar({
     avatarMediaId: authorAvatarId,
     fallbackText: authorName,
@@ -3281,7 +3338,7 @@ function renderMessage(m: Message): string {
         <div class="message-content">
           <div class="message-meta">
             <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>
-            <span class="timestamp">${formatTime(m.createdAt)}</span>
+            <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
           </div>
           <form class="edit-form" data-edit-id="${m.id}">
             <input name="body" value="${escapeHtml(m.body)}" autofocus />
@@ -3293,21 +3350,35 @@ function renderMessage(m: Message): string {
     `;
   }
 
-  return `
-    <div class="message" data-id="${m.id}">
-      ${avatarHtml}
-      <div class="message-content">
-      ${renderReplySnippet(m.replyTo)}
-      <div class="message-meta">
-        <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}
-        <span class="timestamp">${formatTime(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
+  const groupedCls = grouped ? " message-grouped" : "";
+  const avatarSlot = grouped
+    ? `<span class="message-avatar message-avatar-spacer" aria-hidden="true"><span class="grouped-timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${escapeHtml(formatTimeSmartShort(m.createdAt))}</span></span>`
+    : avatarHtml;
+  const metaBlock = grouped
+    ? `<div class="message-meta message-meta-grouped">
         <span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
           <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">${icon("reply")}</button>
           ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">${icon("pencil")}</button>` : ""}
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">${icon("trash")}</button>` : ""}
         </span>
-      </div>
+      </div>`
+    : `<div class="message-meta">
+        ${authorDot}<span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}${authorCustomStatus ? `<span class="author-custom-status" title="${escapeHtml(authorCustomStatus)}">${escapeHtml(authorCustomStatus)}</span>` : ""}
+        <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
+        <span class="message-actions">
+          <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
+          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">${icon("reply")}</button>
+          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">${icon("pencil")}</button>` : ""}
+          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">${icon("trash")}</button>` : ""}
+        </span>
+      </div>`;
+  return `
+    <div class="message${groupedCls}" data-id="${m.id}">
+      ${avatarSlot}
+      <div class="message-content">
+      ${renderReplySnippet(m.replyTo)}
+      ${metaBlock}
       ${m.body ? `<div class="message-body">${renderBody(m.body)}</div>` : ""}
       ${
         m.attachments && m.attachments.length > 0
@@ -3370,7 +3441,7 @@ function renderSystemMessage(m: Message): string {
     <div class="message message-system" data-id="${m.id}">
       <span class="message-system-icon">${icon(iconName, { size: 16 })}</span>
       <span class="message-system-text">${escapeHtml(text)}</span>
-      <span class="message-system-time">${formatTime(m.createdAt)}</span>
+      <span class="message-system-time" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
     </div>
   `;
 }
@@ -4449,7 +4520,7 @@ function renderNotificationItem(n: NotificationItem): string {
       <div class="notif-body">
         <div class="notif-title">${escapeHtml(title)}</div>
         ${body ? `<div class="notif-snippet">${escapeHtml(body)}</div>` : ""}
-        <div class="notif-time">${escapeHtml(formatTime(n.createdAt))}</div>
+        <div class="notif-time" title="${escapeHtml(formatTime(n.createdAt))}">${escapeHtml(formatTimeSmart(n.createdAt))}</div>
       </div>
     </li>
   `;
@@ -4499,7 +4570,7 @@ function renderSearchHit(hit: SearchHit): string {
       <div class="search-hit-head">
         <span class="search-hit-channel">#${escapeHtml(hit.channelName)}</span>
         <span class="search-hit-author">${escapeHtml(author)}</span>
-        <span class="search-hit-time">${escapeHtml(formatTime(hit.createdAt))}</span>
+        <span class="search-hit-time" title="${escapeHtml(formatTime(hit.createdAt))}">${escapeHtml(formatTimeSmart(hit.createdAt))}</span>
       </div>
       <div class="search-hit-body">${highlighted}</div>
     </li>
@@ -5851,7 +5922,10 @@ function attachShellHandlers(): void {
   const composerInput = rootEl.querySelector<HTMLInputElement>('#send-form input[name="body"]');
   const mentionPopup = rootEl.querySelector<HTMLDivElement>("#mention-popup");
   if (composerInput && mentionPopup) {
-    composerInput.addEventListener("input", () => updateMentionPopup(composerInput, mentionPopup));
+    composerInput.addEventListener("input", () => {
+      saveDraft(state.selectedChannelId, composerInput.value);
+      updateMentionPopup(composerInput, mentionPopup);
+    });
     composerInput.addEventListener("click", () => updateMentionPopup(composerInput, mentionPopup));
     composerInput.addEventListener("keyup", (ev) => {
       // ArrowLeft/Right двигают каретку — пересчитаем токен. Стрелки
@@ -5861,6 +5935,29 @@ function attachShellHandlers(): void {
       }
     });
     composerInput.addEventListener("keydown", (ev) => {
+      // Edit прошлого своего сообщения по стрелке вверх (Discord/Slack):
+      // пустой композер + ArrowUp + не активен mention-popup и не идёт edit.
+      if (
+        ev.key === "ArrowUp" &&
+        composerInput.value === "" &&
+        !state.editingMessageId &&
+        (!state.mentionAutocomplete || mentionPopup.hidden)
+      ) {
+        const myId = state.me?.id;
+        if (myId) {
+          for (let i = state.messages.length - 1; i >= 0; i--) {
+            const m = state.messages[i];
+            if (m.authorId !== myId) continue;
+            if (m.kind && m.kind !== "user") continue;
+            if (m.deletedAt) continue;
+            ev.preventDefault();
+            state.editingMessageId = m.id;
+            state.pickerForMessageId = null;
+            render();
+            return;
+          }
+        }
+      }
       if (!state.mentionAutocomplete || mentionPopup.hidden) return;
       const matches = filterMentionMatches(state.mentionAutocomplete.query);
       if (matches.length === 0) return;
@@ -5919,7 +6016,9 @@ function attachShellHandlers(): void {
     const body = input.value.trim();
     const attachmentIds = state.pendingUploads.map((p) => p.id);
     if (!body && attachmentIds.length === 0) return;
+    const channelIdSnapshot = state.selectedChannelId;
     input.value = "";
+    saveDraft(channelIdSnapshot, "");
     const pendingSnapshot = state.pendingUploads;
     const replyingSnapshot = state.replyingTo;
     state.pendingUploads = [];
@@ -5943,6 +6042,7 @@ function attachShellHandlers(): void {
     } catch (err) {
       state.status = describeError(err);
       input.value = body;
+      saveDraft(channelIdSnapshot, body);
       state.pendingUploads = pendingSnapshot;
       state.replyingTo = replyingSnapshot;
       render();
@@ -6007,6 +6107,13 @@ function attachShellHandlers(): void {
     // После выставления scrollTop вешаем listener — иначе наш же
     // программный скролл триггерит пересчёт stickToBottom от нулевой высоты.
     list.addEventListener("scroll", onMessageListScroll);
+    list.addEventListener("click", (ev) => {
+      const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-spoiler]");
+      if (target && !target.classList.contains("revealed")) {
+        target.classList.add("revealed");
+        ev.stopPropagation();
+      }
+    });
   }
 }
 
@@ -6115,6 +6222,36 @@ function formatTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return date.toLocaleString();
+}
+
+// formatTimeSmartShort — «14:32». Используется как hover-метка в группе
+// сообщений одного автора (Discord-pattern: первое сообщение группы
+// показывает полную дату, последующие — только HH:MM при hover'е).
+function formatTimeSmartShort(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// formatTimeSmart — «Сегодня в 14:32» / «Вчера в 23:01» / «18.05.2026 в 14:32».
+// Discord-pattern: timestamps в потоке сообщений и в notifications читаются
+// глазом мгновенно, без перевода даты в голове.
+function formatTimeSmart(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfMsgDay = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay - startOfMsgDay) / 86400000);
+  const hm = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (dayDiff === 0) return `Сегодня в ${hm}`;
+  if (dayDiff === 1) return `Вчера в ${hm}`;
+  if (dayDiff > 1 && dayDiff < 7) {
+    const weekday = date.toLocaleDateString("ru-RU", { weekday: "long" });
+    return `${weekday} в ${hm}`;
+  }
+  const dmy = date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+  return `${dmy} в ${hm}`;
 }
 
 function escapeHtml(value: string | undefined | null): string {
