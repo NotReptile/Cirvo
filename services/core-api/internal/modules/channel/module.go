@@ -23,15 +23,23 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
 )
 
+// SystemMessagePoster — узкий интерфейс для постинга system-плашек
+// (channel created/renamed/deleted и т.п.). Объявлен здесь, чтобы избежать
+// import-цикла channel ↔ message — реализация в message.Module.
+type SystemMessagePoster interface {
+	PostSystemMessage(ctx context.Context, channelID, workspaceID, authorUserID uuid.UUID, kind, body string) error
+}
+
 type Module struct {
 	db        *postgres.Pool
 	settings  *serversettings.Provider
 	publisher *realtimebus.Publisher
+	messages  SystemMessagePoster
 	logger    *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, settings *serversettings.Provider, logger *slog.Logger) *Module {
-	return &Module{db: db, settings: settings, publisher: publisher, logger: logger}
+func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, settings *serversettings.Provider, messages SystemMessagePoster, logger *slog.Logger) *Module {
+	return &Module{db: db, settings: settings, publisher: publisher, messages: messages, logger: logger}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -266,6 +274,13 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:   now,
 	}
 	m.publish("channel.created", workspaceID, channelID.String(), view)
+	// H.9.iii: системная плашка «Канал создан» — только в text-канал.
+	// В voice-канал такие плашки не вписаны (там нет message-стрима).
+	if req.Kind == "text" && m.messages != nil {
+		if err := m.messages.PostSystemMessage(r.Context(), channelID, workspaceID, userID, "system_channel_event", "Канал создан"); err != nil {
+			m.logger.Warn("channel.create: PostSystemMessage failed", slog.String("err", err.Error()))
+		}
+	}
 	sharedhttp.WriteJSON(w, http.StatusCreated, view)
 }
 
@@ -319,6 +334,16 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		req.Topic = &trimmed
 	}
 
+	// Запоминаем old name до апдейта, чтобы post-система могла оформить
+	// «Канал переименован: #old → #new». Если запрос не меняет имя — поле
+	// будет пустым и плашку не пишем.
+	var oldName, oldKind string
+	if err := m.db.QueryRow(r.Context(),
+		`select name, kind from channels where id = $1`, channelID).Scan(&oldName, &oldKind); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+
 	now := time.Now().UTC()
 	_, err := m.db.Exec(r.Context(),
 		`update channels set
@@ -356,6 +381,13 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		TargetID:    channelID.String(),
 	})
 	m.publish("channel.updated", scope.WorkspaceID, channelID.String(), v)
+	// H.9.iii: system-плашка при переименовании text-канала.
+	if oldKind == "text" && m.messages != nil && req.Name != nil && *req.Name != oldName {
+		body := "Канал переименован: #" + oldName + " → #" + v.Name
+		if err := m.messages.PostSystemMessage(r.Context(), channelID, scope.WorkspaceID, userID, "system_channel_event", body); err != nil {
+			m.logger.Warn("channel.update: PostSystemMessage failed", slog.String("err", err.Error()))
+		}
+	}
 	sharedhttp.WriteJSON(w, http.StatusOK, v)
 }
 

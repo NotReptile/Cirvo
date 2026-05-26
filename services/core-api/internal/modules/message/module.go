@@ -51,9 +51,10 @@ var mentionRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})`)
 const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body, m.kind,
         coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
         coalesce(
-          (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine))
+          (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine, 'userIds', user_ids))
            from (
-             select emoji, count(*) as cnt, bool_or(user_id = $1) as mine
+             select emoji, count(*) as cnt, bool_or(user_id = $1) as mine,
+                    jsonb_agg(user_id::text order by created_at) as user_ids
              from message_reactions where message_id = m.id
              group by emoji
            ) r),
@@ -124,8 +125,9 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 }
 
 type reactionAgg struct {
-	Count int  `json:"count"`
-	Mine  bool `json:"mine"`
+	Count   int      `json:"count"`
+	Mine    bool     `json:"mine"`
+	UserIDs []string `json:"userIds,omitempty"`
 }
 
 type attachmentView struct {

@@ -57,7 +57,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		profile.NewModule(container.DB, container.Publisher, container.Logger),
 		workspace.NewModule(container.DB, container.Settings, container.Logger),
 		role.NewModule(container.DB, container.Logger),
-		channel.NewModule(container.DB, container.Publisher, container.Settings, container.Logger),
+		channel.NewModule(container.DB, container.Publisher, container.Settings, messageMod, container.Logger),
 		dm.NewModule(container.DB, container.Publisher, container.Logger),
 		messageMod,
 		notification.NewModule(container.DB, container.Logger),

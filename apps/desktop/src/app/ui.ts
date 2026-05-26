@@ -86,6 +86,7 @@ interface Channel {
 interface ReactionAgg {
   count: number;
   mine: boolean;
+  userIds?: string[];
 }
 
 interface Attachment {
@@ -473,6 +474,7 @@ interface AppState {
   // H.8: попап под avatar'ом в user-strip. Открывается на клик кнопки
   // статуса; содержит радиокнопки per-mode + поле customStatus.
   statusMenu: { x: number; y: number; draftMode: PresenceMode; draftCustom: string } | null;
+  auditFilter: { action: string; actor: string };
   // Правая панель участников (Discord-style). На широких экранах открыта
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
@@ -631,6 +633,7 @@ const state: AppState = {
   voiceVolumes: {},
   voiceVolumeMenu: null,
   statusMenu: null,
+  auditFilter: { action: "", actor: "" },
   memberSidebarOpen: true,
   userProfileTarget: null,
   mutedChannels: new Set(),
@@ -763,6 +766,7 @@ export function renderApp(
   callMgr = callManager;
   voiceMgr = voiceManager;
 
+  installGlobalKeyboardShortcuts();
   realtime.subscribe(handleRealtimeEvent);
   callManager.subscribe((snap) => {
     state.callSnapshot = snap.state === "idle" ? null : snap;
@@ -1235,6 +1239,53 @@ let idleAutoSet = false;
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 let idleListenersAttached = false;
 
+// Глобальные хоткеи: Esc закрывает модалку/выпадайки, Ctrl+K / Cmd+K
+// открывает поиск в текущем воркспейсе (Discord/Slack-pattern).
+let globalShortcutsInstalled = false;
+function installGlobalKeyboardShortcuts(): void {
+  if (globalShortcutsInstalled) return;
+  globalShortcutsInstalled = true;
+  window.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      // Не глушим если Esc нужен внутреннему контролу (mention-popup и пр.
+      // вешают свой listener на сам input и вызывают preventDefault).
+      if (state.statusMenu) {
+        state.statusMenu = null;
+        render();
+        return;
+      }
+      if (state.channelMenu) {
+        state.channelMenu = null;
+        render();
+        return;
+      }
+      if (state.workspaceMenu) {
+        state.workspaceMenu = null;
+        render();
+        return;
+      }
+      if (state.modal) {
+        state.modal = null;
+        state.userProfileTarget = null;
+        render();
+        return;
+      }
+    }
+    // Ctrl+K / Cmd+K — открыть search-модалку. Игнорится в auth-state.
+    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")) {
+      if (!state.me) return;
+      if (!state.selectedWorkspaceId) return;
+      ev.preventDefault();
+      state.modal = "search";
+      render();
+      // Фокус на инпуте — на следующем тике, когда модалка отрендерилась.
+      setTimeout(() => {
+        rootEl.querySelector<HTMLInputElement>("#search-input")?.focus();
+      }, 0);
+    }
+  });
+}
+
 function startIdleAutoDetect(): void {
   if (idleListenersAttached) return;
   idleListenersAttached = true;
@@ -1623,7 +1674,8 @@ const PRESERVED_INPUT_SELECTORS = [
   '#send-form input[name="body"]',
   "#search-input",
   "#admin-user-search",
-  "#dm-find-input"
+  "#dm-find-input",
+  "#audit-filter-actor"
 ];
 
 interface InputSnapshot {
@@ -3212,6 +3264,24 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// reactionTooltip — «Маша, Петя и ещё 3 поставили 👍». Поле userIds —
+// упорядочено по created_at (см. SQL агрегатор). Имена резолвятся через
+// state.members + state.me; неизвестные UUID показываются как «кто-то».
+function reactionTooltip(emoji: string, agg: ReactionAgg): string {
+  const ids = agg.userIds ?? [];
+  if (ids.length === 0) return `${emoji} · реакций: ${agg.count}`;
+  const names = ids.map((id) => {
+    if (id === state.me?.id) return "Вы";
+    const m = state.members.find((mm) => mm.userId === id);
+    return m?.displayName || m?.username || "кто-то";
+  });
+  const head = names.slice(0, 6);
+  const rest = names.length - head.length;
+  let list = head.join(", ");
+  if (rest > 0) list += ` и ещё ${rest}`;
+  return `${list} — ${emoji}`;
+}
+
 function renderReplySnippet(reply: ReplySnippet | undefined): string {
   if (!reply) return "";
   if (reply.deleted) {
@@ -3283,9 +3353,18 @@ function renderMessagesWithDivider(): string {
   const GROUP_WINDOW_MS = 7 * 60 * 1000;
   let dividerInserted = false;
   let prev: Message | null = null;
+  let prevDayKey: string | null = null;
   const out: string[] = [];
   for (const m of state.messages) {
     let dividerHere = false;
+    // Date separator при пересечении границы суток (Discord-style: «18 мая 2026»
+    // тонкой линией с label по центру).
+    const dayKey = dayKeyOf(m.createdAt);
+    if (dayKey && dayKey !== prevDayKey) {
+      out.push(`<div class="day-divider"><span>${escapeHtml(dayLabel(m.createdAt))}</span></div>`);
+      dividerHere = true;
+    }
+    prevDayKey = dayKey;
     if (
       !dividerInserted &&
       !Number.isNaN(cutoff) &&
@@ -3311,6 +3390,23 @@ function renderMessagesWithDivider(): string {
     prev = m;
   }
   return out.join("");
+}
+
+function dayKeyOf(iso: string): string | null {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function dayLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const sod = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((sod(now) - sod(d)) / 86400000);
+  if (diff === 0) return "Сегодня";
+  if (diff === 1) return "Вчера";
+  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
 }
 
 // MENTION_RE_GLOBAL — синхронен с backend mentionRe: `@<slug>`, slug по
@@ -3476,7 +3572,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
               ${reactions
                 .map(
                   ([emoji, agg]) => `
-                <button class="reaction-chip${agg.mine ? " mine" : ""}" data-react-toggle="${m.id}" data-emoji="${escapeHtml(emoji)}">
+                <button class="reaction-chip${agg.mine ? " mine" : ""}" data-react-toggle="${m.id}" data-emoji="${escapeHtml(emoji)}" title="${escapeHtml(reactionTooltip(emoji, agg))}">
                   <span>${escapeHtml(emoji)}</span>
                   <span class="count">${agg.count}</span>
                 </button>
@@ -4724,13 +4820,16 @@ function renderAuditModal(): string {
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="modal-body">
+          ${renderAuditFilter()}
           ${
             state.auditLoading
               ? `<div class="invites-empty">Загрузка…</div>`
-              : state.auditEntries.length === 0
-                ? `<div class="invites-empty">Событий пока нет</div>`
-                : `<ul class="audit-list">
-                    ${state.auditEntries
+              : (() => {
+                  const filtered = applyAuditFilter(state.auditEntries);
+                  if (state.auditEntries.length === 0) return `<div class="invites-empty">Событий пока нет</div>`;
+                  if (filtered.length === 0) return `<div class="invites-empty">Под фильтр ничего не подошло</div>`;
+                  return `<ul class="audit-list">
+                    ${filtered
                       .map((e) => {
                         const d = describeAuditEntry(e);
                         const verbHtml = d.raw
@@ -4751,12 +4850,44 @@ function renderAuditModal(): string {
                         `;
                       })
                       .join("")}
-                  </ul>`
+                  </ul>`;
+                })()
           }
         </div>
       </div>
     </div>
   `;
+}
+
+function renderAuditFilter(): string {
+  const f = state.auditFilter;
+  const opts = Object.entries(AUDIT_ACTION_INFO)
+    .map(([code, info]) => `<option value="${escapeHtml(code)}"${f.action === code ? " selected" : ""}>${escapeHtml(info.ru)}</option>`)
+    .join("");
+  return `
+    <div class="audit-filter">
+      <select id="audit-filter-action">
+        <option value=""${!f.action ? " selected" : ""}>Все события</option>
+        ${opts}
+      </select>
+      <input id="audit-filter-actor" type="text" placeholder="Имя автора…" value="${escapeHtml(f.actor)}" />
+      ${(f.action || f.actor) ? `<button id="audit-filter-clear" class="ghost" title="Сбросить">✕</button>` : ""}
+    </div>
+  `;
+}
+
+function applyAuditFilter(entries: AuditEntry[]): AuditEntry[] {
+  const f = state.auditFilter;
+  const actorQ = f.actor.trim().toLowerCase();
+  if (!f.action && !actorQ) return entries;
+  return entries.filter((e) => {
+    if (f.action && e.action !== f.action) return false;
+    if (actorQ) {
+      const actorName = e.actorId ? describePeer(e.actorId).toLowerCase() : "система";
+      if (!actorName.includes(actorQ)) return false;
+    }
+    return true;
+  });
 }
 
 // G.10: профиль-модалка в Discord-стиле — карточка с акцентным баннером
@@ -5048,8 +5179,24 @@ function attachShellHandlers(): void {
     await loadMembers();
   });
 
+  rootEl.querySelector<HTMLSelectElement>("#audit-filter-action")?.addEventListener("change", (ev) => {
+    state.auditFilter.action = (ev.currentTarget as HTMLSelectElement).value;
+    render();
+  });
+  rootEl.querySelector<HTMLInputElement>("#audit-filter-actor")?.addEventListener("input", (ev) => {
+    state.auditFilter.actor = (ev.currentTarget as HTMLInputElement).value;
+    // Без render() — обновляем только список. Но фильтр живёт в state и
+    // applyAuditFilter, поэтому надо ререндер. Каретку сохраняем через PRESERVED_INPUT_SELECTORS.
+    render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#audit-filter-clear")?.addEventListener("click", () => {
+    state.auditFilter = { action: "", actor: "" };
+    render();
+  });
+
   rootEl.querySelector<HTMLButtonElement>("#open-audit")?.addEventListener("click", async () => {
     state.modal = "audit";
+    state.auditFilter = { action: "", actor: "" };
     render();
     // Members нужны для резолва UUID → displayName в журнале. Тянем
     // параллельно с audit-ом, не блокируем основной запрос.
