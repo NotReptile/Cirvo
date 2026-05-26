@@ -432,6 +432,7 @@ interface AppState {
   callSnapshot: CallSnapshot | null;
   voiceSnapshot: VoiceSnapshot | null;
   voicePeek: VoicePeek | null;
+  voicePeekAll: Record<string, VoicePeekParticipant[]>;
   replyingTo: ReplySnippet | null;
   mentionAutocomplete: MentionAutocomplete | null;
   // C.4: smart scroll + lazy pagination
@@ -581,6 +582,7 @@ const state: AppState = {
   callSnapshot: null,
   voiceSnapshot: null,
   voicePeek: null,
+  voicePeekAll: {},
   replyingTo: null,
   mentionAutocomplete: null,
   messagesCursor: null,
@@ -851,6 +853,7 @@ async function selectWorkspace(id: string): Promise<void> {
   state.members = [];
   state.unread = {};
   state.roleColors = {};
+  state.voicePeekAll = {};
   render();
   const data = await httpClient.get<{ items: Channel[] }>(`/api/v1/workspaces/${id}/channels`);
   state.channels = data.items ?? [];
@@ -858,11 +861,36 @@ async function selectWorkspace(id: string): Promise<void> {
   void loadMembers();
   void loadUnread(id);
   void loadRoleColors(id);
+  void loadAllVoicePeeks(id);
   if (state.channels.length > 0) {
     await selectChannel(state.channels[0].id);
   } else {
     render();
   }
+}
+
+// Прелоад участников всех voice-каналов воркспейса — чтобы под voice-каналом
+// в sidebar сразу был виден список «кто в канале», без необходимости туда
+// заходить. Дальше поддерживается realtime'ом через voice.joined/voice.left.
+async function loadAllVoicePeeks(workspaceId: string): Promise<void> {
+  const voiceChannels = state.channels.filter((c) => c.kind === "voice" && c.workspaceId === workspaceId);
+  if (voiceChannels.length === 0) return;
+  const results = await Promise.allSettled(
+    voiceChannels.map((c) =>
+      httpClient
+        .get<{ items: VoicePeekParticipant[] }>(`/api/v1/channels/${c.id}/voice/participants`)
+        .then((d) => ({ channelId: c.id, items: d.items ?? [] }))
+    )
+  );
+  if (state.selectedWorkspaceId !== workspaceId) return; // race
+  const next: Record<string, VoicePeekParticipant[]> = {};
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value.items.length > 0) {
+      next[r.value.channelId] = r.value.items;
+    }
+  }
+  state.voicePeekAll = next;
+  render();
 }
 
 async function selectChannel(id: string): Promise<void> {
@@ -1478,6 +1506,80 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
   // ChannelID, но могут адресовать любой канал воркспейса — обрабатываем
   // ДО фильтра по selectedChannelId, чтобы пришедший в фон новый канал
   // тоже попал в sidebar.
+  // Workspace meta updated (name/avatar/welcome). Сохраняем locally
+  // role/welcomeChannelId если payload их не содержит — бэк может
+  // зачистить role в публикации (она per-user).
+  if (event.event === "workspace.updated") {
+    const p = event.payload as Partial<Workspace> & { id: string };
+    state.workspaces = state.workspaces.map((w) => {
+      if (w.id !== p.id) return w;
+      return {
+        ...w,
+        name: p.name ?? w.name,
+        avatarMediaId: p.avatarMediaId !== undefined ? p.avatarMediaId : w.avatarMediaId,
+        welcomeChannelId: p.welcomeChannelId !== undefined ? p.welcomeChannelId : w.welcomeChannelId
+      };
+    });
+    render();
+    return;
+  }
+  // User avatar / displayName changed. Обновляем state.members[*] и
+  // state.dms[*].peer + state.me если это мы.
+  if (event.event === "user.updated") {
+    const p = event.payload as { userId: string; avatarMediaId?: string; displayName?: string };
+    if (state.me && state.me.id === p.userId) {
+      state.me = {
+        ...state.me,
+        avatarMediaId: p.avatarMediaId || undefined,
+        displayName: p.displayName || state.me.displayName
+      };
+    }
+    state.members = state.members.map((m) =>
+      m.userId === p.userId
+        ? { ...m, avatarMediaId: p.avatarMediaId || undefined, displayName: p.displayName || m.displayName }
+        : m
+    );
+    state.dms = state.dms.map((d) =>
+      d.peer.userId === p.userId
+        ? { ...d, peer: { ...d.peer, avatarMediaId: p.avatarMediaId || undefined, displayName: p.displayName || d.peer.displayName } }
+        : d
+    );
+    render();
+    return;
+  }
+  // voice.joined/voice.left — обновляем глобальный voicePeekAll для
+  // ВСЕХ voice-каналов воркспейса, не только выбранного. Это и есть
+  // данные для inline-списка участников под voice-каналом в sidebar.
+  if (event.event === "voice.joined") {
+    const p = event.payload as VoicePeekParticipant & { channelId: string };
+    const list = state.voicePeekAll[p.channelId] ?? [];
+    if (!list.some((x) => x.sessionId === p.sessionId)) {
+      state.voicePeekAll = { ...state.voicePeekAll, [p.channelId]: [...list, p] };
+    }
+    if (state.voicePeek?.channelId === p.channelId &&
+        !state.voicePeek.participants.some((x) => x.sessionId === p.sessionId)) {
+      state.voicePeek = { ...state.voicePeek, participants: [...state.voicePeek.participants, p] };
+    }
+    render();
+    return;
+  }
+  if (event.event === "voice.left") {
+    const p = event.payload as { channelId: string; sessionId: string };
+    const list = state.voicePeekAll[p.channelId] ?? [];
+    const next = list.filter((x) => x.sessionId !== p.sessionId);
+    const allCopy = { ...state.voicePeekAll };
+    if (next.length === 0) delete allCopy[p.channelId];
+    else allCopy[p.channelId] = next;
+    state.voicePeekAll = allCopy;
+    if (state.voicePeek?.channelId === p.channelId) {
+      state.voicePeek = {
+        ...state.voicePeek,
+        participants: state.voicePeek.participants.filter((x) => x.sessionId !== p.sessionId)
+      };
+    }
+    render();
+    return;
+  }
   if (event.event === "channel.created") {
     const ch = event.payload as Channel;
     if (ch.workspaceId !== state.selectedWorkspaceId) return;
@@ -1602,27 +1704,6 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     case "message.reaction.removed": {
       const p = event.payload as { messageId: string; userId: string; emoji: string };
       applyReactionDelta(p.messageId, p.emoji, -1, p.userId);
-      break;
-    }
-    case "voice.joined": {
-      const p = event.payload as VoicePeekParticipant & { channelId: string };
-      if (!state.voicePeek || state.voicePeek.channelId !== p.channelId) break;
-      if (state.voicePeek.participants.some((x) => x.sessionId === p.sessionId)) break;
-      state.voicePeek = {
-        channelId: p.channelId,
-        participants: [...state.voicePeek.participants, p]
-      };
-      render();
-      break;
-    }
-    case "voice.left": {
-      const p = event.payload as { channelId: string; sessionId: string };
-      if (!state.voicePeek || state.voicePeek.channelId !== p.channelId) break;
-      state.voicePeek = {
-        channelId: p.channelId,
-        participants: state.voicePeek.participants.filter((x) => x.sessionId !== p.sessionId)
-      };
-      render();
       break;
     }
   }
@@ -2548,6 +2629,8 @@ function renderVoiceInlineParticipants(channelId: string): string {
   if (voice && voice.channelId === channelId) {
     participants = voice.participants;
     selfSessionId = voice.selfSessionId;
+  } else if (state.voicePeekAll[channelId]?.length) {
+    participants = state.voicePeekAll[channelId];
   } else if (state.voicePeek?.channelId === channelId) {
     participants = state.voicePeek.participants;
   }
@@ -4310,7 +4393,11 @@ async function submitCreateChannel(): Promise<void> {
         }
       }
     }
-    state.channels = [...state.channels, ch];
+    // realtime channel.created может прилететь до того, как POST-ответ
+    // вернулся, и уже вставить канал в state — поэтому здесь дедуп.
+    if (!state.channels.some((c) => c.id === ch.id)) {
+      state.channels = [...state.channels, ch];
+    }
     state.modal = null;
     cc.saving = false;
     await selectChannel(ch.id);

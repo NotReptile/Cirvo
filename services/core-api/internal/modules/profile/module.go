@@ -215,6 +215,56 @@ func (m *Module) publishPresenceUpdated(ctx context.Context, userID uuid.UUID, m
 	}
 }
 
+// publishUserUpdated рассылает user.updated (avatar/displayName change)
+// всем кто видит этого юзера: workspace-членам через workspace-fanout,
+// DM-собеседникам через per-user. Frontend ставит новое avatarMediaId /
+// displayName в state.members[*]/state.dms[*].peer без полной перезагрузки.
+func (m *Module) publishUserUpdated(ctx context.Context, userID uuid.UUID, avatarMediaID, displayName string) {
+	if m.publisher == nil {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"userId":        userID.String(),
+		"avatarMediaId": avatarMediaID,
+		"displayName":   displayName,
+	})
+	if err != nil {
+		return
+	}
+	wsRows, err := m.db.Query(ctx, `select workspace_id from workspace_members where user_id = $1`, userID)
+	if err == nil {
+		defer wsRows.Close()
+		for wsRows.Next() {
+			var wid uuid.UUID
+			if err := wsRows.Scan(&wid); err == nil {
+				_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+					Event:       "user.updated",
+					WorkspaceID: wid.String(),
+					Payload:     payload,
+				})
+			}
+		}
+	}
+	peerRows, err := m.db.Query(ctx,
+		`select case when user_a = $1 then user_b else user_a end as peer_id
+		   from dm_channels where user_a = $1 or user_b = $1`,
+		userID,
+	)
+	if err == nil {
+		defer peerRows.Close()
+		for peerRows.Next() {
+			var pid uuid.UUID
+			if err := peerRows.Scan(&pid); err == nil {
+				_ = m.publisher.Publish(context.Background(), realtimebus.Event{
+					Event:   "user.updated",
+					UserID:  pid.String(),
+					Payload: payload,
+				})
+			}
+		}
+	}
+}
+
 func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	userID := authctx.MustUserID(r.Context())
 	var req updateRequest
@@ -254,6 +304,7 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload profile")
 		return
 	}
+	m.publishUserUpdated(r.Context(), userID, view.AvatarMediaID, view.DisplayName)
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -388,6 +439,7 @@ func (m *Module) handleUpdateAvatar(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload profile")
 		return
 	}
+	m.publishUserUpdated(r.Context(), userID, view.AvatarMediaID, view.DisplayName)
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -412,6 +464,7 @@ func (m *Module) handleRemoveAvatar(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload profile")
 		return
 	}
+	m.publishUserUpdated(r.Context(), userID, "", view.DisplayName)
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 

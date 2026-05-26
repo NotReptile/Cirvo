@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
@@ -32,13 +34,31 @@ const (
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
 
 type Module struct {
-	db       *postgres.Pool
-	settings *serversettings.Provider
-	logger   *slog.Logger
+	db        *postgres.Pool
+	settings  *serversettings.Provider
+	publisher *realtimebus.Publisher
+	logger    *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, settings *serversettings.Provider, logger *slog.Logger) *Module {
-	return &Module{db: db, settings: settings, logger: logger}
+func NewModule(db *postgres.Pool, settings *serversettings.Provider, publisher *realtimebus.Publisher, logger *slog.Logger) *Module {
+	return &Module{db: db, settings: settings, publisher: publisher, logger: logger}
+}
+
+// publishWorkspaceUpdated рассылает workspace.updated всем членам, чтобы
+// они подхватили смену name/avatar/welcome без перезагрузки.
+func (m *Module) publishWorkspaceUpdated(ctx context.Context, workspaceID uuid.UUID, view workspaceView) {
+	if m.publisher == nil {
+		return
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		return
+	}
+	_ = m.publisher.Publish(ctx, realtimebus.Event{
+		Event:       "workspace.updated",
+		WorkspaceID: workspaceID.String(),
+		Payload:     raw,
+	})
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -587,6 +607,12 @@ func (m *Module) writeWorkspaceView(w http.ResponseWriter, r *http.Request, work
 	if welcomeID != nil {
 		v.WelcomeChannelID = welcomeID.String()
 	}
+	// Realtime: всем членам уезжает workspace.updated, чтобы клиенты
+	// подхватили смену name/icon/welcome без перезагрузки. Role в
+	// payload'е затираем — у каждого получателя своя роль.
+	pubView := v
+	pubView.Role = ""
+	m.publishWorkspaceUpdated(r.Context(), workspaceID, pubView)
 	sharedhttp.WriteJSON(w, http.StatusOK, v)
 }
 
