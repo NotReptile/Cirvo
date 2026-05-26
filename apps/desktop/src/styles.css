@@ -3130,3 +3130,218 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .audit-filter select { min-width: 200px; }
 .audit-filter input { flex: 1; min-width: 0; }
 .audit-filter button { padding: 6px 10px; }
+
+/* ============================================================ */
+/* I.1 — Settings shell (полноэкранная модалка с табами).        */
+/* Заменяет узкую G.10 profile-modal. Layout: 260px sidebar +    */
+/* 1fr контент. Z-index выше обычных модалок (admin = 100),       */
+/* потому что settings перекрывает весь экран.                    */
+/* ============================================================ */
+
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  background: var(--bg);
+}
+
+.settings-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 8px 12px;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.settings-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  margin: 0 0 8px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  transition: background 0.12s;
+}
+.settings-user:hover { background: rgba(255, 255, 255, 0.04); }
+
+.settings-user-avatar {
+  flex-shrink: 0;
+}
+
+.settings-user-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.settings-user-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-user-hint {
+  font-size: 11px;
+  color: var(--text-mute);
+  margin-top: 2px;
+}
+
+.settings-search-wrap {
+  padding: 0 8px 8px;
+}
+
+.settings-search {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  outline: none;
+}
+.settings-search:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-mute);
+  padding: 6px 10px 4px;
+}
+
+.settings-tab {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-mute);
+  padding: 7px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.settings-tab:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+.settings-tab.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.settings-logout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  background: transparent;
+  border: none;
+  color: var(--danger, #ed4245);
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+.settings-logout:hover {
+  background: rgba(237, 66, 69, 0.1);
+}
+.settings-logout svg { color: var(--danger, #ed4245); }
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.settings-content-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 32px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.settings-content-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.settings-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-mute);
+  cursor: pointer;
+}
+.settings-close:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.settings-content-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px 40px;
+  max-width: 740px;
+  width: 100%;
+}
+
+.settings-stub {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--text-mute);
+}
+.settings-stub-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.settings-stub-text {
+  font-size: 13px;
+}

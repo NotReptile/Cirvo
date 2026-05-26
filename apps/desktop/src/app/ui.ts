@@ -191,7 +191,26 @@ interface DMItem {
   unreadCount: number;
 }
 
-type ModalKind = "profile" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | null;
+type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | null;
+
+// I.1: полноэкранная settings-модалка по Discord-pattern. Левый sidebar
+// с табами + контент справа. Tab «profile» = тело старой profile-card
+// (G.10). Остальные табы — placeholder'ы под I.2-I.8/I.11.
+type SettingsTab =
+  | "profile"
+  | "privacy"
+  | "voice"
+  | "notifications"
+  | "hotkeys"
+  | "language"
+  | "appearance"
+  | "advanced";
+
+interface SettingsState {
+  tab: SettingsTab;
+  // Hook под I.11 (поиск настроек) — пока non-functional.
+  search: string;
+}
 
 // H.10: workspaceSettings — модалка с табами Обзор/Welcome/Роли/Удалить.
 // Для не-owner'а вкладка «Удалить» скрыта (permission.WorkspaceDelete
@@ -507,6 +526,9 @@ interface AppState {
   // поле в режиме inline-edit (null = просмотр). Все draft'ы / ошибка
   // живут тут, а не в отдельной модалке-форме — UI остаётся одной картой.
   profileEdit: ProfileEditState;
+  // I.1: settings-shell (полноэкранная модалка с табами). Содержимое
+  // таба «profile» = бывший G.10 (использует profileEdit).
+  settings: SettingsState;
 }
 
 interface ProfileEditState {
@@ -676,6 +698,10 @@ const state: AppState = {
     saving: false,
     error: null,
     okMessage: null
+  },
+  settings: {
+    tab: "profile",
+    search: ""
   }
 };
 
@@ -3721,7 +3747,7 @@ function renderSystemMessage(m: Message): string {
 
 function renderModal(): string {
   if (!state.modal) return "";
-  if (state.modal === "profile") return renderProfileModal();
+  if (state.modal === "settings") return renderSettingsModal();
   if (state.modal === "members") return renderMembersModal();
   if (state.modal === "audit") return renderAuditModal();
   if (state.modal === "search") return renderSearchModal();
@@ -4125,7 +4151,7 @@ function cancelProfileEdit(): void {
 }
 
 function attachProfileEditHandlers(): void {
-  if (state.modal !== "profile") return;
+  if (state.modal !== "settings" || state.settings.tab !== "profile") return;
 
   rootEl.querySelectorAll<HTMLButtonElement>("[data-profile-edit]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -4991,78 +5017,230 @@ function applyAuditFilter(entries: AuditEntry[]): AuditEntry[] {
 // именем+username под ним, и списком inline-edit полей. Только один field
 // активен одновременно (state.profileEdit.field), остальные показывают
 // статичное значение и кнопку «Изменить».
-function renderProfileModal(): string {
+// I.1: SETTINGS_TABS — порядок и группировка табов в sidebar'е. Каждая
+// группа отрисовывается своим заголовком. Содержимое табов кроме
+// `profile` пока заглушки (см. I.2-I.8/I.11 в TASKS.md).
+interface SettingsTabDef {
+  id: SettingsTab;
+  label: string;
+  // Номер пункта в TASKS.md для подсказки на placeholder'е.
+  todo?: string;
+}
+
+interface SettingsTabGroup {
+  title: string;
+  tabs: SettingsTabDef[];
+}
+
+const SETTINGS_TAB_GROUPS: SettingsTabGroup[] = [
+  {
+    title: "Аккаунт",
+    tabs: [
+      { id: "profile", label: "Профиль" },
+      { id: "privacy", label: "Конфиденциальность", todo: "I.6" }
+    ]
+  },
+  {
+    title: "Взаимодействие",
+    tabs: [
+      { id: "voice", label: "Голос и видео", todo: "I.2 / I.3" },
+      { id: "notifications", label: "Уведомления", todo: "I.8" },
+      { id: "hotkeys", label: "Горячие клавиши", todo: "I.4" },
+      { id: "language", label: "Язык и время", todo: "I.7" }
+    ]
+  },
+  {
+    title: "Внешний вид",
+    tabs: [
+      { id: "appearance", label: "Внешний вид", todo: "I.5" }
+    ]
+  },
+  {
+    title: "Расширенные",
+    tabs: [
+      { id: "advanced", label: "Расширенные", todo: "I.9" }
+    ]
+  }
+];
+
+function findSettingsTab(id: SettingsTab): SettingsTabDef {
+  for (const group of SETTINGS_TAB_GROUPS) {
+    const tab = group.tabs.find((t) => t.id === id);
+    if (tab) return tab;
+  }
+  // Не должно случиться — fallback на profile.
+  return SETTINGS_TAB_GROUPS[0].tabs[0];
+}
+
+function renderSettingsModal(): string {
+  const me = state.me;
+  if (!me) return "";
+  const activeTab = state.settings.tab;
+  const activeDef = findSettingsTab(activeTab);
+  const displayName = me.displayName || me.username;
+
+  const sidebar = `
+    <aside class="settings-sidebar">
+      <button class="settings-user" data-settings-tab="profile" title="Открыть профиль">
+        ${renderAvatar({
+          avatarMediaId: me.avatarMediaId,
+          fallbackText: displayName,
+          sizePx: 36,
+          className: "settings-user-avatar"
+        })}
+        <div class="settings-user-body">
+          <div class="settings-user-name">${escapeHtml(displayName)}</div>
+          <div class="settings-user-hint">Редактировать профиль…</div>
+        </div>
+      </button>
+      <div class="settings-search-wrap">
+        <input id="settings-search" class="settings-search" type="text"
+               placeholder="Поиск настроек"
+               value="${escapeHtml(state.settings.search)}" disabled
+               title="Поиск настроек — в разработке (I.11)" />
+      </div>
+      <nav class="settings-nav">
+        ${SETTINGS_TAB_GROUPS.map(renderSettingsGroup).join("")}
+      </nav>
+      <button id="settings-logout-btn" class="settings-logout">
+        ${icon("log-out", { size: 16 })} <span>Выйти из аккаунта</span>
+      </button>
+    </aside>
+  `;
+
+  const content = `
+    <section class="settings-content">
+      <header class="settings-content-header">
+        <h2>${escapeHtml(activeDef.label)}</h2>
+        <button class="ghost settings-close" data-modal-close aria-label="Закрыть">✕</button>
+      </header>
+      <div class="settings-content-body">
+        ${renderSettingsTabContent(activeTab)}
+      </div>
+    </section>
+  `;
+
+  return `
+    <input id="profile-avatar-input" type="file" accept="image/*" hidden />
+    <div class="settings-modal" data-modal-close role="dialog">
+      ${sidebar}
+      ${content}
+    </div>
+  `;
+}
+
+function renderSettingsGroup(group: SettingsTabGroup): string {
+  return `
+    <div class="settings-group">
+      <div class="settings-group-title">${escapeHtml(group.title)}</div>
+      ${group.tabs.map(renderSettingsTabButton).join("")}
+    </div>
+  `;
+}
+
+function renderSettingsTabButton(tab: SettingsTabDef): string {
+  const active = state.settings.tab === tab.id ? " active" : "";
+  return `
+    <button class="settings-tab${active}" data-settings-tab="${tab.id}">
+      ${escapeHtml(tab.label)}
+    </button>
+  `;
+}
+
+function renderSettingsTabContent(tab: SettingsTab): string {
+  if (tab === "profile") return renderSettingsProfileTab();
+  const def = findSettingsTab(tab);
+  const todoHint = def.todo ? ` · ${def.todo}` : "";
+  return `
+    <div class="settings-stub">
+      <div class="settings-stub-title">Скоро${escapeHtml(todoHint)}</div>
+      <div class="settings-stub-text">
+        Этот раздел появится позже. Сейчас доступна только вкладка «Профиль».
+      </div>
+    </div>
+  `;
+}
+
+function renderSettingsProfileTab(): string {
   const me = state.me;
   if (!me) return "";
   const editing = state.profileEdit.field;
   const displayName = me.displayName || me.username;
   return `
-    <input id="profile-avatar-input" type="file" accept="image/*" hidden />
-    <div class="modal-backdrop" data-modal-close>
-      <div class="modal profile-card" role="dialog">
-        <div class="profile-banner">
-          <button class="ghost modal-close-btn profile-close" data-modal-close aria-label="Закрыть">✕</button>
-        </div>
-        <div class="profile-card-head">
-          <div class="profile-card-avatar-wrap">
-            ${renderAvatar({
-              avatarMediaId: me.avatarMediaId,
-              fallbackText: displayName,
-              sizePx: 96,
-              className: "profile-card-avatar"
-            })}
-            <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="Сменить аватар">
-              ${icon("pencil", { size: 14 })}
-            </button>
-            ${me.avatarMediaId
-              ? `<button id="profile-avatar-remove" class="profile-card-avatar-remove" title="Удалить аватар">${icon("trash", { size: 12 })}</button>`
-              : ""}
-          </div>
-          <div class="profile-card-name">
-            <div class="profile-card-display">${escapeHtml(displayName)}</div>
-            <div class="profile-card-username">@${escapeHtml(me.username)}</div>
-          </div>
-        </div>
-        <div class="profile-card-fields">
-          ${renderProfileField({
-            label: "Отображаемое имя",
-            value: me.displayName || "—",
-            field: "displayName",
-            editing: editing === "displayName",
-            body: renderProfileEditDisplayName(me.displayName ?? "")
-          })}
-          ${renderProfileField({
-            label: "Имя пользователя",
-            value: "@" + me.username,
-            field: "username",
-            editing: false,
-            disabled: true,
-            disabledHint: "Username нельзя сменить — стабильный идентификатор для упоминаний @user.",
-            body: ""
-          })}
-          ${renderProfileField({
-            label: "Электронная почта",
-            value: me.email,
-            field: "email",
-            editing: false,
-            disabled: true,
-            disabledHint: "Смена email требует подтверждения по почте — не реализовано (F.6).",
-            body: ""
-          })}
-          ${renderProfileField({
-            label: "Пароль",
-            value: "••••••••",
-            field: "password",
-            editing: editing === "password",
-            body: renderProfileEditPassword()
-          })}
-        </div>
-        <div class="profile-card-footer">
-          <button id="profile-logout-btn" class="profile-logout-btn">${icon("log-out")} Выйти из аккаунта</button>
-        </div>
+    <div class="profile-card-head">
+      <div class="profile-card-avatar-wrap">
+        ${renderAvatar({
+          avatarMediaId: me.avatarMediaId,
+          fallbackText: displayName,
+          sizePx: 96,
+          className: "profile-card-avatar"
+        })}
+        <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="Сменить аватар">
+          ${icon("pencil", { size: 14 })}
+        </button>
+        ${me.avatarMediaId
+          ? `<button id="profile-avatar-remove" class="profile-card-avatar-remove" title="Удалить аватар">${icon("trash", { size: 12 })}</button>`
+          : ""}
+      </div>
+      <div class="profile-card-name">
+        <div class="profile-card-display">${escapeHtml(displayName)}</div>
+        <div class="profile-card-username">@${escapeHtml(me.username)}</div>
       </div>
     </div>
+    <div class="profile-card-fields">
+      ${renderProfileField({
+        label: "Отображаемое имя",
+        value: me.displayName || "—",
+        field: "displayName",
+        editing: editing === "displayName",
+        body: renderProfileEditDisplayName(me.displayName ?? "")
+      })}
+      ${renderProfileField({
+        label: "Имя пользователя",
+        value: "@" + me.username,
+        field: "username",
+        editing: false,
+        disabled: true,
+        disabledHint: "Username нельзя сменить — стабильный идентификатор для упоминаний @user.",
+        body: ""
+      })}
+      ${renderProfileField({
+        label: "Электронная почта",
+        value: me.email,
+        field: "email",
+        editing: false,
+        disabled: true,
+        disabledHint: "Смена email требует подтверждения по почте — не реализовано (F.6).",
+        body: ""
+      })}
+      ${renderProfileField({
+        label: "Пароль",
+        value: "••••••••",
+        field: "password",
+        editing: editing === "password",
+        body: renderProfileEditPassword()
+      })}
+    </div>
   `;
+}
+
+function attachSettingsHandlers(): void {
+  if (state.modal !== "settings") return;
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-settings-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.settingsTab as SettingsTab | undefined;
+      if (!tab) return;
+      state.settings.tab = tab;
+      state.profileEdit.field = null;
+      state.profileEdit.error = null;
+      state.profileEdit.okMessage = null;
+      render();
+    });
+  });
+  rootEl.querySelector<HTMLButtonElement>("#settings-logout-btn")?.addEventListener("click", () => {
+    if (!confirm("Выйти из аккаунта?")) return;
+    void httpClient.logout();
+  });
 }
 
 interface ProfileFieldOpts {
@@ -5219,9 +5397,15 @@ function attachShellHandlers(): void {
   });
 
   rootEl.querySelector<HTMLButtonElement>("#open-profile")?.addEventListener("click", () => {
-    state.modal = "profile";
+    state.modal = "settings";
+    state.settings.tab = "profile";
+    state.profileEdit.field = null;
+    state.profileEdit.error = null;
+    state.profileEdit.okMessage = null;
     render();
   });
+
+  attachSettingsHandlers();
 
   rootEl.querySelector<HTMLButtonElement>("#open-status")?.addEventListener("click", (ev) => {
     const target = ev.currentTarget as HTMLElement;
