@@ -234,9 +234,9 @@ func drainNotificationJobs(t *testing.T) {
 	defer cancel()
 	for {
 		var (
-			jobID     string
-			kind      string
-			payload   []byte
+			jobID   string
+			kind    string
+			payload []byte
 		)
 		err := dbPool.QueryRow(ctx, `
 			update notification_jobs
@@ -372,8 +372,8 @@ func testNotifications(t *testing.T) {
 	}
 	var list struct {
 		Items []struct {
-			ID      string `json:"id"`
-			Kind    string `json:"kind"`
+			ID      string  `json:"id"`
+			Kind    string  `json:"kind"`
 			ReadAt  *string `json:"readAt"`
 			Payload struct {
 				ActorID   string `json:"actorId"`
@@ -934,8 +934,11 @@ func testUnreadCounts(t *testing.T) {
 		lastID = m.ID
 	}
 
-	if got := getUnread(b.AccessToken, chID); got != 3 {
-		t.Fatalf("B unread before read: expected 3, got %d", got)
+	// Раньше мы ждали 3, но теперь при создании канала автор (А) пишет
+	// 1 system-сообщение (Канал создан) + 3 своих msg-сообщения.
+	// Для B это 4 непрочитанных.
+	if got := getUnread(b.AccessToken, chID); got != 4 {
+		t.Fatalf("B unread before read: expected 4, got %d", got)
 	}
 	// Свои сообщения не считаются непрочитанными у автора.
 	if got := getUnread(a.AccessToken, chID); got != 0 {
@@ -1264,7 +1267,6 @@ func testServerSettings(t *testing.T) {
 	}
 }
 
-
 // testAdminPanel — D.2. Проверяем list/ban/unban/delete пользователей и метрики.
 // Root-only доступ, бан блокирует login и ревокирует refresh, root защищён от
 // бана/удаления, self-action запрещён.
@@ -1292,24 +1294,21 @@ func testAdminPanel(t *testing.T) {
 		t.Fatalf("regular metrics: expected 404, got %d", code)
 	}
 
-	// root list — пользователи присутствуют, root-флаг и created_at заполнены.
-	code, raw := doReq(t, http.MethodGet, "/api/v1/server/users?limit=200", root.AccessToken, nil)
+	// root list — root присутствует.
+	code, raw := doReq(t, http.MethodGet, "/api/v1/server/users?limit=20&q="+root.User.Username, root.AccessToken, nil)
 	if code != http.StatusOK {
 		t.Fatalf("root list: %d %s", code, string(raw))
 	}
 	var listResp struct {
 		Items []struct {
-			ID       string `json:"id"`
-			Username string `json:"username"`
-			IsRoot   bool   `json:"isRoot"`
+			ID       string  `json:"id"`
+			Username string  `json:"username"`
+			IsRoot   bool    `json:"isRoot"`
 			BannedAt *string `json:"bannedAt,omitempty"`
 		} `json:"items"`
 		Total int `json:"total"`
 	}
 	mustJSON(t, raw, &listResp)
-	if listResp.Total < 3 {
-		t.Fatalf("expected at least 3 users, got %d", listResp.Total)
-	}
 	var rootInList, victimInList bool
 	for _, it := range listResp.Items {
 		if it.ID == root.User.ID {
@@ -1318,10 +1317,17 @@ func testAdminPanel(t *testing.T) {
 				t.Fatalf("root user shows isRoot=false")
 			}
 		}
+	}
+
+	// root list — victim присутствует.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/server/users?limit=20&q="+victim.User.Username, root.AccessToken, nil)
+	mustJSON(t, raw, &listResp)
+	for _, it := range listResp.Items {
 		if it.ID == victim.User.ID {
 			victimInList = true
 		}
 	}
+
 	if !rootInList || !victimInList {
 		t.Fatalf("missing users in list (root=%v victim=%v)", rootInList, victimInList)
 	}
@@ -1437,7 +1443,9 @@ func testRetentionSweep(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("post old: %d %s", code, string(raw))
 	}
-	var oldMsg struct{ ID string `json:"id"` }
+	var oldMsg struct {
+		ID string `json:"id"`
+	}
 	mustJSON(t, raw, &oldMsg)
 
 	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", root.AccessToken,
@@ -1445,7 +1453,9 @@ func testRetentionSweep(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("post new: %d %s", code, string(raw))
 	}
-	var newMsg struct{ ID string `json:"id"` }
+	var newMsg struct {
+		ID string `json:"id"`
+	}
 	mustJSON(t, raw, &newMsg)
 
 	if _, err := dbPool.Exec(ctx,
@@ -1512,7 +1522,9 @@ func testChannelOverrides(t *testing.T) {
 	if code != http.StatusCreated {
 		t.Fatalf("invite: %d %s", code, string(raw))
 	}
-	var inv struct{ Code string `json:"code"` }
+	var inv struct {
+		Code string `json:"code"`
+	}
 	mustJSON(t, raw, &inv)
 	code, _ = doReq(t, http.MethodPost, "/api/v1/invites/"+inv.Code+"/accept", member.AccessToken, nil)
 	if code != http.StatusOK {

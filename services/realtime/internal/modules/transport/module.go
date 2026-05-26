@@ -111,7 +111,7 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 	defer cancelConn()
 
 	go m.readLoop(connectionCtx, cancelConn, wsConn, connection)
-	m.writeLoop(connectionCtx, wsConn, connection)
+	m.writeLoop(connectionCtx, wsConn, connection, claims.SessionID)
 }
 
 func (m *Module) readLoop(ctx context.Context, cancel context.CancelFunc, wsConn *websocket.Conn, conn *hub.Connection) {
@@ -153,7 +153,7 @@ func (m *Module) readLoop(ctx context.Context, cancel context.CancelFunc, wsConn
 	}
 }
 
-func (m *Module) writeLoop(ctx context.Context, wsConn *websocket.Conn, conn *hub.Connection) {
+func (m *Module) writeLoop(ctx context.Context, wsConn *websocket.Conn, conn *hub.Connection, sessionID uuid.UUID) {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 	for {
@@ -179,8 +179,18 @@ func (m *Module) writeLoop(ctx context.Context, wsConn *websocket.Conn, conn *hu
 			if err != nil {
 				return
 			}
+			m.touchSession(ctx, sessionID)
 		}
 	}
+}
+
+func (m *Module) touchSession(ctx context.Context, sessionID uuid.UUID) {
+	touchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, _ = m.db.Exec(touchCtx,
+		`update user_sessions set last_seen_at = now() where id = $1 and revoked_at is null`,
+		sessionID,
+	)
 }
 
 func bearerToken(r *http.Request) string {
