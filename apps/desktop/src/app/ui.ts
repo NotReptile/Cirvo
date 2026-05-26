@@ -3152,9 +3152,6 @@ function ensureSpeakingContext(): AudioContext | null {
 }
 
 function refreshSpeakingIndicators(voiceLocal: MediaStream | null, callRemote: MediaStream | null): void {
-  const ctx = ensureSpeakingContext();
-  if (!ctx) return;
-
   // Map<key, stream> — key используется и для DOM-селектора, и для
   // удаления нод, когда участник ушёл.
   const targets = new Map<string, MediaStream>();
@@ -3165,6 +3162,18 @@ function refreshSpeakingIndicators(voiceLocal: MediaStream | null, callRemote: M
     if (stream) targets.set(`peer:${p.sessionId}`, stream);
   }
   if (callRemote) targets.set("call-remote", callRemote);
+
+  // AudioContext без user-gesture блокируется браузером ("autoplay
+  // policy"). Создаём только когда реально есть стрим для анализа —
+  // в этот момент юзер уже точно в звонке/voice-канале, т.е. был клик.
+  if (targets.size === 0 && speakingNodes.size === 0) return;
+  const ctx = ensureSpeakingContext();
+  if (!ctx) return;
+  // Если контекст в suspended — пробуем разбудить (после user-gesture
+  // это разрешено, иначе тихо упадём в catch и попробуем позже).
+  if (ctx.state === "suspended") {
+    void ctx.resume().catch(() => {});
+  }
 
   // Создаём недостающие.
   for (const [key, stream] of targets) {
