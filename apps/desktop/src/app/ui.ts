@@ -9,20 +9,36 @@ import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./s
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
 
-// setTransientStatus — статусная подсказка (например, «Иконка обновлена»),
-// которая сама исчезает через 3.5с. Без этого надписи зависают пока не
-// случится следующее обновление state.
+// Статус-бар внизу UI: любое непустое значение state.status
+// автоматически тает через STATUS_AUTO_CLEAR_MS. armStatusAutoClear
+// вызывается в начале render() — это покрывает и прямые присваивания
+// (`state.status = describeError(err)`), а не только setTransientStatus.
+// Перевзвод происходит только при смене текста — иначе таймер бы
+// перезапускался на каждый перерендер и сообщения никогда бы не тухли.
+const STATUS_AUTO_CLEAR_MS = 4000;
 let _statusTimer: ReturnType<typeof setTimeout> | null = null;
-function setTransientStatus(msg: string): void {
-  state.status = msg;
-  if (_statusTimer) clearTimeout(_statusTimer);
+let _lastTimedStatus = "";
+function armStatusAutoClear(): void {
+  if (state.status === _lastTimedStatus) return;
+  _lastTimedStatus = state.status;
+  if (_statusTimer) {
+    clearTimeout(_statusTimer);
+    _statusTimer = null;
+  }
+  if (!state.status) return;
+  const msg = state.status;
   _statusTimer = setTimeout(() => {
+    _statusTimer = null;
     if (state.status === msg) {
       state.status = "";
+      _lastTimedStatus = "";
       render();
     }
-    _statusTimer = null;
-  }, 3500);
+  }, STATUS_AUTO_CLEAR_MS);
+}
+
+function setTransientStatus(msg: string): void {
+  state.status = msg;
   render();
 }
 
@@ -1871,6 +1887,7 @@ function restoreImageSlots(snap: Map<string, string>): void {
 }
 
 function render(): void {
+  armStatusAutoClear();
   if (!httpClient.getTokens()) {
     renderAuth();
     return;
@@ -6642,6 +6659,49 @@ function attachShellHandlers(): void {
         render();
       }
     } catch (err) {
+      // Body too long → предлагаем отправить тело как .txt-вложение.
+      // Бэк отдаёт "body too long" сообщением (см. message/module.go).
+      // Согласие = uploadFile(text) → повторный POST с пустым body и
+      // тем же набором вложений + reply. Отказ — восстанавливаем форму.
+      if (isBodyTooLongError(err) && body) {
+        const accepted = confirm(
+          `Сообщение слишком длинное (${body.length} симв.). Отправить как текстовый файл?`
+        );
+        if (accepted) {
+          state.status = "Отправка как файл…";
+          render();
+          try {
+            const file = new File([body], "message.txt", { type: "text/plain" });
+            const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
+            const allAttachments = [...attachmentIds, uploaded.id];
+            const created = await httpClient.post<Message>(
+              `/api/v1/channels/${channelIdSnapshot}/messages`,
+              {
+                body: "",
+                clientMessageId: crypto.randomUUID(),
+                attachmentIds: allAttachments,
+                replyToMessageId: replyingSnapshot?.messageId ?? undefined
+              }
+            );
+            if (created && created.id && !state.messages.some((m) => m.id === created.id)) {
+              state.messages = [
+                ...state.messages,
+                { ...created, reactions: created.reactions ?? {}, attachments: created.attachments ?? [] }
+              ];
+            }
+            setTransientStatus("Отправлено как файл");
+            return;
+          } catch (fileErr) {
+            state.status = describeError(fileErr);
+            input.value = body;
+            saveDraft(channelIdSnapshot, body);
+            state.pendingUploads = pendingSnapshot;
+            state.replyingTo = replyingSnapshot;
+            render();
+            return;
+          }
+        }
+      }
       state.status = describeError(err);
       input.value = body;
       saveDraft(channelIdSnapshot, body);
@@ -6814,6 +6874,16 @@ function describeError(err: unknown): string {
   }
   if (err instanceof Error) return err.message;
   return "Неизвестная ошибка";
+}
+
+// Бэк-сигнал «body too long» (см. message/module.go) — единственная
+// валидационная ошибка POST /messages, которую UX обрабатывает отдельно
+// (предлагает отправить тело как .txt-вложение).
+function isBodyTooLongError(err: unknown): boolean {
+  const api = err as ApiError;
+  if (!api || typeof api !== "object") return false;
+  const msg = typeof api.message === "string" ? api.message.toLowerCase() : "";
+  return msg.includes("body too long");
 }
 
 function shortId(id: string): string {
