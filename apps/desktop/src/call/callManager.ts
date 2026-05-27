@@ -204,13 +204,27 @@ export class CallManager {
   }
 
   toggleMute(): boolean {
-    if (!this.localStream) return this.snapshot.muted;
-    const next = !this.snapshot.muted;
-    for (const track of this.localStream.getAudioTracks()) {
-      track.enabled = !next;
+    return this.setMute(!this.snapshot.muted);
+  }
+
+  // I.4: явное выставление mute — для push-to-talk.
+  setMute(muted: boolean): boolean {
+    if (this.snapshot.muted === muted) return muted;
+    if (this.localStream) {
+      for (const track of this.localStream.getAudioTracks()) {
+        track.enabled = !muted;
+      }
     }
-    this.update({ muted: next });
-    return next;
+    this.update({ muted });
+    return muted;
+  }
+
+  isMuted(): boolean {
+    return this.snapshot.muted;
+  }
+
+  isActive(): boolean {
+    return this.snapshot.state === "active";
   }
 
   async toggleCamera(): Promise<boolean> {

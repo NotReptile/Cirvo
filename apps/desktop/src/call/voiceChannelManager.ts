@@ -228,13 +228,29 @@ export class VoiceChannelManager {
   }
 
   toggleMute(): boolean {
-    if (!this.localStream) return this.snapshot.muted;
-    const next = !this.snapshot.muted;
-    for (const t of this.localStream.getAudioTracks()) {
-      t.enabled = !next;
+    return this.setMute(!this.snapshot.muted);
+  }
+
+  // I.4: явное выставление mute-состояния — нужно для push-to-talk
+  // (на keydown → false, на keyup → true). idempotent: если значение
+  // совпадает с текущим, ничего не делаем.
+  setMute(muted: boolean): boolean {
+    if (this.snapshot.muted === muted) return muted;
+    if (this.localStream) {
+      for (const t of this.localStream.getAudioTracks()) {
+        t.enabled = !muted;
+      }
     }
-    this.update({ muted: next });
-    return next;
+    this.update({ muted });
+    return muted;
+  }
+
+  isMuted(): boolean {
+    return this.snapshot.muted;
+  }
+
+  isActive(): boolean {
+    return !!this.snapshot.channelId;
   }
 
   // toggleCamera включает/выключает локальную камеру. При включении —

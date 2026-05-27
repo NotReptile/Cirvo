@@ -6,6 +6,22 @@ import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import {
+  chordFromEvent,
+  dispatchKeyDown as dispatchHotkeyDown,
+  dispatchKeyUp as dispatchHotkeyUp,
+  formatChord,
+  getActions as getHotkeyActions,
+  getBinding as getHotkeyBinding,
+  registerHotkey,
+  releaseAllHold,
+  resetBinding as resetHotkeyBinding,
+  setBindingChord as setHotkeyChord,
+  setBindingEnabled as setHotkeyEnabled,
+  type ActionDef,
+  type ActionId,
+  type KeyChord
+} from "./hotkeys";
+import {
   applyOutputDevice,
   buildAudioConstraints,
   buildVideoConstraints,
@@ -1340,16 +1356,21 @@ let idleAutoSet = false;
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 let idleListenersAttached = false;
 
-// Глобальные хоткеи: Esc закрывает модалку/выпадайки, Ctrl+K / Cmd+K
-// открывает поиск в текущем воркспейсе (Discord/Slack-pattern).
+// I.4: глобальные хоткеи теперь идут через единый dispatcher из
+// `hotkeys.ts`. Регистрируем все action-handler'ы один раз на bootstrap.
+// Esc обрабатывается отдельно — это не настраиваемая комбинация.
 let globalShortcutsInstalled = false;
+let _deafened = false;
+
 function installGlobalKeyboardShortcuts(): void {
   if (globalShortcutsInstalled) return;
   globalShortcutsInstalled = true;
+  registerHotkeyActions();
   window.addEventListener("keydown", (ev) => {
+    // I.4: capture-режим в hotkeys-табе перехватывает всё первым,
+    // иначе нажатие Ctrl+K сразу бы открыло Quick Switcher.
+    if (maybeCaptureKey(ev)) return;
     if (ev.key === "Escape") {
-      // Не глушим если Esc нужен внутреннему контролу (mention-popup и пр.
-      // вешают свой listener на сам input и вызывают preventDefault).
       if (state.statusMenu) {
         state.statusMenu = null;
         render();
@@ -1372,19 +1393,117 @@ function installGlobalKeyboardShortcuts(): void {
         return;
       }
     }
-    // Ctrl+K / Cmd+K — открыть search-модалку. Игнорится в auth-state.
-    if ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")) {
-      if (!state.me) return;
-      if (!state.selectedWorkspaceId) return;
-      ev.preventDefault();
-      state.modal = "search";
-      render();
-      // Фокус на инпуте — на следующем тике, когда модалка отрендерилась.
-      setTimeout(() => {
-        rootEl.querySelector<HTMLInputElement>("#search-input")?.focus();
-      }, 0);
+    if (!state.me) return;
+    dispatchHotkeyDown(ev);
+  });
+  window.addEventListener("keyup", (ev) => {
+    dispatchHotkeyUp(ev);
+  });
+  // Alt+Tab / window blur — отпускаем все hold'ы (PTT), иначе микрофон
+  // мог бы залипнуть «включённым» когда юзер ушёл в другое окно.
+  window.addEventListener("blur", () => {
+    releaseAllHold();
+  });
+}
+
+function registerHotkeyActions(): void {
+  registerHotkey("toggle-mute", () => {
+    if (voiceMgr.isActive()) voiceMgr.toggleMute();
+    if (callMgr.isActive()) callMgr.toggleMute();
+  });
+  registerHotkey("toggle-deafen", () => {
+    _deafened = !_deafened;
+    // Deafen ⇒ глушим все remote-стримы И сам микрофон.
+    for (const el of rootEl.querySelectorAll<HTMLVideoElement>(
+      "video[data-voice-peer], video[data-call-remote]"
+    )) {
+      el.muted = _deafened;
+    }
+    if (_deafened) {
+      if (voiceMgr.isActive()) voiceMgr.setMute(true);
+      if (callMgr.isActive()) callMgr.setMute(true);
+    }
+    setTransientStatus(_deafened ? "Заглушено" : "Звук включён");
+  });
+  registerHotkey("toggle-camera", async () => {
+    if (voiceMgr.isActive()) await voiceMgr.toggleCamera();
+    else if (callMgr.isActive()) await callMgr.toggleCamera();
+  });
+  registerHotkey("toggle-screen-share", async () => {
+    if (voiceMgr.isActive()) await voiceMgr.toggleScreenShare();
+    else if (callMgr.isActive()) await callMgr.toggleScreenShare();
+  });
+  registerHotkey("voice-disconnect", async () => {
+    if (voiceMgr.isActive()) await voiceMgr.leave();
+  });
+  registerHotkey("push-to-talk", {
+    down: () => {
+      if (voiceMgr.isActive()) voiceMgr.setMute(false);
+      if (callMgr.isActive()) callMgr.setMute(false);
+    },
+    up: () => {
+      if (voiceMgr.isActive()) voiceMgr.setMute(true);
+      if (callMgr.isActive()) callMgr.setMute(true);
     }
   });
+  registerHotkey("quick-switcher", () => {
+    if (!state.selectedWorkspaceId) return;
+    state.modal = "search";
+    render();
+    setTimeout(() => {
+      rootEl.querySelector<HTMLInputElement>("#search-input")?.focus();
+    }, 0);
+  });
+  registerHotkey("search", () => {
+    if (!state.selectedWorkspaceId) return;
+    state.modal = "search";
+    render();
+    setTimeout(() => {
+      rootEl.querySelector<HTMLInputElement>("#search-input")?.focus();
+    }, 0);
+  });
+  registerHotkey("next-channel-unread", () => navigateUnreadChannel(1));
+  registerHotkey("prev-channel-unread", () => navigateUnreadChannel(-1));
+  registerHotkey("mark-server-read", () => markServerRead());
+  // edit-last-message: реальный handler уже в композере (keydown по input).
+  // Регистрация тут пустая — глобальный dispatcher не должен ловить ↑
+  // вне инпута и тащить юзера в edit-mode случайно. shouldIgnore(ev,def)
+  // и так пропустит ↑ в инпуте (модификаторов нет, isEditable=true).
+  registerHotkey("edit-last-message", () => {
+    /* в-композере handler — оставлен по месту */
+  });
+}
+
+function navigateUnreadChannel(direction: 1 | -1): void {
+  const channels = state.channels.filter((c) => c.kind === "text");
+  if (channels.length === 0) return;
+  const unread = channels.filter((c) => (state.unread[c.id] ?? 0) > 0);
+  if (unread.length === 0) {
+    setTransientStatus("Нет непрочитанных каналов");
+    return;
+  }
+  const curIdx = state.selectedChannelId
+    ? unread.findIndex((c) => c.id === state.selectedChannelId)
+    : -1;
+  const next = unread[(curIdx + direction + unread.length) % unread.length] ?? unread[0];
+  void selectChannel(next.id);
+}
+
+function markServerRead(): void {
+  const channels = state.channels.filter((c) => (state.unread[c.id] ?? 0) > 0);
+  if (channels.length === 0) {
+    setTransientStatus("Нет непрочитанных");
+    return;
+  }
+  for (const c of channels) {
+    const last = state.messages.filter((m) => m.channelId === c.id).slice(-1)[0];
+    void httpClient.post(`/api/v1/channels/${c.id}/read`, last ? { lastMessageId: last.id } : {}).catch(() => {
+      /* idempotent */
+    });
+    state.unread[c.id] = 0;
+  }
+  render();
+  setTransientStatus(`Отмечено прочитанным: ${channels.length}`);
 }
 
 function startIdleAutoDetect(): void {
@@ -5235,6 +5354,7 @@ function renderSettingsTabButton(tab: SettingsTabDef): string {
 function renderSettingsTabContent(tab: SettingsTab): string {
   if (tab === "profile") return renderSettingsProfileTab();
   if (tab === "voice") return renderSettingsVoiceTab();
+  if (tab === "hotkeys") return renderSettingsHotkeysTab();
   const def = findSettingsTab(tab);
   const todoHint = def.todo ? ` · ${def.todo}` : "";
   return `
@@ -5245,6 +5365,123 @@ function renderSettingsTabContent(tab: SettingsTab): string {
       </div>
     </div>
   `;
+}
+
+// I.4: state для capture-режима. Когда юзер кликнул на binding-кнопку,
+// модуль ждёт первый keydown с не-модификаторной клавишей и записывает
+// chord. Esc отменяет capture.
+let _capturingActionId: ActionId | null = null;
+
+const HOTKEY_CATEGORY_LABELS: Record<ActionDef["category"], string> = {
+  voice: "Голос и видео",
+  channels: "Каналы",
+  messages: "Сообщения",
+  general: "Общие"
+};
+
+function renderSettingsHotkeysTab(): string {
+  const actions = getHotkeyActions();
+  const byCategory = new Map<ActionDef["category"], ActionDef[]>();
+  for (const a of actions) {
+    const list = byCategory.get(a.category) ?? [];
+    list.push(a);
+    byCategory.set(a.category, list);
+  }
+  const sections = Array.from(byCategory.entries())
+    .map(([cat, list]) => {
+      const rows = list.map(renderHotkeyRow).join("");
+      return `
+        <div class="settings-section">
+          <h3>${escapeHtml(HOTKEY_CATEGORY_LABELS[cat])}</h3>
+          <div class="hotkeys-list">${rows}</div>
+        </div>
+      `;
+    })
+    .join("");
+  return `
+    <div class="settings-hint" style="margin-bottom: 16px;">
+      Кликни на клавишу, чтобы переназначить. Esc отменяет ввод. Тумблер слева — включить/выключить хоткей.
+      Push-to-talk работает даже когда фокус в инпуте.
+    </div>
+    ${sections}
+  `;
+}
+
+function renderHotkeyRow(def: ActionDef): string {
+  const b = getHotkeyBinding(def.id);
+  const isCapturing = _capturingActionId === def.id;
+  const chordLabel = isCapturing ? "Нажми клавиши…" : formatChord(b.chord);
+  return `
+    <div class="hotkeys-row ${b.enabled ? "" : "disabled"}" data-hotkey-row="${def.id}">
+      <label class="hotkeys-toggle" title="${b.enabled ? "Выключить" : "Включить"}">
+        <input type="checkbox" data-hotkey-toggle="${def.id}" ${b.enabled ? "checked" : ""} />
+        <span class="hotkeys-toggle-track"></span>
+      </label>
+      <div class="hotkeys-info">
+        <div class="hotkeys-label">${escapeHtml(def.label)}</div>
+        ${def.description ? `<div class="hotkeys-desc">${escapeHtml(def.description)}</div>` : ""}
+      </div>
+      <button class="hotkeys-chord ${isCapturing ? "capturing" : ""}" data-hotkey-capture="${def.id}">
+        ${escapeHtml(chordLabel)}
+      </button>
+      <button class="ghost hotkeys-reset" data-hotkey-reset="${def.id}" title="Сбросить на дефолт">
+        ${icon("x", { size: 14 })}
+      </button>
+    </div>
+  `;
+}
+
+function attachSettingsHotkeysHandlers(): void {
+  if (state.modal !== "settings" || state.settings.tab !== "hotkeys") {
+    // Юзер ушёл с таба — отменяем capture, чтобы случайный keydown
+    // не записался в чужой chord.
+    _capturingActionId = null;
+    return;
+  }
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-hotkey-capture]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.hotkeyCapture as ActionId | undefined;
+      if (!id) return;
+      _capturingActionId = _capturingActionId === id ? null : id;
+      render();
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-hotkey-reset]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.hotkeyReset as ActionId | undefined;
+      if (!id) return;
+      resetHotkeyBinding(id);
+      render();
+    });
+  });
+  rootEl.querySelectorAll<HTMLInputElement>("[data-hotkey-toggle]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.hotkeyToggle as ActionId | undefined;
+      if (!id) return;
+      setHotkeyEnabled(id, cb.checked);
+      render();
+    });
+  });
+}
+
+// Listener в installGlobalKeyboardShortcuts перехватывает keydown во
+// время capture'а ДО основного dispatcher'а — иначе нажатие, например,
+// Ctrl+K в capture-режиме открыло бы Quick Switcher вместо привязки.
+function maybeCaptureKey(ev: KeyboardEvent): boolean {
+  if (!_capturingActionId) return false;
+  if (ev.key === "Escape") {
+    _capturingActionId = null;
+    ev.preventDefault();
+    render();
+    return true;
+  }
+  const chord = chordFromEvent(ev);
+  if (!chord) return true; // ждём не-модификаторную клавишу
+  ev.preventDefault();
+  setHotkeyChord(_capturingActionId, chord);
+  _capturingActionId = null;
+  render();
+  return true;
 }
 
 // I.2: state для рендера voice-таба и lifecycle тестов микрофона/камеры.
@@ -5728,6 +5965,7 @@ function attachSettingsHandlers(): void {
     void httpClient.logout();
   });
   attachSettingsVoiceHandlers();
+  attachSettingsHotkeysHandlers();
 }
 
 interface ProfileFieldOpts {
