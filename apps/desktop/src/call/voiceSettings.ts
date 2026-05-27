@@ -7,6 +7,11 @@
 
 export type CameraResolution = "360p" | "720p" | "1080p";
 
+// I.3: режимы шумоподавления. `off` — никакого NS; `browser` — нативный
+// WebRTC-стек Chromium (NS3); `rucord` / `rucord-aggressive` —
+// собственные ML-модели (планируются в N.*, пока fallback на browser).
+export type DenoiserMode = "off" | "browser" | "rucord" | "rucord-aggressive";
+
 export interface VoiceSettings {
   audioInputId: string | null; // null = system default
   audioOutputId: string | null;
@@ -16,7 +21,11 @@ export interface VoiceSettings {
   cameraResolution: CameraResolution;
   echoCancellation: boolean;
   autoGainControl: boolean;
-  noiseSuppression: boolean;
+  // I.3: единый источник истины для шумоподавления. Раньше тут был
+  // bool noiseSuppression — он же теперь выводится из denoiserMode
+  // в buildAudioConstraints() (off → false, остальные → true).
+  denoiserMode: DenoiserMode;
+  denoiserIntensity: number; // 0..100, применится когда N.* модели появятся
 }
 
 const LS_KEY = "rucord:voice-settings";
@@ -30,7 +39,8 @@ const DEFAULTS: VoiceSettings = {
   cameraResolution: "720p",
   echoCancellation: true,
   autoGainControl: true,
-  noiseSuppression: true
+  denoiserMode: "browser",
+  denoiserIntensity: 50
 };
 
 const RESOLUTION_PROFILES: Record<CameraResolution, { width: number; height: number }> = {
@@ -86,15 +96,17 @@ export function subscribeVoiceSettings(fn: (s: VoiceSettings) => void): () => vo
   };
 }
 
-// Constraints для getUserMedia({audio}). Возвращает либо MediaTrackConstraints,
-// либо `true` если нет специфичных настроек — это позволяет браузеру выбрать
-// дефолтный микрофон при первом запуске (до того, как юзер выбрал устройство).
+// Constraints для getUserMedia({audio}). Шумоподавление выводится из
+// denoiserMode: off → false, остальные → true (нативный браузерный NS
+// остаётся базой; rucord-режимы — поверх через AudioWorklet, когда
+// N.* реализован). Пока N.* не готов, rucord-режимы эквивалентны
+// browser'у на runtime.
 export function buildAudioConstraints(): MediaTrackConstraints {
   const s = read();
   const c: MediaTrackConstraints = {
     echoCancellation: s.echoCancellation,
     autoGainControl: s.autoGainControl,
-    noiseSuppression: s.noiseSuppression
+    noiseSuppression: s.denoiserMode !== "off"
   };
   if (s.audioInputId) {
     c.deviceId = { exact: s.audioInputId };

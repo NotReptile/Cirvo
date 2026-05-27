@@ -3532,3 +3532,64 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   cursor: pointer;
 }
 .settings-content-body button.danger:hover { filter: brightness(1.1); }
+
+/* I.3: блок выбора режима шумоподавления. Список radio-карточек:
+   каждый режим — отдельная строка с radio + label + подпись, активная
+   карточка подсвечена accent-border'ом. */
+.vs-denoiser-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.vs-denoiser-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.vs-denoiser-option:hover { background: rgba(255, 255, 255, 0.03); }
+.vs-denoiser-option.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
+}
+.vs-denoiser-option input[type="radio"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.vs-denoiser-option-body {
+  flex: 1;
+  min-width: 0;
+}
+.vs-denoiser-option-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.vs-denoiser-option-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+.vs-denoiser-option-sub {
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.vs-denoiser-pending {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}

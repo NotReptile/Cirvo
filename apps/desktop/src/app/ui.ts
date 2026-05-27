@@ -15,6 +15,7 @@ import {
   subscribeVoiceSettings,
   updateVoiceSettings,
   type CameraResolution,
+  type DenoiserMode,
   type EnumeratedDevices,
   type VoiceSettings
 } from "../call/voiceSettings";
@@ -5420,6 +5421,11 @@ function renderSettingsVoiceTab(): string {
     </div>
 
     <div class="settings-section">
+      <h3>Шумоподавление</h3>
+      ${renderDenoiserBlock(s)}
+    </div>
+
+    <div class="settings-section">
       <h3>Расширенные</h3>
       <label class="settings-check">
         <input type="checkbox" id="vs-ec" ${s.echoCancellation ? "checked" : ""} />
@@ -5429,11 +5435,65 @@ function renderSettingsVoiceTab(): string {
         <input type="checkbox" id="vs-agc" ${s.autoGainControl ? "checked" : ""} />
         <span>Автоматическая регулировка усиления</span>
       </label>
-      <label class="settings-check">
-        <input type="checkbox" id="vs-ns" ${s.noiseSuppression ? "checked" : ""} />
-        <span>Шумоподавление (нативное, браузер)</span>
-      </label>
-      <small class="settings-hint">Шумодав уровня Krisp с ML-моделью — отдельная задача (I.3 / N.*).</small>
+    </div>
+  `;
+}
+
+// I.3: блок выбора режима шумоподавления. Опции:
+// - off               — никакого NS, голос идёт «как есть» (полезно для
+//                       музыкальных стримов / гитары — браузерный NS режет
+//                       обертоны).
+// - browser           — нативный WebRTC-стек Chromium (NS3). Дефолт.
+//                       Хорошо чистит вентилятор/клавиатуру/эхо.
+// - rucord            — собственная ML-модель RuCord. Сейчас runtime
+//                       fallback на browser (модели N.* не реализованы).
+// - rucord-aggressive — агрессивный режим RuCord, нацелен на сложные
+//                       шумы (кафе, улица, открытое окно). Тоже fallback.
+//
+// Slider intensity 0-100 виден всегда, но активен только для rucord-режимов;
+// browser-NS не принимает intensity-параметр.
+function renderDenoiserBlock(s: VoiceSettings): string {
+  const modes: { id: DenoiserMode; label: string; sub: string }[] = [
+    { id: "off", label: "Выключено", sub: "Голос без обработки." },
+    { id: "browser", label: "Браузер (стандартный)", sub: "Нативный WebRTC NS — чистит вентилятор/клавиатуру/эхо." },
+    { id: "rucord", label: "RuCord (улучшенный)", sub: "Собственная ML-модель. Скоро." },
+    { id: "rucord-aggressive", label: "RuCord (агрессивный)", sub: "Для сложных шумов (кафе, улица). Скоро." }
+  ];
+  const intensityActive = s.denoiserMode === "rucord" || s.denoiserMode === "rucord-aggressive";
+  const radios = modes
+    .map((m) => {
+      const checked = s.denoiserMode === m.id ? "checked" : "";
+      const pending = (m.id === "rucord" || m.id === "rucord-aggressive")
+        ? `<span class="vs-denoiser-pending">не готово</span>`
+        : "";
+      return `
+        <label class="vs-denoiser-option ${s.denoiserMode === m.id ? "active" : ""}">
+          <input type="radio" name="vs-denoiser" value="${m.id}" ${checked} />
+          <div class="vs-denoiser-option-body">
+            <div class="vs-denoiser-option-head">
+              <span class="vs-denoiser-option-label">${escapeHtml(m.label)}</span>
+              ${pending}
+            </div>
+            <div class="vs-denoiser-option-sub">${escapeHtml(m.sub)}</div>
+          </div>
+        </label>
+      `;
+    })
+    .join("");
+  return `
+    <div class="vs-denoiser-list">${radios}</div>
+    <div class="settings-row settings-row-slider">
+      <label for="vs-denoiser-intensity">Интенсивность</label>
+      <div class="settings-slider-wrap">
+        <input id="vs-denoiser-intensity" type="range" min="0" max="100" step="1"
+               value="${s.denoiserIntensity}" ${intensityActive ? "" : "disabled"} />
+        <span id="vs-denoiser-intensity-val" class="settings-slider-val">${s.denoiserIntensity}%</span>
+      </div>
+      <small class="settings-hint">
+        ${intensityActive
+          ? "Применится когда модели RuCord будут готовы. Сейчас используется браузерный NS."
+          : "Доступно только для режимов RuCord."}
+      </small>
     </div>
   `;
 }
@@ -5541,8 +5601,21 @@ function attachSettingsVoiceHandlers(): void {
   rootEl.querySelector<HTMLInputElement>("#vs-agc")?.addEventListener("change", (e) => {
     updateVoiceSettings({ autoGainControl: (e.currentTarget as HTMLInputElement).checked });
   });
-  rootEl.querySelector<HTMLInputElement>("#vs-ns")?.addEventListener("change", (e) => {
-    updateVoiceSettings({ noiseSuppression: (e.currentTarget as HTMLInputElement).checked });
+  // I.3: denoiser-режим (radio-кнопки) + intensity-слайдер.
+  rootEl.querySelectorAll<HTMLInputElement>('input[name="vs-denoiser"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (r.checked) {
+        updateVoiceSettings({ denoiserMode: r.value as DenoiserMode });
+        render(); // intensity-slider дисэйблится/включается → перерисуем
+      }
+    });
+  });
+  const intensity = rootEl.querySelector<HTMLInputElement>("#vs-denoiser-intensity");
+  intensity?.addEventListener("input", () => {
+    const pct = Number(intensity.value);
+    const label = rootEl.querySelector<HTMLSpanElement>("#vs-denoiser-intensity-val");
+    if (label) label.textContent = `${pct}%`;
+    updateVoiceSettings({ denoiserIntensity: pct });
   });
 
   rootEl.querySelector<HTMLButtonElement>("#vs-test-mic")?.addEventListener("click", () => {
