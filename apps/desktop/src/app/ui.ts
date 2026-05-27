@@ -6,6 +6,14 @@ import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import {
+  applyAppearance,
+  getAppearance,
+  updateAppearance,
+  watchSystemTheme,
+  type Density,
+  type ThemeMode
+} from "./appearance";
+import {
   chordFromEvent,
   dispatchKeyDown as dispatchHotkeyDown,
   dispatchKeyUp as dispatchHotkeyUp,
@@ -18,8 +26,7 @@ import {
   setBindingChord as setHotkeyChord,
   setBindingEnabled as setHotkeyEnabled,
   type ActionDef,
-  type ActionId,
-  type KeyChord
+  type ActionId
 } from "./hotkeys";
 import {
   applyOutputDevice,
@@ -839,6 +846,12 @@ export function renderApp(
   realtimeClient = realtime;
   callMgr = callManager;
   voiceMgr = voiceManager;
+
+  // I.5: применяем тему/density/accent ДО первого рендера, иначе мерцает
+  // дефолтная dark-тема пока юзер настроил light. watchSystemTheme нужен
+  // для режима "auto" — переключаться при смене OS-темы.
+  applyAppearance();
+  watchSystemTheme();
 
   installGlobalKeyboardShortcuts();
   realtime.subscribe(handleRealtimeEvent);
@@ -2712,6 +2725,8 @@ function describeAuditEntry(e: AuditEntry): AuditDescription {
 // (workspace_roles.color через getRoleColor, см. H.7). Иначе пустая
 // строка — наследует дефолтный --text.
 function authorColorStyle(userId: string): string {
+  // I.5: цвета ролей можно выключить в Settings → Внешний вид.
+  if (!getAppearance().roleColors) return "";
   const m = state.members.find((x) => x.userId === userId);
   if (!m) return "";
   const color = getRoleColor(m.role);
@@ -3699,7 +3714,10 @@ function renderMessagesWithDivider(): string {
     }
     const isSystem = !!m.kind && m.kind !== "user";
     const prevIsSystem = prev ? !!prev.kind && prev.kind !== "user" : false;
+    // I.5: группировка подряд идущих сообщений выключаема в Settings →
+    // Внешний вид. Когда выключено — каждое сообщение со своим header'ом.
     const grouped =
+      getAppearance().groupMessages &&
       !!prev &&
       !dividerHere &&
       !isSystem &&
@@ -5355,6 +5373,7 @@ function renderSettingsTabContent(tab: SettingsTab): string {
   if (tab === "profile") return renderSettingsProfileTab();
   if (tab === "voice") return renderSettingsVoiceTab();
   if (tab === "hotkeys") return renderSettingsHotkeysTab();
+  if (tab === "appearance") return renderSettingsAppearanceTab();
   const def = findSettingsTab(tab);
   const todoHint = def.todo ? ` · ${def.todo}` : "";
   return `
@@ -5381,6 +5400,17 @@ const HOTKEY_CATEGORY_LABELS: Record<ActionDef["category"], string> = {
 
 function renderSettingsHotkeysTab(): string {
   const actions = getHotkeyActions();
+  // K.3: предвычисляем словарь chord → ActionId[] чтобы подсветить
+  // конфликты. Только enabled-binding'и с непустым chord'ом считаются.
+  const conflictMap = new Map<string, ActionDef[]>();
+  for (const a of actions) {
+    const b = getHotkeyBinding(a.id);
+    if (!b.enabled || !b.chord) continue;
+    const sig = formatChord(b.chord);
+    const list = conflictMap.get(sig) ?? [];
+    list.push(a);
+    conflictMap.set(sig, list);
+  }
   const byCategory = new Map<ActionDef["category"], ActionDef[]>();
   for (const a of actions) {
     const list = byCategory.get(a.category) ?? [];
@@ -5389,7 +5419,7 @@ function renderSettingsHotkeysTab(): string {
   }
   const sections = Array.from(byCategory.entries())
     .map(([cat, list]) => {
-      const rows = list.map(renderHotkeyRow).join("");
+      const rows = list.map((a) => renderHotkeyRow(a, conflictMap)).join("");
       return `
         <div class="settings-section">
           <h3>${escapeHtml(HOTKEY_CATEGORY_LABELS[cat])}</h3>
@@ -5400,25 +5430,32 @@ function renderSettingsHotkeysTab(): string {
     .join("");
   return `
     <div class="settings-hint" style="margin-bottom: 16px;">
-      Кликни на клавишу, чтобы переназначить. Esc отменяет ввод. Тумблер слева — включить/выключить хоткей.
-      Push-to-talk работает даже когда фокус в инпуте.
+      Кликни на клавишу, чтобы переназначить. Esc отменяет ввод, Delete/Backspace очищает привязку.
+      Тумблер слева — включить/выключить. Push-to-talk работает даже когда фокус в инпуте.
     </div>
     ${sections}
   `;
 }
 
-function renderHotkeyRow(def: ActionDef): string {
+function renderHotkeyRow(def: ActionDef, conflicts: Map<string, ActionDef[]>): string {
   const b = getHotkeyBinding(def.id);
   const isCapturing = _capturingActionId === def.id;
   const chordLabel = isCapturing ? "Нажми клавиши…" : formatChord(b.chord);
+  // K.3: ищем тех, кто тоже сидит на этом chord'е. Если список >1 —
+  // подсвечиваем warning + tooltip с именами других.
+  const sig = b.chord ? formatChord(b.chord) : "";
+  const others = sig ? (conflicts.get(sig) ?? []).filter((a) => a.id !== def.id) : [];
+  const conflictBadge = others.length > 0
+    ? `<span class="hotkeys-conflict" title="Конфликт с: ${escapeHtml(others.map((o) => o.label).join(", "))}">⚠</span>`
+    : "";
   return `
-    <div class="hotkeys-row ${b.enabled ? "" : "disabled"}" data-hotkey-row="${def.id}">
+    <div class="hotkeys-row ${b.enabled ? "" : "disabled"} ${others.length > 0 ? "has-conflict" : ""}" data-hotkey-row="${def.id}">
       <label class="hotkeys-toggle" title="${b.enabled ? "Выключить" : "Включить"}">
         <input type="checkbox" data-hotkey-toggle="${def.id}" ${b.enabled ? "checked" : ""} />
         <span class="hotkeys-toggle-track"></span>
       </label>
       <div class="hotkeys-info">
-        <div class="hotkeys-label">${escapeHtml(def.label)}</div>
+        <div class="hotkeys-label">${escapeHtml(def.label)} ${conflictBadge}</div>
         ${def.description ? `<div class="hotkeys-desc">${escapeHtml(def.description)}</div>` : ""}
       </div>
       <button class="hotkeys-chord ${isCapturing ? "capturing" : ""}" data-hotkey-capture="${def.id}">
@@ -5426,6 +5463,9 @@ function renderHotkeyRow(def: ActionDef): string {
       </button>
       <button class="ghost hotkeys-reset" data-hotkey-reset="${def.id}" title="Сбросить на дефолт">
         ${icon("x", { size: 14 })}
+      </button>
+      <button class="ghost hotkeys-clear" data-hotkey-clear="${def.id}" title="Снять привязку" ${b.chord ? "" : "disabled"}>
+        ${icon("trash", { size: 14 })}
       </button>
     </div>
   `;
@@ -5454,6 +5494,15 @@ function attachSettingsHotkeysHandlers(): void {
       render();
     });
   });
+  // K.1: «Снять привязку» — ставит chord=null, оставляя action в списке.
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-hotkey-clear]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.hotkeyClear as ActionId | undefined;
+      if (!id) return;
+      setHotkeyChord(id, null);
+      render();
+    });
+  });
   rootEl.querySelectorAll<HTMLInputElement>("[data-hotkey-toggle]").forEach((cb) => {
     cb.addEventListener("change", () => {
       const id = cb.dataset.hotkeyToggle as ActionId | undefined;
@@ -5475,6 +5524,14 @@ function maybeCaptureKey(ev: KeyboardEvent): boolean {
     render();
     return true;
   }
+  // K.1: Delete / Backspace в capture-режиме = «Не назначено».
+  if (ev.code === "Delete" || ev.code === "Backspace") {
+    ev.preventDefault();
+    setHotkeyChord(_capturingActionId, null);
+    _capturingActionId = null;
+    render();
+    return true;
+  }
   const chord = chordFromEvent(ev);
   if (!chord) return true; // ждём не-модификаторную клавишу
   ev.preventDefault();
@@ -5482,6 +5539,126 @@ function maybeCaptureKey(ev: KeyboardEvent): boolean {
   _capturingActionId = null;
   render();
   return true;
+}
+
+// I.5: тема, accent, density, группировка, цвета ролей. Все изменения —
+// сразу пишутся через updateAppearance() (которое триггерит applyAppearance()
+// → outline на <html>). Затем render() — чтобы UI таба и весь chat-list
+// обновились с новым `grouped`/`roleColors` режимом.
+function renderSettingsAppearanceTab(): string {
+  const s = getAppearance();
+  const themeOpts: { id: ThemeMode; label: string; sub: string }[] = [
+    { id: "dark", label: "Тёмная", sub: "Стандартная RuCord-тема." },
+    { id: "light", label: "Светлая", sub: "Светлый интерфейс для дневного света." },
+    { id: "auto", label: "Авто", sub: "По системной настройке (prefers-color-scheme)." }
+  ];
+  const themeCards = themeOpts
+    .map((t) => `
+      <label class="vs-denoiser-option ${s.theme === t.id ? "active" : ""}">
+        <input type="radio" name="ap-theme" value="${t.id}" ${s.theme === t.id ? "checked" : ""} />
+        <div class="vs-denoiser-option-body">
+          <div class="vs-denoiser-option-head">
+            <span class="vs-denoiser-option-label">${escapeHtml(t.label)}</span>
+          </div>
+          <div class="vs-denoiser-option-sub">${escapeHtml(t.sub)}</div>
+        </div>
+      </label>
+    `).join("");
+
+  const densityOpts: { id: Density; label: string; sub: string }[] = [
+    { id: "cozy", label: "Уютный", sub: "Дефолтные отступы и аватары 40px." },
+    { id: "compact", label: "Компактный", sub: "Тоньше: меньше отступы, аватары 32px, шрифт 13px." }
+  ];
+  const densityCards = densityOpts
+    .map((d) => `
+      <label class="vs-denoiser-option ${s.density === d.id ? "active" : ""}">
+        <input type="radio" name="ap-density" value="${d.id}" ${s.density === d.id ? "checked" : ""} />
+        <div class="vs-denoiser-option-body">
+          <div class="vs-denoiser-option-head">
+            <span class="vs-denoiser-option-label">${escapeHtml(d.label)}</span>
+          </div>
+          <div class="vs-denoiser-option-sub">${escapeHtml(d.sub)}</div>
+        </div>
+      </label>
+    `).join("");
+
+  const accentValue = s.accent || "#5865f2";
+  const accentDisplay = s.accent || "по умолчанию";
+
+  return `
+    <div class="settings-section">
+      <h3>Тема</h3>
+      <div class="vs-denoiser-list">${themeCards}</div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Акцентный цвет</h3>
+      <div class="settings-row">
+        <label for="ap-accent">Цвет</label>
+        <div class="settings-slider-wrap" style="gap: 12px;">
+          <input id="ap-accent" type="color" value="${escapeHtml(accentValue)}" />
+          <span id="ap-accent-val" class="settings-slider-val" style="min-width: 120px;">${escapeHtml(accentDisplay)}</span>
+          <button id="ap-accent-reset" class="ghost" title="Сбросить на дефолт">${icon("x", { size: 14 })}</button>
+        </div>
+        <small class="settings-hint">Применяется к кнопкам, выделению, ссылкам. Hover-цвет выводится автоматически.</small>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Плотность</h3>
+      <div class="vs-denoiser-list">${densityCards}</div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Сообщения</h3>
+      <label class="settings-check">
+        <input type="checkbox" id="ap-group" ${s.groupMessages ? "checked" : ""} />
+        <span>Склеивать подряд идущие сообщения одного автора</span>
+      </label>
+      <label class="settings-check">
+        <input type="checkbox" id="ap-role-colors" ${s.roleColors ? "checked" : ""} />
+        <span>Подсвечивать имя автора цветом роли</span>
+      </label>
+    </div>
+  `;
+}
+
+function attachSettingsAppearanceHandlers(): void {
+  if (state.modal !== "settings" || state.settings.tab !== "appearance") return;
+  rootEl.querySelectorAll<HTMLInputElement>('input[name="ap-theme"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (r.checked) {
+        updateAppearance({ theme: r.value as ThemeMode });
+        render();
+      }
+    });
+  });
+  rootEl.querySelectorAll<HTMLInputElement>('input[name="ap-density"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (r.checked) {
+        updateAppearance({ density: r.value as Density });
+        render();
+      }
+    });
+  });
+  const accent = rootEl.querySelector<HTMLInputElement>("#ap-accent");
+  accent?.addEventListener("input", () => {
+    updateAppearance({ accent: accent.value });
+    const label = rootEl.querySelector<HTMLSpanElement>("#ap-accent-val");
+    if (label) label.textContent = accent.value;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#ap-accent-reset")?.addEventListener("click", () => {
+    updateAppearance({ accent: "" });
+    render();
+  });
+  rootEl.querySelector<HTMLInputElement>("#ap-group")?.addEventListener("change", (e) => {
+    updateAppearance({ groupMessages: (e.currentTarget as HTMLInputElement).checked });
+    render();
+  });
+  rootEl.querySelector<HTMLInputElement>("#ap-role-colors")?.addEventListener("change", (e) => {
+    updateAppearance({ roleColors: (e.currentTarget as HTMLInputElement).checked });
+    render();
+  });
 }
 
 // I.2: state для рендера voice-таба и lifecycle тестов микрофона/камеры.
@@ -5966,6 +6143,7 @@ function attachSettingsHandlers(): void {
   });
   attachSettingsVoiceHandlers();
   attachSettingsHotkeysHandlers();
+  attachSettingsAppearanceHandlers();
 }
 
 interface ProfileFieldOpts {

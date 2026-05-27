@@ -1,7 +1,14 @@
 :root {
-  color-scheme: dark;
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 14px;
+}
+
+/* I.5: дефолтная тёмная тема. data-theme выставляется applyAppearance()
+   на <html>; до его исполнения (на первом paint'е) — фоллбек на dark
+   через :not([data-theme]). Светлая тема — отдельный блок ниже. */
+:root[data-theme="dark"],
+:root:not([data-theme]) {
+  color-scheme: dark;
   --bg: #0f1115;
   --bg-elev: #181b22;
   --bg-elev-2: #232730;
@@ -12,6 +19,39 @@
   --text-mute: #9ba3b4;
   --danger: #e35d6a;
 }
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-elev: #f2f3f5;
+  --bg-elev-2: #e3e5e8;
+  --border: #d4d7dc;
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --text: #2e3338;
+  --text-mute: #6a7480;
+  --danger: #d83c3e;
+}
+
+/* I.5: density=compact — режем вертикальные отступы и аватары,
+   matching to Discord's «Compact mode». */
+:root[data-density="compact"] .message {
+  padding-top: 1px;
+  padding-bottom: 1px;
+  font-size: 13px;
+}
+:root[data-density="compact"] .message .avatar-pic {
+  width: 32px !important;
+  height: 32px !important;
+  font-size: 12px;
+}
+:root[data-density="compact"] .message-list {
+  padding: 8px 16px;
+}
+
+/* I.5: group-messages=off — рендер всё-таки решает, добавлять `grouped`
+   класс или нет (в renderMessagesWithDivider читаем флаг). На CSS уровне
+   нужна только зачистка визуальных «продолжений». См. appearance.ts. */
 
 * { box-sizing: border-box; }
 
@@ -3603,12 +3643,22 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 }
 .hotkeys-row {
   display: grid;
-  grid-template-columns: 36px 1fr auto auto;
+  grid-template-columns: 36px 1fr auto auto auto;
   align-items: center;
   gap: 12px;
   padding: 8px 10px;
   border-radius: 6px;
   transition: background 0.1s;
+}
+/* K.3: подсветка конфликтующих привязок. */
+.hotkeys-row.has-conflict {
+  background: color-mix(in srgb, #faa61a 12%, transparent);
+}
+.hotkeys-conflict {
+  color: #faa61a;
+  margin-left: 4px;
+  font-size: 13px;
+  cursor: help;
 }
 .hotkeys-row:hover { background: rgba(255, 255, 255, 0.03); }
 .hotkeys-row.disabled .hotkeys-label,
