@@ -2641,11 +2641,22 @@ function renderChannelCategory(
         .join(" ");
       const badge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : "";
       const inlineList = kind === "voice" ? renderVoiceInlineParticipants(ch.id) : "";
+      // J.2: hover-кнопки на канале (как в Discord). Видны только при
+      // hover'е, для owner/admin/moderator (invite — всем модерациям,
+      // settings — только owner/admin). Заменяют первичный путь к
+      // настройкам канала (раньше — ⚙ в channel-header, теперь — здесь).
+      const actions = canManage
+        ? `<span class="channel-item-actions">
+             <button class="ghost channel-item-invite" data-ch-invite="${ch.id}" title="Пригласить" aria-label="Пригласить">${icon("plus")}</button>
+             <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
+           </span>`
+        : "";
       return `
         <li class="${cls}" data-ch="${ch.id}">
           <span class="channel-prefix">${channelPrefix(ch)}</span>
           <span class="channel-name">${escapeHtml(ch.name)}</span>
           ${badge}
+          ${actions}
         </li>
         ${inlineList}
       `;
@@ -2905,18 +2916,21 @@ function renderChannelView(channel: Channel): string {
   }
   const canSend = channel.kind === "text";
   const ws = state.workspaces.find((w) => w.id === channel.workspaceId);
-  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  const canModerate = !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
+  // J.1 + J.4: тема канала переехала на ту же строку, что и имя
+  // (`# название · тема` с разделителем-точкой); ⚙ настроек канала
+  // из header удалён — теперь на самом канале в sidebar при hover (J.2).
+  // Порядок action-кнопок: 🔍 поиск → 📜 журнал → 👥 участники (rightmost).
   return `
     <header class="channel-header">
-      <div>
+      <div class="channel-header-title">
         <h2>${channel.isPrivate ? "🔒" : "#"} ${escapeHtml(channel.name)}</h2>
-        ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
+        ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
       </div>
       <div class="channel-header-actions">
         <button id="open-search" class="ghost" title="Поиск по сообщениям" aria-label="Поиск">${icon("search")}</button>
+        ${canModerate ? `<button id="open-audit" class="ghost" title="Журнал событий" aria-label="Журнал событий">${icon("scroll")}</button>` : ""}
         <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? "Скрыть участников" : "Показать участников"}" aria-label="Участники">${icon("users")}</button>
-        ${state.workspaces.find((w) => w.id === channel.workspaceId)?.role && ["owner","admin","moderator"].includes(state.workspaces.find((w) => w.id === channel.workspaceId)!.role!) ? `<button id="open-audit" class="ghost" title="Журнал событий" aria-label="Журнал событий">${icon("scroll")}</button>` : ""}
-        ${canManage ? `<button id="open-channel-settings" class="ghost" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>` : ""}
       </div>
     </header>
     ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
@@ -5520,21 +5534,9 @@ function attachShellHandlers(): void {
 
   attachAdminHandlers();
 
-  rootEl.querySelector<HTMLButtonElement>("#open-channel-settings")?.addEventListener("click", () => {
-    if (!state.selectedChannelId) return;
-    state.modal = "channelSettings";
-    state.channelSettings = {
-      channelId: state.selectedChannelId,
-      loading: true,
-      saving: false,
-      error: null,
-      data: null,
-      draft: {}
-    };
-    render();
-    void loadChannelPermissions();
-  });
-
+  // J.2: открытие настроек канала переехало на hover-кнопку
+  // [data-ch-settings] прямо на канале в sidebar. Handler ниже
+  // в блоке "[data-ch]"-обработчиков.
   attachChannelSettingsHandlers();
 
   rootEl.querySelector<HTMLButtonElement>("#notif-mark-all")?.addEventListener("click", () => {
@@ -5882,6 +5884,40 @@ function attachShellHandlers(): void {
       const x = Math.min(ev.clientX, window.innerWidth - 220);
       const y = Math.min(ev.clientY, window.innerHeight - 160);
       state.channelMenu = { channelId: id, x, y };
+      render();
+    });
+  });
+
+  // J.2: hover-кнопки на канале. stopPropagation, чтобы клик не съел
+  // также `selectChannel`-handler на <li>.
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-ch-settings]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.chSettings;
+      if (!id) return;
+      state.modal = "channelSettings";
+      state.channelSettings = {
+        channelId: id,
+        loading: true,
+        saving: false,
+        error: null,
+        data: null,
+        draft: {}
+      };
+      render();
+      void loadChannelPermissions();
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-ch-invite]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const id = btn.dataset.chInvite;
+      const ch = state.channels.find((c) => c.id === id);
+      if (!ch) return;
+      // Инвайты пока workspace-scoped (см. ПКМ-меню «Пригласить»).
+      // Полноценная per-channel-invite — backlog (J.3 → таб «Приглашения»).
+      state.invitesOpen = true;
+      state.status = `Создай инвайт в воркспейс — он привяжет нового участника, а доступ к #${ch.name} даст admin'у через настройки канала.`;
       render();
     });
   });

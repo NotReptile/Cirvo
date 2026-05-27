@@ -314,6 +314,38 @@ input:focus { outline: none; border-color: var(--accent); }
   font-weight: 600;
 }
 .channel-list li .channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* J.2: hover-actions на канале (Discord-like). По умолчанию скрыты,
+   проявляются на hover'е li. unread-badge остаётся видим — он
+   важнее настроек. На активном канале действия видны постоянно
+   (легче дотянуться без точного hover'а в окружении других кликов). */
+.channel-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+  flex-shrink: 0;
+}
+.channel-list li:hover .channel-item-actions,
+.channel-list li.active .channel-item-actions { opacity: 1; }
+.channel-list li .channel-item-actions button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  border-radius: 4px;
+}
+.channel-list li .channel-item-actions button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.channel-list li.has-unread .channel-item-actions { opacity: 0; }
+.channel-list li.has-unread:hover .channel-item-actions,
+.channel-list li.has-unread.active .channel-item-actions { opacity: 1; }
 .unread-badge {
   min-width: 18px;
   height: 18px;
@@ -518,8 +550,29 @@ input:focus { outline: none; border-color: var(--accent); }
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
 }
-.channel-header h2 { margin: 0; font-size: 17px; }
+.channel-header h2 { margin: 0; font-size: 17px; flex-shrink: 0; }
 .topic { color: var(--text-mute); font-size: 12px; margin-top: 2px; }
+/* J.4: тема канала в одну строку с названием. Точка-разделитель
+   + ellipsis при длинной теме, чтобы не ломать layout header'а. */
+.channel-header-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.channel-header-sep {
+  color: var(--border);
+  flex-shrink: 0;
+}
+.channel-header-topic {
+  color: var(--text-mute);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 
 .message-list {
   flex: 1;
