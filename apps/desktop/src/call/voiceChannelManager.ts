@@ -1,5 +1,6 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
+import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
 
 // Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
 // (не `call.*` — иначе 1-к-1 CallManager подхватывает mesh-offer как
@@ -251,7 +252,7 @@ export class VoiceChannelManager {
     if (!this.cameraTrack) {
       let videoStream: MediaStream;
       try {
-        videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        videoStream = await navigator.mediaDevices.getUserMedia({ video: buildVideoConstraints() });
       } catch (err) {
         const message = err instanceof Error ? err.message : "camera access denied";
         this.update({ error: message });
@@ -559,17 +560,11 @@ export class VoiceChannelManager {
 
   private async acquireLocalStream(): Promise<void> {
     if (this.localStream) return;
+    // I.2: constraints из voiceSettings. По умолчанию ec/agc/ns включены
+    // (нативный WebRTC-стек Chromium — NS3/AEC3/AGC2, бесплатно). Юзер
+    // может выключить флаги в Settings → Голос и видео → Расширенные.
     this.localStream = await navigator.mediaDevices.getUserMedia({
-      // Нативный WebRTC-стек Chromium: NS3 шумоподавление + AEC3
-      // эхоподавление + AGC2. Бесплатно, без зависимостей. Чистит
-      // вентилятор/клавиатуру/эхо динамиков — для разговорной речи
-      // приемлемо. Если железо/драйвер не поддерживают какой-то
-      // флаг, браузер тихо его игнорит.
-      audio: {
-        noiseSuppression: true,
-        echoCancellation: true,
-        autoGainControl: true
-      },
+      audio: buildAudioConstraints(),
       video: false
     });
   }

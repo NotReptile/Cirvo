@@ -5,6 +5,19 @@ import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
+import {
+  applyOutputDevice,
+  buildAudioConstraints,
+  buildVideoConstraints,
+  enumerateVoiceDevices,
+  getOutputVolume,
+  getVoiceSettings,
+  subscribeVoiceSettings,
+  updateVoiceSettings,
+  type CameraResolution,
+  type EnumeratedDevices,
+  type VoiceSettings
+} from "../call/voiceSettings";
 
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
@@ -3142,6 +3155,10 @@ function renderVoiceStrip(): string {
 // сериализуется — нужно ставить программно.
 function attachVoiceVideoStreams(): void {
   const voiceLocal = voiceMgr.getLocalStream();
+  // I.2: global output-volume и output-device применяются к каждому
+  // <video> с remote-стримом. Per-peer volume (state.voiceVolumes)
+  // умножается сверху — позволяет точечно приглушить шумного соседа.
+  const globalOut = getOutputVolume();
   for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-voice-self]")) {
     if (el.srcObject !== voiceLocal) el.srcObject = voiceLocal;
   }
@@ -3150,7 +3167,8 @@ function attachVoiceVideoStreams(): void {
     if (!sid) continue;
     const stream = voiceMgr.getRemoteStream(sid);
     if (el.srcObject !== stream) el.srcObject = stream;
-    el.volume = state.voiceVolumes[sid] ?? 1;
+    el.volume = Math.min(1, (state.voiceVolumes[sid] ?? 1) * globalOut);
+    void applyOutputDevice(el);
   }
   const callLocal = callMgr.getLocalStream();
   const callRemote = callMgr.getRemoteStream();
@@ -3159,7 +3177,8 @@ function attachVoiceVideoStreams(): void {
   }
   for (const el of rootEl.querySelectorAll<HTMLVideoElement>("video[data-call-remote]")) {
     if (el.srcObject !== callRemote) el.srcObject = callRemote;
-    el.volume = state.voiceVolumes["call-remote"] ?? 1;
+    el.volume = Math.min(1, (state.voiceVolumes["call-remote"] ?? 1) * globalOut);
+    void applyOutputDevice(el);
   }
   // Speaking-indicator: создаём/обновляем analyser-узлы для всех участников
   // (включая себя), drop'аем для тех, кого больше нет в DOM.
@@ -5214,6 +5233,7 @@ function renderSettingsTabButton(tab: SettingsTabDef): string {
 
 function renderSettingsTabContent(tab: SettingsTab): string {
   if (tab === "profile") return renderSettingsProfileTab();
+  if (tab === "voice") return renderSettingsVoiceTab();
   const def = findSettingsTab(tab);
   const todoHint = def.todo ? ` · ${def.todo}` : "";
   return `
@@ -5224,6 +5244,330 @@ function renderSettingsTabContent(tab: SettingsTab): string {
       </div>
     </div>
   `;
+}
+
+// I.2: state для рендера voice-таба и lifecycle тестов микрофона/камеры.
+// Девайсы кешируются в `_settingsDevices` после первого enumerateDevices() —
+// иначе при каждом render() слайдер дёргался бы новым промисом. Тест-стримы
+// и AudioContext живут в модуль-локалках чтобы их можно было корректно
+// потушить при закрытии модалки.
+let _settingsDevices: EnumeratedDevices | null = null;
+let _settingsDevicesLoading = false;
+let _micTestStream: MediaStream | null = null;
+let _micTestAudioCtx: AudioContext | null = null;
+let _micTestAnalyser: AnalyserNode | null = null;
+let _micTestRaf: number | null = null;
+let _camTestStream: MediaStream | null = null;
+let _settingsVoiceSubscribed = false;
+
+function ensureSettingsDevicesLoaded(): void {
+  if (_settingsDevicesLoading || _settingsDevices) return;
+  _settingsDevicesLoading = true;
+  enumerateVoiceDevices()
+    .then((d) => {
+      _settingsDevices = d;
+    })
+    .catch(() => {
+      _settingsDevices = { audioInputs: [], audioOutputs: [], videoInputs: [] };
+    })
+    .finally(() => {
+      _settingsDevicesLoading = false;
+      if (state.modal === "settings" && state.settings.tab === "voice") render();
+    });
+}
+
+// Любое изменение voiceSettings (например, юзер свайпнул output-volume —
+// мы это сохраняем сразу) должно подтянуть громкость на active <video>
+// без полного render() (он порвал бы юзер-controls).
+function ensureVoiceSettingsSubscribed(): void {
+  if (_settingsVoiceSubscribed) return;
+  _settingsVoiceSubscribed = true;
+  subscribeVoiceSettings(() => {
+    // setSinkId/volume применятся при следующем attachVoiceVideoStreams.
+    // Если активного звонка нет — нечего обновлять.
+    attachVoiceVideoStreams();
+  });
+}
+
+function stopMicTest(): void {
+  if (_micTestRaf !== null) {
+    cancelAnimationFrame(_micTestRaf);
+    _micTestRaf = null;
+  }
+  _micTestAnalyser?.disconnect();
+  _micTestAnalyser = null;
+  if (_micTestAudioCtx) {
+    void _micTestAudioCtx.close();
+    _micTestAudioCtx = null;
+  }
+  if (_micTestStream) {
+    for (const t of _micTestStream.getTracks()) t.stop();
+    _micTestStream = null;
+  }
+}
+
+function stopCamTest(): void {
+  if (_camTestStream) {
+    for (const t of _camTestStream.getTracks()) t.stop();
+    _camTestStream = null;
+  }
+}
+
+// Вызывается из attachSettingsHandlers когда модалка закрыта или таб
+// сменился — иначе тесты бы продолжали жрать микрофон/камеру в фоне.
+function stopVoiceTestsIfNotActive(): void {
+  if (state.modal !== "settings" || state.settings.tab !== "voice") {
+    stopMicTest();
+    stopCamTest();
+  }
+}
+
+function renderSettingsVoiceTab(): string {
+  ensureSettingsDevicesLoaded();
+  ensureVoiceSettingsSubscribed();
+  const s = getVoiceSettings();
+  const devices = _settingsDevices;
+  const sinkSupported = typeof (HTMLMediaElement.prototype as { setSinkId?: unknown }).setSinkId === "function";
+  const micTesting = _micTestStream !== null;
+  const camTesting = _camTestStream !== null;
+  const needPerm = !devices ||
+    (devices.audioInputs.length === 0 && devices.videoInputs.length === 0) ||
+    devices.audioInputs.some((d) => !d.label);
+
+  const audioInOptions = renderDeviceOptions(devices?.audioInputs ?? [], s.audioInputId);
+  const audioOutOptions = renderDeviceOptions(devices?.audioOutputs ?? [], s.audioOutputId);
+  const videoInOptions = renderDeviceOptions(devices?.videoInputs ?? [], s.videoInputId);
+
+  return `
+    <div class="settings-section">
+      <h3>Голос</h3>
+      <div class="settings-row">
+        <label for="vs-audio-in">Микрофон</label>
+        <select id="vs-audio-in" class="settings-select">
+          <option value="">Системный по умолчанию</option>
+          ${audioInOptions}
+        </select>
+      </div>
+      <div class="settings-row">
+        <label for="vs-audio-out">Динамики</label>
+        <select id="vs-audio-out" class="settings-select" ${sinkSupported ? "" : "disabled"}>
+          <option value="">Системный по умолчанию</option>
+          ${audioOutOptions}
+        </select>
+        ${sinkSupported
+          ? ""
+          : `<small class="settings-hint">Браузер не поддерживает выбор output-device.</small>`}
+      </div>
+      <div class="settings-row settings-row-slider">
+        <label for="vs-mic-gain">Громкость микрофона</label>
+        <div class="settings-slider-wrap">
+          <input id="vs-mic-gain" type="range" min="0" max="200" step="1" value="${Math.round(s.micGain * 100)}" />
+          <span id="vs-mic-gain-val" class="settings-slider-val">${Math.round(s.micGain * 100)}%</span>
+        </div>
+        <small class="settings-hint">Выше 100% — программный boost (GainNode), применится в новых звонках.</small>
+      </div>
+      <div class="settings-row settings-row-slider">
+        <label for="vs-out-vol">Громкость динамика</label>
+        <div class="settings-slider-wrap">
+          <input id="vs-out-vol" type="range" min="0" max="100" step="1" value="${Math.round(s.outputVolume * 100)}" />
+          <span id="vs-out-vol-val" class="settings-slider-val">${Math.round(s.outputVolume * 100)}%</span>
+        </div>
+      </div>
+      <div class="settings-row">
+        <button id="vs-test-mic" class="${micTesting ? "danger" : "primary"}">
+          ${micTesting ? "Остановить тест" : "Проверить микрофон"}
+        </button>
+        <div class="vs-meter ${micTesting ? "active" : ""}">
+          <div id="vs-meter-fill" class="vs-meter-fill"></div>
+        </div>
+      </div>
+      ${needPerm && !micTesting
+        ? `<small class="settings-hint">Запустите тест микрофона, чтобы браузер выдал имена устройств.</small>`
+        : ""}
+    </div>
+
+    <div class="settings-section">
+      <h3>Камера</h3>
+      <div class="settings-row">
+        <label for="vs-video-in">Устройство</label>
+        <select id="vs-video-in" class="settings-select">
+          <option value="">Системное по умолчанию</option>
+          ${videoInOptions}
+        </select>
+      </div>
+      <div class="settings-row">
+        <label>Разрешение</label>
+        <div class="settings-radio-group">
+          ${(["360p", "720p", "1080p"] as CameraResolution[])
+            .map(
+              (r) => `
+            <label class="settings-radio">
+              <input type="radio" name="vs-res" value="${r}" ${s.cameraResolution === r ? "checked" : ""} />
+              <span>${r}</span>
+            </label>
+          `
+            )
+            .join("")}
+        </div>
+        <small class="settings-hint">1080p тяжело тянет mesh с 5+ участниками.</small>
+      </div>
+      <div class="settings-row">
+        <button id="vs-test-cam" class="${camTesting ? "danger" : "primary"}">
+          ${camTesting ? "Выключить превью" : "Включить превью"}
+        </button>
+      </div>
+      <video id="vs-cam-preview" class="vs-cam-preview" autoplay muted playsinline ${camTesting ? "" : "hidden"}></video>
+    </div>
+
+    <div class="settings-section">
+      <h3>Расширенные</h3>
+      <label class="settings-check">
+        <input type="checkbox" id="vs-ec" ${s.echoCancellation ? "checked" : ""} />
+        <span>Эхоподавление</span>
+      </label>
+      <label class="settings-check">
+        <input type="checkbox" id="vs-agc" ${s.autoGainControl ? "checked" : ""} />
+        <span>Автоматическая регулировка усиления</span>
+      </label>
+      <label class="settings-check">
+        <input type="checkbox" id="vs-ns" ${s.noiseSuppression ? "checked" : ""} />
+        <span>Шумоподавление (нативное, браузер)</span>
+      </label>
+      <small class="settings-hint">Шумодав уровня Krisp с ML-моделью — отдельная задача (I.3 / N.*).</small>
+    </div>
+  `;
+}
+
+function renderDeviceOptions(devices: MediaDeviceInfo[], selectedId: string | null): string {
+  return devices
+    .map((d, i) => {
+      const label = d.label || `Устройство ${i + 1}`;
+      const selected = d.deviceId === selectedId ? " selected" : "";
+      return `<option value="${escapeHtml(d.deviceId)}"${selected}>${escapeHtml(label)}</option>`;
+    })
+    .join("");
+}
+
+async function startMicTest(): Promise<void> {
+  if (_micTestStream) return;
+  try {
+    _micTestStream = await navigator.mediaDevices.getUserMedia({ audio: buildAudioConstraints() });
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+    return;
+  }
+  const AudioCtor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  _micTestAudioCtx = new AudioCtor();
+  const source = _micTestAudioCtx.createMediaStreamSource(_micTestStream);
+  _micTestAnalyser = _micTestAudioCtx.createAnalyser();
+  _micTestAnalyser.fftSize = 256;
+  source.connect(_micTestAnalyser);
+  const buf = new Uint8Array(_micTestAnalyser.frequencyBinCount);
+  const loop = () => {
+    if (!_micTestAnalyser) return;
+    _micTestAnalyser.getByteFrequencyData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i];
+    const avg = sum / buf.length / 255; // 0..1
+    const fill = rootEl.querySelector<HTMLDivElement>("#vs-meter-fill");
+    if (fill) fill.style.width = `${Math.min(100, avg * 200)}%`;
+    _micTestRaf = requestAnimationFrame(loop);
+  };
+  _micTestRaf = requestAnimationFrame(loop);
+  // Освежим имена устройств — теперь labels доступны.
+  _settingsDevices = null;
+  ensureSettingsDevicesLoaded();
+  render();
+}
+
+async function startCamTest(): Promise<void> {
+  if (_camTestStream) return;
+  try {
+    _camTestStream = await navigator.mediaDevices.getUserMedia({ video: buildVideoConstraints() });
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+    return;
+  }
+  _settingsDevices = null;
+  ensureSettingsDevicesLoaded();
+  render();
+  // srcObject ставим post-render, иначе element ещё не в DOM.
+  requestAnimationFrame(() => {
+    const v = rootEl.querySelector<HTMLVideoElement>("#vs-cam-preview");
+    if (v && _camTestStream) v.srcObject = _camTestStream;
+  });
+}
+
+function attachSettingsVoiceHandlers(): void {
+  if (state.modal !== "settings" || state.settings.tab !== "voice") return;
+
+  rootEl.querySelector<HTMLSelectElement>("#vs-audio-in")?.addEventListener("change", (e) => {
+    updateVoiceSettings({ audioInputId: (e.currentTarget as HTMLSelectElement).value || null });
+  });
+  rootEl.querySelector<HTMLSelectElement>("#vs-audio-out")?.addEventListener("change", (e) => {
+    updateVoiceSettings({ audioOutputId: (e.currentTarget as HTMLSelectElement).value || null });
+  });
+  rootEl.querySelector<HTMLSelectElement>("#vs-video-in")?.addEventListener("change", (e) => {
+    updateVoiceSettings({ videoInputId: (e.currentTarget as HTMLSelectElement).value || null });
+  });
+
+  // Слайдеры: live-update value-label без render() (иначе слетит pointer-capture).
+  const micGain = rootEl.querySelector<HTMLInputElement>("#vs-mic-gain");
+  micGain?.addEventListener("input", () => {
+    const pct = Number(micGain.value);
+    const label = rootEl.querySelector<HTMLSpanElement>("#vs-mic-gain-val");
+    if (label) label.textContent = `${pct}%`;
+    updateVoiceSettings({ micGain: pct / 100 });
+  });
+  const outVol = rootEl.querySelector<HTMLInputElement>("#vs-out-vol");
+  outVol?.addEventListener("input", () => {
+    const pct = Number(outVol.value);
+    const label = rootEl.querySelector<HTMLSpanElement>("#vs-out-vol-val");
+    if (label) label.textContent = `${pct}%`;
+    updateVoiceSettings({ outputVolume: pct / 100 });
+  });
+
+  rootEl.querySelectorAll<HTMLInputElement>('input[name="vs-res"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (r.checked) updateVoiceSettings({ cameraResolution: r.value as CameraResolution });
+    });
+  });
+
+  rootEl.querySelector<HTMLInputElement>("#vs-ec")?.addEventListener("change", (e) => {
+    updateVoiceSettings({ echoCancellation: (e.currentTarget as HTMLInputElement).checked });
+  });
+  rootEl.querySelector<HTMLInputElement>("#vs-agc")?.addEventListener("change", (e) => {
+    updateVoiceSettings({ autoGainControl: (e.currentTarget as HTMLInputElement).checked });
+  });
+  rootEl.querySelector<HTMLInputElement>("#vs-ns")?.addEventListener("change", (e) => {
+    updateVoiceSettings({ noiseSuppression: (e.currentTarget as HTMLInputElement).checked });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#vs-test-mic")?.addEventListener("click", () => {
+    if (_micTestStream) {
+      stopMicTest();
+      render();
+    } else {
+      void startMicTest();
+    }
+  });
+  rootEl.querySelector<HTMLButtonElement>("#vs-test-cam")?.addEventListener("click", () => {
+    if (_camTestStream) {
+      stopCamTest();
+      render();
+    } else {
+      void startCamTest();
+    }
+  });
+
+  // На re-render с активным cam-test — переподцепить srcObject (innerHTML
+  // нового тэга чистый).
+  if (_camTestStream) {
+    const v = rootEl.querySelector<HTMLVideoElement>("#vs-cam-preview");
+    if (v && v.srcObject !== _camTestStream) v.srcObject = _camTestStream;
+  }
 }
 
 function renderSettingsProfileTab(): string {
@@ -5290,6 +5634,10 @@ function renderSettingsProfileTab(): string {
 }
 
 function attachSettingsHandlers(): void {
+  // I.2: тушим mic/cam тесты как только модалка закрылась или таб сменился —
+  // вызываем безусловно (не только когда modal=settings), чтобы при закрытии
+  // модалки стримы освобождались.
+  stopVoiceTestsIfNotActive();
   if (state.modal !== "settings") return;
   rootEl.querySelectorAll<HTMLButtonElement>("[data-settings-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -5306,6 +5654,7 @@ function attachSettingsHandlers(): void {
     if (!confirm("Выйти из аккаунта?")) return;
     void httpClient.logout();
   });
+  attachSettingsVoiceHandlers();
 }
 
 interface ProfileFieldOpts {

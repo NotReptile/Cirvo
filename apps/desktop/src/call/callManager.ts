@@ -1,5 +1,6 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
+import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
 
 export type CallState =
   | "idle"
@@ -221,7 +222,7 @@ export class CallManager {
     if (!this.cameraTrack) {
       let videoStream: MediaStream;
       try {
-        videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        videoStream = await navigator.mediaDevices.getUserMedia({ video: buildVideoConstraints() });
       } catch {
         return false;
       }
@@ -355,12 +356,9 @@ export class CallManager {
 
   private async acquireLocalStream(): Promise<void> {
     if (this.localStream) return;
+    // I.2: constraints из voiceSettings (deviceId + ec/agc/ns).
     this.localStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        noiseSuppression: true,
-        echoCancellation: true,
-        autoGainControl: true
-      },
+      audio: buildAudioConstraints(),
       video: false
     });
   }

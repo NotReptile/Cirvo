@@ -3398,3 +3398,137 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .settings-stub-text {
   font-size: 13px;
 }
+
+/* I.2: Voice & video settings tab. Секции с заголовками, ряды
+   label+control, слайдеры с правым value-label'ом, RMS-meter для
+   теста микрофона, live-preview камеры. */
+.settings-section {
+  margin-bottom: 28px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-section:last-child { border-bottom: none; }
+.settings-section h3 {
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-mute);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.settings-row > label {
+  font-size: 14px;
+  color: var(--text);
+  min-width: 180px;
+}
+.settings-row-slider {
+  flex-direction: column;
+  align-items: stretch;
+}
+.settings-row-slider > label { min-width: 0; }
+.settings-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-slider-wrap input[type="range"] {
+  flex: 1;
+  min-width: 0;
+}
+.settings-slider-val {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--text-mute);
+  min-width: 44px;
+  text-align: right;
+}
+.settings-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.settings-select:disabled { opacity: 0.5; cursor: not-allowed; }
+.settings-hint {
+  font-size: 11px;
+  color: var(--text-mute);
+  margin-top: 4px;
+  display: block;
+  width: 100%;
+}
+.settings-radio-group {
+  display: inline-flex;
+  gap: 12px;
+}
+.settings-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.vs-meter {
+  flex: 1;
+  min-width: 200px;
+  height: 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.vs-meter-fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #3ba55c 0%, #faa61a 70%, #ed4245 100%);
+  transition: width 0.05s linear;
+}
+.vs-cam-preview {
+  display: block;
+  width: 320px;
+  height: 180px;
+  background: #000;
+  border-radius: 8px;
+  object-fit: cover;
+  margin-top: 8px;
+}
+.settings-content-body button.primary {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.settings-content-body button.primary:hover { filter: brightness(1.1); }
+.settings-content-body button.danger {
+  background: #ed4245;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.settings-content-body button.danger:hover { filter: brightness(1.1); }
