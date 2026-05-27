@@ -25,6 +25,9 @@ import (
 const (
 	maxDisplayName  = 64
 	maxCustomStatus = 64
+	maxBio          = 600
+	maxPronouns     = 32
+	maxBannerColor  = 16
 )
 
 // presenceModes — допустимые режимы для users.presence_mode. Семантика:
@@ -51,14 +54,28 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("PUT /api/v1/users/me/status", m.handleUpdateStatus)
 	router.Protected("PUT /api/v1/users/me/avatar", m.handleUpdateAvatar)
 	router.Protected("DELETE /api/v1/users/me/avatar", m.handleRemoveAvatar)
+	router.Protected("PUT /api/v1/users/me/banner", m.handleUpdateBanner)
+	router.Protected("DELETE /api/v1/users/me/banner", m.handleRemoveBanner)
 	router.Protected("GET /api/v1/users/{userId}", m.handleGetUser)
 }
 
+// I.6: updateRequest принимает pointer-поля — nil=не трогать, "" в строке=сбросить.
+// bannerColor отдельно от banner_media_id: пустой banner_media_id + bannerColor
+// = одноцветный баннер; banner_media_id есть = image-баннер (color игнорится UI).
 type updateRequest struct {
 	DisplayName *string `json:"displayName"`
+	Bio         *string `json:"bio"`
+	Pronouns    *string `json:"pronouns"`
+	BannerColor *string `json:"bannerColor"`
 }
 
 type avatarRequest struct {
+	MediaID string `json:"mediaId"`
+}
+
+// bannerRequest — для PUT /users/me/banner. mediaId должен быть image-объектом,
+// загруженным самим юзером (та же ACL что и аватар).
+type bannerRequest struct {
 	MediaID string `json:"mediaId"`
 }
 
@@ -69,6 +86,11 @@ type profileView struct {
 	AvatarMediaID string `json:"avatarMediaId,omitempty"`
 	PresenceMode  string `json:"presenceMode,omitempty"`
 	CustomStatus  string `json:"customStatus,omitempty"`
+	// I.6: расширенные поля профиля. Все опциональные.
+	Bio           string `json:"bio,omitempty"`
+	Pronouns      string `json:"pronouns,omitempty"`
+	BannerColor   string `json:"bannerColor,omitempty"`
+	BannerMediaID string `json:"bannerMediaId,omitempty"`
 }
 
 type meView struct {
@@ -272,22 +294,63 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
 		return
 	}
-	if req.DisplayName == nil {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "displayName is required")
-		return
-	}
-	trimmed := strings.TrimSpace(*req.DisplayName)
-	if len(trimmed) > maxDisplayName {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "displayName too long")
+	if req.DisplayName == nil && req.Bio == nil && req.Pronouns == nil && req.BannerColor == nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nothing to update")
 		return
 	}
 
 	now := time.Now().UTC()
-	_, err := m.db.Exec(r.Context(),
-		`update users set display_name = nullif($1, ''), updated_at = $2 where id = $3`,
-		trimmed, now, userID,
-	)
-	if err != nil {
+	setParts := []string{}
+	args := []any{}
+	idx := 1
+
+	if req.DisplayName != nil {
+		trimmed := strings.TrimSpace(*req.DisplayName)
+		if len(trimmed) > maxDisplayName {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "displayName too long")
+			return
+		}
+		setParts = append(setParts, "display_name = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	if req.Bio != nil {
+		trimmed := strings.TrimSpace(*req.Bio)
+		if len(trimmed) > maxBio {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "bio too long")
+			return
+		}
+		setParts = append(setParts, "bio = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	if req.Pronouns != nil {
+		trimmed := strings.TrimSpace(*req.Pronouns)
+		if len(trimmed) > maxPronouns {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "pronouns too long")
+			return
+		}
+		setParts = append(setParts, "pronouns = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	if req.BannerColor != nil {
+		trimmed := strings.TrimSpace(*req.BannerColor)
+		if len(trimmed) > maxBannerColor {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "bannerColor too long")
+			return
+		}
+		setParts = append(setParts, "banner_color = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	setParts = append(setParts, "updated_at = $"+strconv.Itoa(idx))
+	args = append(args, now)
+	idx++
+	args = append(args, userID)
+
+	q := "update users set " + strings.Join(setParts, ", ") + " where id = $" + strconv.Itoa(idx)
+	if _, err := m.db.Exec(r.Context(), q, args...); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update profile")
 		return
 	}
@@ -305,6 +368,94 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	m.publishUserUpdated(r.Context(), userID, view.AvatarMediaID, view.DisplayName)
+	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+// I.6: PUT /users/me/banner — привязывает уже загруженный media-объект
+// как баннер. ACL: media принадлежит юзеру + content-type image/*. По
+// семантике эквивалентно handleUpdateAvatar — копипаст не сокращаю
+// (общий helper резал бы читабельность для двух ровно одинаковых endpoint'ов).
+func (m *Module) handleUpdateBanner(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	var req bannerRequest
+	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
+		return
+	}
+	mediaID, err := uuid.Parse(strings.TrimSpace(req.MediaID))
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid mediaId")
+		return
+	}
+
+	var (
+		contentType string
+		ownerID     *uuid.UUID
+	)
+	err = m.db.QueryRow(r.Context(),
+		`select content_type, uploaded_by_user_id from media_objects where id = $1`,
+		mediaID,
+	).Scan(&contentType, &ownerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "media not found")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if ownerID == nil || *ownerID != userID {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "media does not belong to you")
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(contentType), "image/") {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "banner must be an image")
+		return
+	}
+
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update users set banner_media_id = $1, updated_at = $2 where id = $3`,
+		mediaID, now, userID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update banner")
+		return
+	}
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:    userID,
+		Action:     auditlog.ActionProfileUpdated,
+		TargetType: "user",
+		TargetID:   userID.String(),
+	})
+	view, err := m.loadMeView(r.Context(), userID, now)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload profile")
+		return
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+func (m *Module) handleRemoveBanner(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update users set banner_media_id = null, updated_at = $1 where id = $2`,
+		now, userID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not remove banner")
+		return
+	}
+	auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+		ActorID:    userID,
+		Action:     auditlog.ActionProfileUpdated,
+		TargetType: "user",
+		TargetID:   userID.String(),
+	})
+	view, err := m.loadMeView(r.Context(), userID, now)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload profile")
+		return
+	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -476,11 +627,18 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 		avatarID     *uuid.UUID
 		presenceMode string
 		customStatus *string
+		bio          *string
+		pronouns     *string
+		bannerColor  *string
+		bannerID     *uuid.UUID
 	)
 	if err := m.db.QueryRow(ctx,
-		`select email, username, display_name, avatar_media_id, presence_mode, custom_status from users where id = $1`,
+		`select email, username, display_name, avatar_media_id, presence_mode, custom_status,
+		        bio, pronouns, banner_color, banner_media_id
+		 from users where id = $1`,
 		userID,
-	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus); err != nil {
+	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus,
+		&bio, &pronouns, &bannerColor, &bannerID); err != nil {
 		return meView{}, err
 	}
 	view := meView{
@@ -496,6 +654,18 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 	}
 	if customStatus != nil {
 		view.CustomStatus = *customStatus
+	}
+	if bio != nil {
+		view.Bio = *bio
+	}
+	if pronouns != nil {
+		view.Pronouns = *pronouns
+	}
+	if bannerColor != nil {
+		view.BannerColor = *bannerColor
+	}
+	if bannerID != nil {
+		view.BannerMediaID = bannerID.String()
 	}
 	return view, nil
 }
@@ -513,14 +683,20 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		avatarID     *uuid.UUID
 		presenceMode string
 		customStatus *string
+		bio          *string
+		pronouns     *string
+		bannerColor  *string
+		bannerID     *uuid.UUID
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select username, display_name, avatar_media_id,
 		        `+effectivePresenceModeExpr("u")+`,
-		        `+effectiveCustomStatusExpr("u")+`
+		        `+effectiveCustomStatusExpr("u")+`,
+		        u.bio, u.pronouns, u.banner_color, u.banner_media_id
 		 from users u where u.id = $1`,
 		targetID,
-	).Scan(&username, &display, &avatarID, &presenceMode, &customStatus)
+	).Scan(&username, &display, &avatarID, &presenceMode, &customStatus,
+		&bio, &pronouns, &bannerColor, &bannerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -549,6 +725,18 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if customStatus != nil {
 		view.CustomStatus = *customStatus
+	}
+	if bio != nil {
+		view.Bio = *bio
+	}
+	if pronouns != nil {
+		view.Pronouns = *pronouns
+	}
+	if bannerColor != nil {
+		view.BannerColor = *bannerColor
+	}
+	if bannerID != nil {
+		view.BannerMediaID = bannerID.String()
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }

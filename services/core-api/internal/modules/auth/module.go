@@ -99,6 +99,11 @@ type userView struct {
 	AvatarMediaID string `json:"avatarMediaId,omitempty"`
 	PresenceMode  string `json:"presenceMode,omitempty"`
 	CustomStatus  string `json:"customStatus,omitempty"`
+	// I.6: расширенный профиль. Опциональные.
+	Bio           string `json:"bio,omitempty"`
+	Pronouns      string `json:"pronouns,omitempty"`
+	BannerColor   string `json:"bannerColor,omitempty"`
+	BannerMediaID string `json:"bannerMediaId,omitempty"`
 }
 
 func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -224,12 +229,20 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		avatarID     *uuid.UUID
 		presenceMode string
 		customStatus *string
+		bio          *string
+		pronouns     *string
+		bannerColor  *string
+		bannerID     *uuid.UUID
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select id, email, username, display_name, password_hash, banned_at, is_root, avatar_media_id, presence_mode, custom_status
+		`select id, email, username, display_name, password_hash, banned_at, is_root,
+		        avatar_media_id, presence_mode, custom_status,
+		        bio, pronouns, banner_color, banner_media_id
 		 from users where email = $1 or username = $1`,
 		req.Login,
-	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot, &avatarID, &presenceMode, &customStatus)
+	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot,
+		&avatarID, &presenceMode, &customStatus,
+		&bio, &pronouns, &bannerColor, &bannerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
@@ -276,6 +289,18 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if customStatus != nil {
 		resp.User.CustomStatus = *customStatus
+	}
+	if bio != nil {
+		resp.User.Bio = *bio
+	}
+	if pronouns != nil {
+		resp.User.Pronouns = *pronouns
+	}
+	if bannerColor != nil {
+		resp.User.BannerColor = *bannerColor
+	}
+	if bannerID != nil {
+		resp.User.BannerMediaID = bannerID.String()
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
@@ -403,11 +428,18 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		avatarID     *uuid.UUID
 		presenceMode string
 		customStatus *string
+		bio          *string
+		pronouns     *string
+		bannerColor  *string
+		bannerID     *uuid.UUID
 	)
 	err := m.db.QueryRow(r.Context(),
-		`select email, username, display_name, is_root, avatar_media_id, presence_mode, custom_status from users where id = $1`,
+		`select email, username, display_name, is_root, avatar_media_id, presence_mode, custom_status,
+		        bio, pronouns, banner_color, banner_media_id
+		 from users where id = $1`,
 		userID,
-	).Scan(&email, &username, &displayName, &isRoot, &avatarID, &presenceMode, &customStatus)
+	).Scan(&email, &username, &displayName, &isRoot, &avatarID, &presenceMode, &customStatus,
+		&bio, &pronouns, &bannerColor, &bannerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -425,6 +457,18 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if customStatus != nil {
 		view.CustomStatus = *customStatus
+	}
+	if bio != nil {
+		view.Bio = *bio
+	}
+	if pronouns != nil {
+		view.Pronouns = *pronouns
+	}
+	if bannerColor != nil {
+		view.BannerColor = *bannerColor
+	}
+	if bannerID != nil {
+		view.BannerMediaID = bannerID.String()
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }

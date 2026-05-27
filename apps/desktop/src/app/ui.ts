@@ -112,6 +112,27 @@ interface Me {
   avatarMediaId?: string;
   presenceMode?: PresenceMode;
   customStatus?: string;
+  // I.6: расширенный профиль
+  bio?: string;
+  pronouns?: string;
+  bannerColor?: string;
+  bannerMediaId?: string;
+}
+
+// I.6: ответ GET /users/{id} (profile.handleGetUser). Лениво подтягивается
+// в user-profile-popup для не-self юзеров — member-листы расширенные
+// поля не отдают (экономим bandwidth).
+interface UserProfileData {
+  id: string;
+  username: string;
+  displayName?: string;
+  avatarMediaId?: string;
+  presenceMode?: PresenceMode;
+  customStatus?: string;
+  bio?: string;
+  pronouns?: string;
+  bannerColor?: string;
+  bannerMediaId?: string;
 }
 
 interface Workspace {
@@ -552,6 +573,8 @@ interface AppState {
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
   userProfileTarget: string | null;
+  // I.6: лениво загруженные расширенные поля профиля для user-profile-popup.
+  userProfileData: UserProfileData | null;
   // Клиентский mute каналов: Set channelId. Подавляет browser-notification
   // и unread-индикатор для канала. Не персистится на бэке (MVP) —
   // на refresh сбрасывается, как в Discord-default-state до сохранения.
@@ -585,11 +608,15 @@ interface AppState {
 }
 
 interface ProfileEditState {
-  field: "displayName" | "password" | null;
+  field: "displayName" | "password" | "bio" | "pronouns" | "bannerColor" | null;
   draftDisplayName: string;
   currentPassword: string;
   newPassword: string;
   confirmPassword: string;
+  // I.6: drafts расширенных полей профиля
+  draftBio: string;
+  draftPronouns: string;
+  draftBannerColor: string;
   saving: boolean;
   error: string | null;
   // one-shot status под кнопкой сохранения (например, «Пароль обновлён»),
@@ -713,6 +740,7 @@ const state: AppState = {
   auditFilter: { action: "", actor: "" },
   memberSidebarOpen: true,
   userProfileTarget: null,
+  userProfileData: null,
   mutedChannels: new Set(),
   screenShareQuality: loadScreenShareQuality(),
   dmMode: false,
@@ -748,6 +776,9 @@ const state: AppState = {
     currentPassword: "",
     newPassword: "",
     confirmPassword: "",
+    draftBio: "",
+    draftPronouns: "",
+    draftBannerColor: "",
     saving: false,
     error: null,
     okMessage: null
@@ -1402,6 +1433,7 @@ function installGlobalKeyboardShortcuts(): void {
       if (state.modal) {
         state.modal = null;
         state.userProfileTarget = null;
+        state.userProfileData = null;
         render();
         return;
       }
@@ -3994,18 +4026,27 @@ function renderUserProfilePopup(): string {
   if (!userId) return "";
   const member = state.members.find((m) => m.userId === userId);
   const dm = state.dms.find((d) => d.peer.userId === userId);
-  const name = member?.displayName || member?.username || dm?.peer.displayName || dm?.peer.username || "Пользователь";
-  const username = member?.username || dm?.peer.username || "";
-  const avatarMediaId = member?.avatarMediaId || dm?.peer.avatarMediaId;
-  const presenceMode = member?.presenceMode || dm?.peer.presenceMode;
-  const customStatus = member?.customStatus || dm?.peer.customStatus;
-  const role = member?.role;
   const isSelf = userId === state.me?.id;
+  // I.6: source-of-truth для расширенных полей — state.userProfileData
+  // (тянется лениво при openUserProfile) либо state.me для self.
+  const extras = isSelf ? state.me : state.userProfileData;
+  const name = member?.displayName || member?.username || dm?.peer.displayName || dm?.peer.username || extras?.displayName || extras?.username || "Пользователь";
+  const username = member?.username || dm?.peer.username || extras?.username || "";
+  const avatarMediaId = member?.avatarMediaId || dm?.peer.avatarMediaId || extras?.avatarMediaId;
+  const presenceMode = member?.presenceMode || dm?.peer.presenceMode || extras?.presenceMode;
+  const customStatus = member?.customStatus || dm?.peer.customStatus || extras?.customStatus;
+  const role = member?.role;
+  const bio = extras?.bio;
+  const pronouns = extras?.pronouns;
+  const bannerMediaId = extras?.bannerMediaId;
+  const bannerColor = extras?.bannerColor;
   const inCall = state.callSnapshot !== null;
+  const bannerStyle = bannerMediaId ? "" : bannerColor ? `background: ${escapeHtml(bannerColor)};` : "";
+  const bannerAttrs = bannerMediaId ? ` data-banner-media="${escapeHtml(bannerMediaId)}"` : "";
   return `
     <div class="modal-backdrop" data-modal-close>
       <div class="modal user-profile-popup" role="dialog">
-        <div class="user-profile-banner"></div>
+        <div class="user-profile-banner" style="${bannerStyle}"${bannerAttrs}></div>
         <button class="user-profile-close" data-modal-close title="Закрыть">✕</button>
         <div class="user-profile-avatar-row">
           <div class="user-profile-avatar-wrap">
@@ -4014,10 +4055,11 @@ function renderUserProfilePopup(): string {
           </div>
         </div>
         <div class="user-profile-card">
-          <div class="user-profile-name">${escapeHtml(name)}</div>
+          <div class="user-profile-name">${escapeHtml(name)}${pronouns ? ` <span class="profile-card-pronouns">${escapeHtml(pronouns)}</span>` : ""}</div>
           ${username ? `<div class="user-profile-username">@${escapeHtml(username)}</div>` : ""}
           ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
           ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(role)}</span></div>` : ""}
+          ${bio ? `<div class="user-profile-bio">${escapeHtml(bio)}</div>` : ""}
           ${
             isSelf
               ? ""
@@ -4034,8 +4076,25 @@ function renderUserProfilePopup(): string {
 
 function openUserProfile(userId: string): void {
   state.userProfileTarget = userId;
+  state.userProfileData = null;
   state.modal = "userProfile";
   render();
+  // I.6: лениво подтягиваем расширенные поля (bio/pronouns/banner). Member-листы
+  // их не возвращают (экономим bandwidth), профиль-попап — единственное место,
+  // где они показываются.
+  if (userId !== state.me?.id) {
+    void (async () => {
+      try {
+        const data = await httpClient.get<UserProfileData>(`/api/v1/users/${userId}`);
+        if (state.userProfileTarget === userId) {
+          state.userProfileData = data;
+          render();
+        }
+      } catch {
+        /* 404/network — оставляем без bio/banner */
+      }
+    })();
+  }
 }
 
 // H.10: модалка настроек воркспейса. Табы:
@@ -4346,13 +4405,16 @@ async function deleteWorkspace(): Promise<void> {
 // G.10: enter/leave inline-edit mode для поля профиля. Сбрасываем draft'ы
 // и error при каждом переходе — чтобы открытие «Изменить пароль» не показало
 // ошибку от прошлой попытки.
-function startProfileEdit(field: "displayName" | "password"): void {
+function startProfileEdit(field: "displayName" | "password" | "bio" | "pronouns" | "bannerColor"): void {
   state.profileEdit = {
     field,
     draftDisplayName: state.me?.displayName ?? "",
     currentPassword: "",
     newPassword: "",
     confirmPassword: "",
+    draftBio: state.me?.bio ?? "",
+    draftPronouns: state.me?.pronouns ?? "",
+    draftBannerColor: state.me?.bannerColor ?? "",
     saving: false,
     error: null,
     okMessage: null
@@ -4360,8 +4422,14 @@ function startProfileEdit(field: "displayName" | "password"): void {
   render();
   // фокус на первое поле редактора
   requestAnimationFrame(() => {
-    const sel = field === "displayName" ? "#profile-display-input" : "#profile-pw-current";
-    rootEl.querySelector<HTMLInputElement>(sel)?.focus();
+    const sel =
+      field === "displayName" ? "#profile-display-input"
+      : field === "password" ? "#profile-pw-current"
+      : field === "bio" ? "#profile-bio-input"
+      : field === "pronouns" ? "#profile-pronouns-input"
+      : field === "bannerColor" ? "#profile-banner-color-input"
+      : "";
+    if (sel) rootEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(sel)?.focus();
   });
 }
 
@@ -4377,7 +4445,8 @@ function attachProfileEditHandlers(): void {
 
   rootEl.querySelectorAll<HTMLButtonElement>("[data-profile-edit]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const f = btn.dataset.profileEdit as "displayName" | "password" | undefined;
+      const f = btn.dataset.profileEdit as
+        | "displayName" | "password" | "bio" | "pronouns" | "bannerColor" | undefined;
       if (f) startProfileEdit(f);
     });
   });
@@ -4404,6 +4473,117 @@ function attachProfileEditHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#profile-pw-save")?.addEventListener("click", () => {
     void savePassword();
   });
+
+  // I.6: bio / pronouns / bannerColor edits.
+  const bioInput = rootEl.querySelector<HTMLTextAreaElement>("#profile-bio-input");
+  bioInput?.addEventListener("input", () => {
+    state.profileEdit.draftBio = bioInput.value;
+    // Обновляем счётчик символов без render() (текстарея сохраняет фокус).
+    const hint = bioInput.parentElement?.querySelector<HTMLElement>(".profile-field-hint");
+    if (hint) hint.textContent = `${600 - bioInput.value.length} симв.`;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#profile-bio-save")?.addEventListener("click", () => {
+    void saveProfileExtra("bio");
+  });
+
+  const pronInput = rootEl.querySelector<HTMLInputElement>("#profile-pronouns-input");
+  pronInput?.addEventListener("input", () => {
+    state.profileEdit.draftPronouns = pronInput.value;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#profile-pronouns-save")?.addEventListener("click", () => {
+    void saveProfileExtra("pronouns");
+  });
+
+  const bcInput = rootEl.querySelector<HTMLInputElement>("#profile-banner-color-input");
+  bcInput?.addEventListener("input", () => {
+    state.profileEdit.draftBannerColor = bcInput.value;
+    const label = rootEl.querySelector<HTMLSpanElement>("#profile-banner-color-val");
+    if (label) label.textContent = bcInput.value;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#profile-banner-color-clear")?.addEventListener("click", () => {
+    state.profileEdit.draftBannerColor = "";
+    render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#profile-banner-color-save")?.addEventListener("click", () => {
+    void saveProfileExtra("bannerColor");
+  });
+
+  // I.6: загрузка/удаление баннер-картинки (двухступенчатый flow как для аватара).
+  rootEl.querySelector<HTMLButtonElement>("#profile-banner-upload")?.addEventListener("click", () => {
+    rootEl.querySelector<HTMLInputElement>("#profile-banner-input")?.click();
+  });
+  rootEl.querySelector<HTMLInputElement>("#profile-banner-input")?.addEventListener("change", async (e) => {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      state.status = "Баннер должен быть картинкой";
+      render();
+      return;
+    }
+    try {
+      state.status = "Загрузка баннера…";
+      render();
+      const uploaded = await httpClient.uploadFile<PendingUpload>("/api/v1/uploads", file);
+      const updated = await httpClient.put<Me & { updatedAt: string }>(
+        "/api/v1/users/me/banner",
+        { mediaId: uploaded.id }
+      );
+      if (state.me) {
+        state.me = { ...state.me, bannerMediaId: updated.bannerMediaId };
+      }
+      setTransientStatus("Баннер обновлён");
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    } finally {
+      input.value = "";
+    }
+  });
+  rootEl.querySelector<HTMLButtonElement>("#profile-banner-remove")?.addEventListener("click", async () => {
+    try {
+      const updated = await httpClient.del<Me & { updatedAt: string }>("/api/v1/users/me/banner");
+      if (state.me) {
+        state.me = { ...state.me, bannerMediaId: undefined, bannerColor: updated.bannerColor ?? state.me.bannerColor };
+      }
+      setTransientStatus("Баннер удалён");
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
+}
+
+// I.6: общий save для bio/pronouns/bannerColor — все через PUT /users/me
+// с pointer-полем. Сервер возвращает обновлённый meView, обновляем state.me.
+async function saveProfileExtra(field: "bio" | "pronouns" | "bannerColor"): Promise<void> {
+  const pe = state.profileEdit;
+  pe.saving = true;
+  pe.error = null;
+  render();
+  const body: Record<string, string> = {};
+  if (field === "bio") body.bio = pe.draftBio.trim();
+  if (field === "pronouns") body.pronouns = pe.draftPronouns.trim();
+  if (field === "bannerColor") body.bannerColor = pe.draftBannerColor.trim();
+  try {
+    const updated = await httpClient.put<Me & { updatedAt: string }>("/api/v1/users/me", body);
+    state.me = {
+      ...(state.me as Me),
+      bio: updated.bio,
+      pronouns: updated.pronouns,
+      bannerColor: updated.bannerColor,
+      displayName: updated.displayName ?? state.me?.displayName,
+      avatarMediaId: updated.avatarMediaId ?? state.me?.avatarMediaId,
+      bannerMediaId: updated.bannerMediaId ?? state.me?.bannerMediaId
+    };
+    state.profileEdit.field = null;
+    state.profileEdit.saving = false;
+    setTransientStatus(field === "bio" ? "Био обновлено" : field === "pronouns" ? "Местоимения обновлены" : "Цвет баннера обновлён");
+  } catch (err) {
+    pe.saving = false;
+    pe.error = describeError(err);
+    render();
+  }
 }
 
 async function saveDisplayName(): Promise<void> {
@@ -6062,8 +6242,28 @@ function renderSettingsProfileTab(): string {
   if (!me) return "";
   const editing = state.profileEdit.field;
   const displayName = me.displayName || me.username;
+  // I.6: баннер — либо image (banner_media_id), либо solid-цвет
+  // (banner_color), либо дефолтный gradient. data-banner-media для
+  // lazy-load (тот же mediaBlobCache, что для аватаров).
+  const bannerStyle = me.bannerMediaId
+    ? "" // image приедет через data-banner-media
+    : me.bannerColor
+      ? `background: ${escapeHtml(me.bannerColor)};`
+      : "";
+  const bannerAttrs = me.bannerMediaId ? ` data-banner-media="${escapeHtml(me.bannerMediaId)}"` : "";
   return `
     <div class="profile-card-head">
+      <div class="profile-banner-area" style="${bannerStyle}"${bannerAttrs}>
+        <div class="profile-banner-actions">
+          <button id="profile-banner-upload" class="ghost profile-banner-btn" title="Загрузить баннер">
+            ${icon("pencil", { size: 14 })}
+          </button>
+          ${me.bannerMediaId
+            ? `<button id="profile-banner-remove" class="ghost profile-banner-btn" title="Удалить баннер">${icon("trash", { size: 14 })}</button>`
+            : ""}
+        </div>
+      </div>
+      <input id="profile-banner-input" type="file" accept="image/*" hidden />
       <div class="profile-card-avatar-wrap">
         ${renderAvatar({
           avatarMediaId: me.avatarMediaId,
@@ -6079,7 +6279,7 @@ function renderSettingsProfileTab(): string {
           : ""}
       </div>
       <div class="profile-card-name">
-        <div class="profile-card-display">${escapeHtml(displayName)}</div>
+        <div class="profile-card-display">${escapeHtml(displayName)}${me.pronouns ? ` <span class="profile-card-pronouns">${escapeHtml(me.pronouns)}</span>` : ""}</div>
         <div class="profile-card-username">@${escapeHtml(me.username)}</div>
       </div>
     </div>
@@ -6090,6 +6290,27 @@ function renderSettingsProfileTab(): string {
         field: "displayName",
         editing: editing === "displayName",
         body: renderProfileEditDisplayName(me.displayName ?? "")
+      })}
+      ${renderProfileField({
+        label: "Местоимения",
+        value: me.pronouns || "—",
+        field: "pronouns",
+        editing: editing === "pronouns",
+        body: renderProfileEditPronouns()
+      })}
+      ${renderProfileField({
+        label: "Биография",
+        value: me.bio || "—",
+        field: "bio",
+        editing: editing === "bio",
+        body: renderProfileEditBio()
+      })}
+      ${renderProfileField({
+        label: "Цвет баннера",
+        value: me.bannerColor || "по умолчанию",
+        field: "bannerColor",
+        editing: editing === "bannerColor",
+        body: renderProfileEditBannerColor()
       })}
       ${renderProfileField({
         label: "Имя пользователя",
@@ -6116,6 +6337,62 @@ function renderSettingsProfileTab(): string {
         editing: editing === "password",
         body: renderProfileEditPassword()
       })}
+    </div>
+  `;
+}
+
+function renderProfileEditPronouns(): string {
+  const pe = state.profileEdit;
+  const errBlock = pe.error ? `<div class="modal-error">${escapeHtml(pe.error)}</div>` : "";
+  return `
+    <input id="profile-pronouns-input" type="text" maxlength="32"
+           placeholder="например, он/его"
+           value="${escapeHtml(pe.draftPronouns)}" />
+    ${errBlock}
+    <div class="profile-field-actions">
+      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button id="profile-pronouns-save" class="primary" ${pe.saving ? "disabled" : ""}>
+        ${pe.saving ? "Сохранение…" : "Сохранить"}
+      </button>
+    </div>
+  `;
+}
+
+function renderProfileEditBio(): string {
+  const pe = state.profileEdit;
+  const errBlock = pe.error ? `<div class="modal-error">${escapeHtml(pe.error)}</div>` : "";
+  const remaining = 600 - pe.draftBio.length;
+  return `
+    <textarea id="profile-bio-input" maxlength="600" rows="4"
+              placeholder="Расскажи о себе…">${escapeHtml(pe.draftBio)}</textarea>
+    <div class="profile-field-hint" style="text-align:right;">${remaining} симв.</div>
+    ${errBlock}
+    <div class="profile-field-actions">
+      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button id="profile-bio-save" class="primary" ${pe.saving ? "disabled" : ""}>
+        ${pe.saving ? "Сохранение…" : "Сохранить"}
+      </button>
+    </div>
+  `;
+}
+
+function renderProfileEditBannerColor(): string {
+  const pe = state.profileEdit;
+  const errBlock = pe.error ? `<div class="modal-error">${escapeHtml(pe.error)}</div>` : "";
+  const colorValue = pe.draftBannerColor || "#5865f2";
+  return `
+    <div class="settings-slider-wrap" style="gap:12px; align-items:center;">
+      <input id="profile-banner-color-input" type="color" value="${escapeHtml(colorValue)}" />
+      <span id="profile-banner-color-val" class="settings-slider-val" style="min-width:120px;">${escapeHtml(pe.draftBannerColor || "по умолчанию")}</span>
+      <button id="profile-banner-color-clear" class="ghost" title="Очистить">${icon("x", { size: 14 })}</button>
+    </div>
+    <small class="profile-field-hint">Применяется когда нет загруженной картинки баннера.</small>
+    ${errBlock}
+    <div class="profile-field-actions">
+      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button id="profile-banner-color-save" class="primary" ${pe.saving ? "disabled" : ""}>
+        ${pe.saving ? "Сохранение…" : "Сохранить"}
+      </button>
     </div>
   `;
 }
@@ -6149,7 +6426,7 @@ function attachSettingsHandlers(): void {
 interface ProfileFieldOpts {
   label: string;
   value: string;
-  field: "displayName" | "username" | "email" | "password";
+  field: "displayName" | "username" | "email" | "password" | "bio" | "pronouns" | "bannerColor";
   editing: boolean;
   disabled?: boolean;
   disabledHint?: string;
@@ -7426,6 +7703,43 @@ function attachShellHandlers(): void {
         });
       } catch {
         // letter остаётся видимой
+      }
+    })();
+  });
+
+  // I.6: lazy-load баннер профиля. data-banner-media → blob через тот же
+  // mediaBlobCache, вставляется как inline-background через style.
+  rootEl.querySelectorAll<HTMLElement>("[data-banner-media]").forEach((slot) => {
+    const mediaId = slot.dataset.bannerMedia;
+    if (!mediaId) return;
+    if (slot.dataset.bannerLoaded === mediaId) return;
+    const url = `/api/v1/media/${mediaId}`;
+    const apply = (blobUrl: string) => {
+      slot.style.backgroundImage = `url("${blobUrl}")`;
+      slot.style.backgroundSize = "cover";
+      slot.style.backgroundPosition = "center";
+      slot.dataset.bannerLoaded = mediaId;
+    };
+    const cached = mediaBlobCache.get(url);
+    if (cached) {
+      apply(cached);
+      return;
+    }
+    void (async () => {
+      try {
+        const blob = await httpClient.getBlob(url);
+        const blobUrl = URL.createObjectURL(blob);
+        mediaBlobCache.set(url, blobUrl);
+        rootEl.querySelectorAll<HTMLElement>(`[data-banner-media="${CSS.escape(mediaId)}"]`).forEach((s) => {
+          if (s.dataset.bannerLoaded === mediaId) return;
+          apply.call(null, blobUrl);
+          s.style.backgroundImage = `url("${blobUrl}")`;
+          s.style.backgroundSize = "cover";
+          s.style.backgroundPosition = "center";
+          s.dataset.bannerLoaded = mediaId;
+        });
+      } catch {
+        /* fallback на bannerColor / default gradient */
       }
     })();
   });

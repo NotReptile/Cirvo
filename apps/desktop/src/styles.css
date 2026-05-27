@@ -3746,3 +3746,69 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   left: 16px;
   background: var(--accent);
 }
+
+/* I.6: profile banner area + bio + pronouns в settings-profile-tab.
+   Баннер растягивается на всю ширину карточки, аватар (96px)
+   накладывается снизу через margin-top:-48px из существующих стилей. */
+.profile-banner-area {
+  height: 120px;
+  background: linear-gradient(135deg, var(--accent) 0%, #3b48c4 50%, #1e2030 100%);
+  border-radius: 8px;
+  position: relative;
+  margin-bottom: -48px;
+  flex-shrink: 0;
+}
+.profile-banner-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.profile-banner-area:hover .profile-banner-actions { opacity: 1; }
+.profile-banner-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  color: white;
+  border-radius: 4px;
+}
+.profile-banner-btn:hover { background: rgba(0, 0, 0, 0.6); }
+
+.profile-card-pronouns {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-mute);
+  margin-left: 6px;
+}
+.profile-field textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 80px;
+  outline: none;
+}
+.profile-field textarea:focus { border-color: var(--accent); }
+
+/* I.6: bio в user-profile-popup. */
+.user-profile-bio {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+  line-height: 1.5;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
