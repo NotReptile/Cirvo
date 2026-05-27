@@ -1219,10 +1219,27 @@ function handleIncomingNotification(p: {
     payload: p.payload,
     createdAt: p.createdAt
   };
+  // Если сообщение пришло в активный канал — юзер уже его видит,
+  // не надо вешать badge и держать notification «unread». Звонкам
+  // (call_incoming) приходит без channelId — их не глушим.
+  const inActiveChannel =
+    !!item.payload.channelId &&
+    item.payload.channelId === state.selectedChannelId &&
+    item.kind !== "call_incoming";
+  if (inActiveChannel) {
+    item.readAt = new Date().toISOString();
+    void httpClient.post(`/api/v1/notifications/${item.id}/read`).catch(() => {
+      /* idempotent */
+    });
+  }
   state.notifications = [item, ...state.notifications].slice(0, 50);
-  state.notificationsUnread += 1;
+  if (!item.readAt) {
+    state.notificationsUnread += 1;
+  }
   render();
-  maybeShowBrowserNotification(item);
+  if (!inActiveChannel) {
+    maybeShowBrowserNotification(item);
+  }
 }
 
 // Браузерное уведомление показываем ТОЛЬКО когда окно неактивно
@@ -1408,7 +1425,16 @@ async function openNotification(item: NotificationItem): Promise<void> {
   }
   const targetChannel = item.payload.channelId;
   const targetWorkspace = item.payload.workspaceId;
-  if (targetWorkspace && targetWorkspace !== state.selectedWorkspaceId) {
+  // DM-канал — workspaceId payload пустой, channelId есть. Выходим из
+  // ws-режима в DM-режим и убеждаемся что state.dms загружен (иначе
+  // selectChannel сработает, но имена peer'ов покажутся как uuid и
+  // renderDMChannelView не найдёт peer-инфо).
+  const isDM = !targetWorkspace && !!targetChannel;
+  if (isDM) {
+    state.dmMode = true;
+    if (state.dms.length === 0) await loadDMs();
+  } else if (targetWorkspace && targetWorkspace !== state.selectedWorkspaceId) {
+    state.dmMode = false;
     await selectWorkspace(targetWorkspace);
   }
   if (targetChannel && targetChannel !== state.selectedChannelId) {
@@ -2561,8 +2587,17 @@ function authorColorStyle(userId: string): string {
 
 function describePeer(userId: string | null): string {
   if (!userId) return "—";
+  // Сам пользователь — в DM author всегда либо я, либо peer; без
+  // этой ветки своё имя в DM показывалось бы как uuid (state.members
+  // workspace-scoped и в DM-режиме может быть пустым).
+  if (state.me && userId === state.me.id) {
+    return state.me.displayName || state.me.username || userId.slice(0, 8);
+  }
   const member = state.members.find((m) => m.userId === userId);
   if (member) return member.displayName || member.username;
+  // DM-peer'ы лежат в state.dms — отдельный источник от workspace-членов.
+  const dm = state.dms.find((d) => d.peer.userId === userId);
+  if (dm) return dm.peer.displayName || dm.peer.username;
   return userId.slice(0, 8);
 }
 
@@ -2641,13 +2676,12 @@ function renderChannelCategory(
         .join(" ");
       const badge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : "";
       const inlineList = kind === "voice" ? renderVoiceInlineParticipants(ch.id) : "";
-      // J.2: hover-кнопки на канале (как в Discord). Видны только при
-      // hover'е, для owner/admin/moderator (invite — всем модерациям,
-      // settings — только owner/admin). Заменяют первичный путь к
-      // настройкам канала (раньше — ⚙ в channel-header, теперь — здесь).
+      // J.2: hover-кнопка ⚙ настроек канала (как в Discord), для
+      // owner/admin. Заменяет первичный путь к настройкам (раньше —
+      // ⚙ в channel-header). Кнопка инвайта убрана — current invite
+      // flow workspace-scoped, per-channel-invite задаче J.3.
       const actions = canManage
         ? `<span class="channel-item-actions">
-             <button class="ghost channel-item-invite" data-ch-invite="${ch.id}" title="Пригласить" aria-label="Пригласить">${icon("plus")}</button>
              <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
            </span>`
         : "";
@@ -5906,19 +5940,6 @@ function attachShellHandlers(): void {
       };
       render();
       void loadChannelPermissions();
-    });
-  });
-  rootEl.querySelectorAll<HTMLButtonElement>("[data-ch-invite]").forEach((btn) => {
-    btn.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      const id = btn.dataset.chInvite;
-      const ch = state.channels.find((c) => c.id === id);
-      if (!ch) return;
-      // Инвайты пока workspace-scoped (см. ПКМ-меню «Пригласить»).
-      // Полноценная per-channel-invite — backlog (J.3 → таб «Приглашения»).
-      state.invitesOpen = true;
-      state.status = `Создай инвайт в воркспейс — он привяжет нового участника, а доступ к #${ch.name} даст admin'у через настройки канала.`;
-      render();
     });
   });
 
