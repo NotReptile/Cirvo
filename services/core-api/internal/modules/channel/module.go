@@ -74,14 +74,16 @@ func (m *Module) publish(eventName string, workspaceID uuid.UUID, channelID stri
 }
 
 type channelView struct {
-	ID          string    `json:"id"`
-	WorkspaceID string    `json:"workspaceId"`
-	Kind        string    `json:"kind"`
-	Name        string    `json:"name"`
-	Topic       string    `json:"topic,omitempty"`
-	IsPrivate   bool      `json:"isPrivate"`
-	Position    int       `json:"position"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID              string    `json:"id"`
+	WorkspaceID     string    `json:"workspaceId"`
+	Kind            string    `json:"kind"`
+	Name            string    `json:"name"`
+	Topic           string    `json:"topic,omitempty"`
+	IsPrivate       bool      `json:"isPrivate"`
+	Position        int       `json:"position"`
+	CreatedAt       time.Time `json:"createdAt"`
+	SlowModeSeconds int       `json:"slowModeSeconds"`
+	IsNsfw          bool      `json:"isNsfw"`
 }
 
 type createRequest struct {
@@ -129,7 +131,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	//     соответствующего channel_role_overrides. base_action_mask на приватные
 	//     каналы НЕ распространяется (H.6).
 	rows, err := m.db.Query(r.Context(),
-		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at
+		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw
 		 from channels c
 		 where c.workspace_id = $1
 		   and (
@@ -160,7 +162,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v channelView
 		var id, wsID uuid.UUID
-		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -285,9 +287,11 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateRequest struct {
-	Name      *string `json:"name"`
-	Topic     *string `json:"topic"`
-	IsPrivate *bool   `json:"isPrivate"`
+	Name            *string `json:"name"`
+	Topic           *string `json:"topic"`
+	IsPrivate       *bool   `json:"isPrivate"`
+	SlowModeSeconds *int    `json:"slowModeSeconds"`
+	IsNsfw          *bool   `json:"isNsfw"`
 }
 
 // handleUpdate — PATCH /api/v1/channels/{id}. Изменяем name/topic/isPrivate.
@@ -333,6 +337,15 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Topic = &trimmed
 	}
+	// J.3: sanity guard — CHECK constraint в БД тоже ловит, но 400 удобнее
+	// чем 500 от транзакции. 6 часов сверху — больше нет смысла (всё равно
+	// аудитория уйдёт), меньше нуля бессмысленно.
+	if req.SlowModeSeconds != nil {
+		if *req.SlowModeSeconds < 0 || *req.SlowModeSeconds > 21600 {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "slowModeSeconds must be 0..21600")
+			return
+		}
+	}
 
 	// Запоминаем old name до апдейта, чтобы post-система могла оформить
 	// «Канал переименован: #old → #new». Если запрос не меняет имя — поле
@@ -347,12 +360,14 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	_, err := m.db.Exec(r.Context(),
 		`update channels set
-		   name       = coalesce($2, name),
-		   topic      = case when $3::bool then nullif($4, '') else topic end,
-		   is_private = coalesce($5, is_private),
-		   updated_at = $6
+		   name              = coalesce($2, name),
+		   topic             = case when $3::bool then nullif($4, '') else topic end,
+		   is_private        = coalesce($5, is_private),
+		   slow_mode_seconds = coalesce($7, slow_mode_seconds),
+		   is_nsfw           = coalesce($8, is_nsfw),
+		   updated_at        = $6
 		 where id = $1`,
-		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now,
+		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now, req.SlowModeSeconds, req.IsNsfw,
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
@@ -364,10 +379,10 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// между двумя одновременными PATCH'ами).
 	var v channelView
 	err = m.db.QueryRow(r.Context(),
-		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at
+		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt)
+	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload channel")
 		return
@@ -460,10 +475,10 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	var v channelView
 	err := m.db.QueryRow(r.Context(),
-		`select kind, name, coalesce(topic, ''), is_private, position, created_at
+		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt)
+	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")

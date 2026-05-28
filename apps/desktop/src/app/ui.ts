@@ -160,6 +160,8 @@ interface Channel {
   isPrivate: boolean;
   position: number;
   createdAt: string;
+  slowModeSeconds?: number;
+  isNsfw?: boolean;
 }
 
 interface ReactionAgg {
@@ -371,8 +373,12 @@ interface ChannelPermissionsView {
   overrides: RoleOverride[];
 }
 
+type ChannelSettingsTab = "overview" | "permissions" | "invites" | "delete";
+
 interface ChannelSettingsState {
   channelId: string | null;
+  // J.3: текущий таб в модалке.
+  tab: ChannelSettingsTab;
   loading: boolean;
   saving: boolean;
   error: string | null;
@@ -380,6 +386,8 @@ interface ChannelSettingsState {
   // Локальная карта (roleCode → action → "inherit" | "grant" | "deny").
   // Меняем её, при сохранении сворачиваем в overrides[].
   draft: Record<string, Record<string, "inherit" | "grant" | "deny">>;
+  // J.3: draft для таба «Обзор» — отдельный от permission'ов draft.
+  overviewDraft: { name: string; topic: string; slowMode: number; isNsfw: boolean };
 }
 
 const ACTION_LABELS_RU: Record<string, string> = {
@@ -721,11 +729,13 @@ const state: AppState = {
   },
   channelSettings: {
     channelId: null,
+    tab: "overview",
     loading: false,
     saving: false,
     error: null,
     data: null,
-    draft: {}
+    draft: {},
+    overviewDraft: { name: "", topic: "", slowMode: 0, isNsfw: false }
   },
   workspaceRoles: {
     workspaceId: null,
@@ -3204,9 +3214,50 @@ function renderInvitesBlock(): string {
   `;
 }
 
+// J.3: per-channel NSFW-ack. Ключ хранится только локально — на новом
+// клиенте/девайсе юзер увидит overlay снова, это «фичерное» поведение
+// (Discord так же). Не реализуем server-side ack — он бы только нагружал API.
+function nsfwAckKey(channelId: string): string {
+  return `rucord:nsfw-ack:${channelId}`;
+}
+function hasNsfwAck(channelId: string): boolean {
+  try {
+    return localStorage.getItem(nsfwAckKey(channelId)) === "1";
+  } catch {
+    return false;
+  }
+}
+function setNsfwAck(channelId: string): void {
+  try {
+    localStorage.setItem(nsfwAckKey(channelId), "1");
+  } catch {
+    /* quota / disabled */
+  }
+}
+
 function renderChannelView(channel: Channel): string {
   if (channel.kind === "voice") {
     return renderVoiceChannelView(channel);
+  }
+  // J.3: NSFW gate — показываем overlay до явного подтверждения.
+  // DM-каналы исключаем (там нет per-channel настройки).
+  if (channel.kind === "text" && channel.isNsfw && !hasNsfwAck(channel.id)) {
+    return `
+      <div class="nsfw-gate">
+        <div class="nsfw-gate-card">
+          <h2>Канал помечен 18+</h2>
+          <p>
+            Канал <strong>#${escapeHtml(channel.name)}</strong> может содержать материалы,
+            подходящие только для взрослых. Если тебе ещё нет 18 или ты не хочешь видеть
+            такой контент — закрой канал.
+          </p>
+          <div class="nsfw-gate-actions">
+            <button id="nsfw-decline" class="ghost">Назад</button>
+            <button id="nsfw-accept" class="primary" data-channel-id="${channel.id}">Мне исполнилось 18, продолжить</button>
+          </div>
+        </div>
+      </div>
+    `;
   }
   const canSend = channel.kind === "text";
   const ws = state.workspaces.find((w) => w.id === channel.workspaceId);
@@ -6934,6 +6985,19 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
 }
 
 function attachShellHandlers(): void {
+  // J.3: NSFW gate — клик «Продолжить» сохраняет ack и перерисовывает чат-вид;
+  // «Назад» сбрасывает выбранный канал.
+  rootEl.querySelector<HTMLButtonElement>("#nsfw-accept")?.addEventListener("click", (e) => {
+    const channelId = (e.currentTarget as HTMLButtonElement).dataset.channelId;
+    if (!channelId) return;
+    setNsfwAck(channelId);
+    render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#nsfw-decline")?.addEventListener("click", () => {
+    state.selectedChannelId = null;
+    render();
+  });
+
   rootEl.querySelector<HTMLButtonElement>("#profile-logout-btn")?.addEventListener("click", async () => {
     const ok = await confirmDialog({
       title: "Выйти из аккаунта?",
@@ -7457,14 +7521,22 @@ function attachShellHandlers(): void {
       ev.stopPropagation();
       const id = btn.dataset.chSettings;
       if (!id) return;
+      const ch = state.channels.find((c) => c.id === id);
       state.modal = "channelSettings";
       state.channelSettings = {
         channelId: id,
+        tab: "overview",
         loading: true,
         saving: false,
         error: null,
         data: null,
-        draft: {}
+        draft: {},
+        overviewDraft: {
+          name: ch?.name ?? "",
+          topic: ch?.topic ?? "",
+          slowMode: ch?.slowModeSeconds ?? 0,
+          isNsfw: !!ch?.isNsfw
+        }
       };
       render();
       void loadChannelPermissions();
@@ -8959,20 +9031,67 @@ async function runAdminUserAction(userId: string, action: string): Promise<void>
 // D.4 — Channel permission overrides
 // ============================================================
 
+// J.3: полноэкранная модалка настроек канала — 4 таба по образцу H.10.
+// Tab «Обзор» — name/topic/slow-mode/NSFW (PATCH /channels/{id}).
+// Tab «Права доступа» — старая permission-таблица.
+// Tab «Приглашения» — placeholder.
+// Tab «Удалить канал» — typed-confirm на имя.
+const CHANNEL_SETTINGS_TABS: { id: ChannelSettingsTab; label: string; danger?: boolean }[] = [
+  { id: "overview", label: "Обзор" },
+  { id: "permissions", label: "Права доступа" },
+  { id: "invites", label: "Приглашения" },
+  { id: "delete", label: "Удалить канал", danger: true }
+];
+
+// Discord-парные значения slow-mode из спеки.
+const SLOW_MODE_OPTIONS: { value: number; label: string }[] = [
+  { value: 0, label: "Выключено" },
+  { value: 5, label: "5 секунд" },
+  { value: 10, label: "10 секунд" },
+  { value: 15, label: "15 секунд" },
+  { value: 30, label: "30 секунд" },
+  { value: 60, label: "1 минута" },
+  { value: 120, label: "2 минуты" },
+  { value: 300, label: "5 минут" },
+  { value: 600, label: "10 минут" },
+  { value: 900, label: "15 минут" },
+  { value: 1800, label: "30 минут" },
+  { value: 3600, label: "1 час" }
+];
+
 function renderChannelSettingsModal(): string {
   const cs = state.channelSettings;
   const channel = state.channels.find((c) => c.id === cs.channelId);
   const title = channel
-    ? `Настройки · ${channel.isPrivate ? "🔒" : "#"} ${escapeHtml(channel.name)}`
+    ? `Настройки · ${channelPrefix(channel)} ${escapeHtml(channel.name)}`
     : "Настройки канала";
-  const body = (() => {
-    if (cs.loading) return `<div class="search-empty">Загрузка…</div>`;
-    if (!cs.data) return `<div class="search-empty">Нет данных</div>`;
-    return renderChannelPermissionsTable();
-  })();
+  const tabsHtml = CHANNEL_SETTINGS_TABS.map((t) => `
+    <button class="ws-settings-tab ${cs.tab === t.id ? "active" : ""} ${t.danger ? "danger" : ""}"
+            data-cs-tab="${t.id}">
+      ${escapeHtml(t.label)}
+    </button>
+  `).join("");
+
+  let body = "";
+  if (cs.tab === "overview") body = renderChannelSettingsOverview();
+  else if (cs.tab === "permissions") body = cs.loading
+    ? `<div class="search-empty">Загрузка…</div>`
+    : cs.data
+      ? renderChannelPermissionsTable()
+      : `<div class="search-empty">Нет данных</div>`;
+  else if (cs.tab === "invites") body = `
+    <div class="settings-stub" style="padding:40px 0">
+      <div class="settings-stub-title">Per-channel приглашения — скоро</div>
+      <div class="settings-stub-text">
+        Пока используйте workspace-инвайт (кнопка <code>+</code> на канале в sidebar).
+      </div>
+    </div>
+  `;
+  else if (cs.tab === "delete") body = renderChannelSettingsDelete();
+
   return `
     <div class="modal-backdrop" data-modal-close>
-      <div class="modal modal-wide channel-settings-modal" role="dialog">
+      <div class="modal modal-wide channel-settings-modal ws-settings" role="dialog">
         <div class="modal-header">
           <h3>${title}</h3>
           <div class="modal-header-actions">
@@ -8980,7 +9099,70 @@ function renderChannelSettingsModal(): string {
           </div>
         </div>
         ${cs.error ? `<div class="admin-error">${escapeHtml(cs.error)}</div>` : ""}
-        <div class="modal-body">${body}</div>
+        <div class="ws-settings-shell">
+          <aside class="ws-settings-tabs">${tabsHtml}</aside>
+          <div class="ws-settings-body">${body}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderChannelSettingsOverview(): string {
+  const cs = state.channelSettings;
+  const draft = cs.overviewDraft;
+  const channel = state.channels.find((c) => c.id === cs.channelId);
+  if (!channel) return `<div class="search-empty">Канал не найден</div>`;
+  const slowOpts = SLOW_MODE_OPTIONS
+    .map((o) => `<option value="${o.value}" ${draft.slowMode === o.value ? "selected" : ""}>${escapeHtml(o.label)}</option>`)
+    .join("");
+  return `
+    <div class="settings-section">
+      <h3>Имя</h3>
+      <input id="cs-name" type="text" maxlength="64" value="${escapeHtml(draft.name)}" placeholder="имя-канала" />
+      <small class="settings-hint">1–64 символа. Изменение запостит system-сообщение в чат.</small>
+    </div>
+    <div class="settings-section">
+      <h3>Тема канала</h3>
+      <textarea id="cs-topic" maxlength="256" rows="2" placeholder="чем занимается канал…">${escapeHtml(draft.topic)}</textarea>
+      <small class="settings-hint"><span id="cs-topic-counter">${draft.topic.length}</span>/256</small>
+    </div>
+    <div class="settings-section">
+      <h3>Медленный режим</h3>
+      <select id="cs-slowmode" class="settings-select">${slowOpts}</select>
+      <small class="settings-hint">
+        Пауза между сообщениями одного автора. Модераторы (право «Удалять чужие сообщения») не затрагиваются.
+      </small>
+    </div>
+    <div class="settings-section">
+      <h3>18+ канал</h3>
+      <label class="settings-check">
+        <input type="checkbox" id="cs-nsfw" ${draft.isNsfw ? "checked" : ""} />
+        <span>Контент 18+ — клиент покажет предупреждение при входе</span>
+      </label>
+      <small class="settings-hint">Per-channel подтверждение хранится локально в браузере участника.</small>
+    </div>
+    <div class="admin-actions">
+      <button id="cs-overview-save" class="primary" ${cs.saving ? "disabled" : ""}>
+        ${cs.saving ? "Сохраняю…" : "Сохранить"}
+      </button>
+    </div>
+  `;
+}
+
+function renderChannelSettingsDelete(): string {
+  const cs = state.channelSettings;
+  const ch = state.channels.find((c) => c.id === cs.channelId);
+  if (!ch) return `<div class="search-empty">Канал не найден</div>`;
+  return `
+    <div class="settings-section">
+      <h3 style="color:#ed4245">Опасная зона</h3>
+      <p class="settings-hint">
+        История сообщений и вложений канала <strong>#${escapeHtml(ch.name)}</strong>
+        удалится безвозвратно. Восстановить нельзя.
+      </p>
+      <div class="admin-actions">
+        <button id="cs-delete-btn" class="danger">Удалить канал</button>
       </div>
     </div>
   `;
@@ -9079,8 +9261,25 @@ function draftToOverrides(): RoleOverride[] {
 }
 
 function attachChannelSettingsHandlers(): void {
-  // <select> меняем напрямую в state.channelSettings.draft без render(),
-  // чтобы фокус и позиция скролла в модалке не дёргались.
+  // J.3: переключение табов внутри модалки. Loading permissions — лениво,
+  // при первом заходе на «Права доступа».
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-cs-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const tab = btn.dataset.csTab as ChannelSettingsTab | undefined;
+      if (!tab) return;
+      state.channelSettings.tab = tab;
+      state.channelSettings.error = null;
+      if (tab === "permissions" && !state.channelSettings.data && !state.channelSettings.loading) {
+        state.channelSettings.loading = true;
+        render();
+        void loadChannelPermissions();
+        return;
+      }
+      render();
+    });
+  });
+
+  // Permissions <select>'ы — write напрямую без render() для сохранения фокуса.
   rootEl.querySelectorAll<HTMLSelectElement>(".perm-select").forEach((sel) => {
     sel.addEventListener("change", () => {
       const role = sel.dataset.role;
@@ -9091,10 +9290,96 @@ function attachChannelSettingsHandlers(): void {
       state.channelSettings.draft[role][action] = value;
     });
   });
-
   rootEl.querySelector<HTMLButtonElement>("#channel-perm-save")?.addEventListener("click", () => {
     void saveChannelPermissions();
   });
+
+  // J.3: Overview tab handlers. Live-update draft без render() кроме save.
+  const draft = state.channelSettings.overviewDraft;
+  rootEl.querySelector<HTMLInputElement>("#cs-name")?.addEventListener("input", (e) => {
+    draft.name = (e.currentTarget as HTMLInputElement).value;
+  });
+  const topicEl = rootEl.querySelector<HTMLTextAreaElement>("#cs-topic");
+  topicEl?.addEventListener("input", () => {
+    draft.topic = topicEl.value;
+    const counter = rootEl.querySelector<HTMLSpanElement>("#cs-topic-counter");
+    if (counter) counter.textContent = String(topicEl.value.length);
+  });
+  rootEl.querySelector<HTMLSelectElement>("#cs-slowmode")?.addEventListener("change", (e) => {
+    draft.slowMode = Number((e.currentTarget as HTMLSelectElement).value);
+  });
+  rootEl.querySelector<HTMLInputElement>("#cs-nsfw")?.addEventListener("change", (e) => {
+    draft.isNsfw = (e.currentTarget as HTMLInputElement).checked;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#cs-overview-save")?.addEventListener("click", () => {
+    void saveChannelOverview();
+  });
+
+  // J.3: delete tab — typed-confirm через dialogs.ts.
+  rootEl.querySelector<HTMLButtonElement>("#cs-delete-btn")?.addEventListener("click", async () => {
+    const cs = state.channelSettings;
+    const ch = state.channels.find((c) => c.id === cs.channelId);
+    if (!ch) return;
+    const ok = await confirmDialog({
+      title: "Удалить канал",
+      body: `История сообщений и вложения канала #${ch.name} удалятся безвозвратно.`,
+      confirmText: ch.name,
+      confirmLabel: "Удалить",
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      await httpClient.del(`/api/v1/channels/${ch.id}`);
+      state.channels = state.channels.filter((c) => c.id !== ch.id);
+      if (state.selectedChannelId === ch.id) {
+        state.selectedChannelId = null;
+        state.messages = [];
+      }
+      state.modal = null;
+    } catch (err) {
+      state.channelSettings.error = describeError(err);
+    }
+    render();
+  });
+}
+
+async function saveChannelOverview(): Promise<void> {
+  const cs = state.channelSettings;
+  if (!cs.channelId) return;
+  const channel = state.channels.find((c) => c.id === cs.channelId);
+  if (!channel) return;
+  const draft = cs.overviewDraft;
+  const trimName = draft.name.trim();
+  if (!trimName) {
+    state.channelSettings.error = "Имя канала не может быть пустым";
+    render();
+    return;
+  }
+  state.channelSettings.saving = true;
+  state.channelSettings.error = null;
+  render();
+  // Patch только изменённые поля — иначе мы перетёрли бы concurrent-правки.
+  const patch: Record<string, unknown> = {};
+  if (trimName !== channel.name) patch.name = trimName;
+  if ((draft.topic ?? "") !== (channel.topic ?? "")) patch.topic = draft.topic;
+  if (draft.slowMode !== (channel.slowModeSeconds ?? 0)) patch.slowModeSeconds = draft.slowMode;
+  if (draft.isNsfw !== !!channel.isNsfw) patch.isNsfw = draft.isNsfw;
+  if (Object.keys(patch).length === 0) {
+    state.channelSettings.saving = false;
+    setTransientStatus("Без изменений");
+    render();
+    return;
+  }
+  try {
+    const updated = await httpClient.patch<Channel>(`/api/v1/channels/${cs.channelId}`, patch);
+    state.channels = state.channels.map((c) => (c.id === updated.id ? updated : c));
+    state.channelSettings.saving = false;
+    setTransientStatus("Сохранено");
+  } catch (err) {
+    state.channelSettings.saving = false;
+    state.channelSettings.error = describeError(err);
+  }
+  render();
 }
 
 async function saveChannelPermissions(): Promise<void> {

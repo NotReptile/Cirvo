@@ -316,6 +316,37 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// J.3: slow-mode. Тянем только для text-каналов (DM не имеют slow-mode).
+	// Модераторы (MessageModerate) обходят — иначе они не смогут оперативно
+	// модерировать флуд в режиме slow-mode. Race между двумя сессиями
+	// одного юзера допустима (race-окно мс на ту же пуш-стрим).
+	if scope.Kind == "text" {
+		var slowSec int
+		if err := m.db.QueryRow(r.Context(),
+			`select slow_mode_seconds from channels where id = $1`, channelID).Scan(&slowSec); err == nil && slowSec > 0 {
+			isModerator := permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageModerate)
+			if !isModerator {
+				var lastTS *time.Time
+				_ = m.db.QueryRow(r.Context(),
+					`select max(created_at) from messages
+					 where channel_id = $1 and author_user_id = $2 and deleted_at is null and kind = 'user'`,
+					channelID, userID).Scan(&lastTS)
+				if lastTS != nil {
+					elapsed := time.Since(*lastTS)
+					if elapsed < time.Duration(slowSec)*time.Second {
+						retry := int((time.Duration(slowSec)*time.Second - elapsed).Seconds())
+						if retry < 1 {
+							retry = 1
+						}
+						w.Header().Set("Retry-After", strconv.Itoa(retry))
+						sharedhttp.WriteError(w, r, http.StatusTooManyRequests, sharedhttp.CodeRateLimited, "slow mode is on; wait before sending the next message")
+						return
+					}
+				}
+			}
+		}
+	}
+
 	// reply_to: parent должен жить в том же канале и не быть удалён.
 	// Иначе reply теряет смысл (или это попытка процитировать сообщение
 	// из приватного канала, к которому юзер не имеет доступа).
