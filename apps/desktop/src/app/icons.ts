@@ -35,7 +35,9 @@ export type IconName =
   | "x"
   | "lock"
   | "channel-text"
-  | "channel-voice";
+  | "channel-voice"
+  | "headphones"
+  | "headphones-off";
 
 const ICONS: Record<IconName, string> = {
   mic: `<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>`,
@@ -66,7 +68,11 @@ const ICONS: Record<IconName, string> = {
   // K.7: единый стиль иконок каналов. Hash для текстовых, speaker для
   // голосовых. Lock для приватных идёт отдельным `lock`-иконкой.
   "channel-text": `<line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>`,
-  "channel-voice": `<path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>`
+  "channel-voice": `<path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>`,
+  // K.4: deafen-индикатор. Наушники Lucide-style + версия с диагональной
+  // чертой для off-state. currentColor наследуется от .call-icon-btn.
+  headphones: `<path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>`,
+  "headphones-off": `<line x1="2" y1="2" x2="22" y2="22"/><path d="M3 18v-6a9 9 0 0 1 13.5-7.8"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/><path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>`
 };
 
 export function icon(name: IconName, opts: { size?: number; className?: string } = {}): string {

@@ -1423,6 +1423,29 @@ let _deafened = false;
 let _pttHeld = false;
 let _pttReleaseTimer: ReturnType<typeof setTimeout> | null = null;
 
+// K.4: deafen-toggle вынесен из hotkeys-handler в named-функцию,
+// чтобы тот же handler можно было дёрнуть из кнопки в voice-strip /
+// call-bar. Глушит все remote-стримы (`<video>` с поток-attribute'ами)
+// и сам микрофон, чтобы «глухой» юзер физически не говорил.
+function toggleDeafen(): void {
+  _deafened = !_deafened;
+  for (const el of rootEl.querySelectorAll<HTMLVideoElement>(
+    "video[data-voice-peer], video[data-call-remote]"
+  )) {
+    el.muted = _deafened;
+  }
+  if (_deafened) {
+    if (voiceMgr.isActive()) voiceMgr.setMute(true);
+    if (callMgr.isActive()) callMgr.setMute(true);
+  }
+  setTransientStatus(_deafened ? "Заглушено" : "Звук включён");
+  render();
+}
+
+function isDeafened(): boolean {
+  return _deafened;
+}
+
 function updatePttIndicator(): void {
   // Прямой DOM-mutate, без render() — иначе сорвался бы фокус композера
   // при каждом keydown PTT. CSS-класс на strip управляет цветом mic-иконки.
@@ -1495,20 +1518,7 @@ function registerHotkeyActions(): void {
     if (voiceMgr.isActive()) voiceMgr.toggleMute();
     if (callMgr.isActive()) callMgr.toggleMute();
   });
-  registerHotkey("toggle-deafen", () => {
-    _deafened = !_deafened;
-    // Deafen ⇒ глушим все remote-стримы И сам микрофон.
-    for (const el of rootEl.querySelectorAll<HTMLVideoElement>(
-      "video[data-voice-peer], video[data-call-remote]"
-    )) {
-      el.muted = _deafened;
-    }
-    if (_deafened) {
-      if (voiceMgr.isActive()) voiceMgr.setMute(true);
-      if (callMgr.isActive()) callMgr.setMute(true);
-    }
-    setTransientStatus(_deafened ? "Заглушено" : "Звук включён");
-  });
+  registerHotkey("toggle-deafen", () => toggleDeafen());
   registerHotkey("toggle-camera", async () => {
     if (voiceMgr.isActive()) await voiceMgr.toggleCamera();
     else if (callMgr.isActive()) await callMgr.toggleCamera();
@@ -2680,6 +2690,7 @@ function renderCallOverlay(): string {
         </div>
         <div class="call-bar-actions">
           ${callIconButton("call-mute", snap.muted ? "mic-off" : "mic", snap.muted ? "Включить микрофон" : "Заглушить", snap.muted ? "danger" : "")}
+          ${callIconButton("call-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? "Включить звук" : "Заглушить всё", isDeafened() ? "danger" : "")}
           ${callIconButton("call-camera", snap.cameraOn ? "camera-off" : "camera", snap.cameraOn ? "Выключить камеру" : "Включить камеру", "", snap.screenSharing)}
           ${callIconButton("call-screen", snap.screenSharing ? "screen-off" : "screen", snap.screenSharing ? "Прекратить демо" : "Поделиться экраном", snap.screenSharing ? "active" : "")}
           ${callIconButton("call-hangup", "phone-off", "Завершить", "hangup")}
@@ -3371,6 +3382,7 @@ function renderVoiceStrip(): string {
       <ul class="voice-strip-list">${participants}</ul>
       <div class="voice-strip-actions">
         ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? "Включить микрофон" : "Заглушить", muted ? "danger" : "")}
+        ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? "Включить звук" : "Заглушить всё", isDeafened() ? "danger" : "")}
         ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? "Выключить камеру" : "Включить камеру", "", screenOn)}
         ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? "Прекратить демо" : "Поделиться экраном", screenOn ? "active" : "")}
         ${callIconButton("voice-leave", "log-out", leaving ? "Выхожу…" : "Выйти", "hangup", leaving)}
@@ -7249,6 +7261,9 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#call-mute")?.addEventListener("click", () => {
     callMgr.toggleMute();
   });
+  rootEl.querySelector<HTMLButtonElement>("#call-deafen")?.addEventListener("click", () => {
+    toggleDeafen();
+  });
   rootEl.querySelector<HTMLButtonElement>("#call-camera")?.addEventListener("click", async () => {
     try {
       await callMgr.toggleCamera();
@@ -7282,6 +7297,9 @@ function attachShellHandlers(): void {
   // strip (sidebar) — навешиваем хэндлер на все.
   for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-mute")) {
     btn.addEventListener("click", () => voiceMgr.toggleMute());
+  }
+  for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-deafen")) {
+    btn.addEventListener("click", () => toggleDeafen());
   }
   for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-camera")) {
     btn.addEventListener("click", async () => {
@@ -7360,6 +7378,24 @@ function attachShellHandlers(): void {
     li.addEventListener("click", () => {
       const id = li.dataset.ch;
       if (id && id !== state.selectedChannelId) void selectChannel(id);
+    });
+    // K.4: Discord-pattern — двойной клик по voice-каналу сразу подключает.
+    // Одиночный клик остаётся «peek» (открыть voice-room с участниками,
+    // без join'а). Не-voice каналы dblclick игнорят.
+    li.addEventListener("dblclick", async () => {
+      const id = li.dataset.ch;
+      if (!id) return;
+      const ch = state.channels.find((c) => c.id === id);
+      if (!ch || ch.kind !== "voice") return;
+      const snap = voiceMgr.getSnapshot();
+      if (snap.channelId === id && snap.state !== "leaving") return; // уже там
+      try {
+        await voiceMgr.join(id);
+        applyPttModeToActiveSessions();
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
     });
     li.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
