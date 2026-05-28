@@ -3249,6 +3249,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   gap: 8px;
   margin-bottom: 12px;
   align-items: center;
+  flex-wrap: wrap;
 }
 .audit-filter select,
 .audit-filter input {
@@ -3261,7 +3262,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   min-height: 32px;
 }
 .audit-filter select { min-width: 200px; }
-.audit-filter input { flex: 1; min-width: 0; }
+.audit-filter input[type="text"] { flex: 1; min-width: 140px; }
+.audit-filter input[type="date"] { flex: 0 0 auto; min-width: 0; }
 .audit-filter button { padding: 6px 10px; }
 
 /* ============================================================ */

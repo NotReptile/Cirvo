@@ -572,7 +572,8 @@ interface AppState {
   // H.8: попап под avatar'ом в user-strip. Открывается на клик кнопки
   // статуса; содержит радиокнопки per-mode + поле customStatus.
   statusMenu: { x: number; y: number; draftMode: PresenceMode; draftCustom: string } | null;
-  auditFilter: { action: string; actor: string };
+  // I.12: from/to — ISO даты YYYY-MM-DD; пустые = без ограничения.
+  auditFilter: { action: string; actor: string; from: string; to: string };
   // Правая панель участников (Discord-style). На широких экранах открыта
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
@@ -740,7 +741,7 @@ const state: AppState = {
   voiceVolumes: {},
   voiceVolumeMenu: null,
   statusMenu: null,
-  auditFilter: { action: "", actor: "" },
+  auditFilter: { action: "", actor: "", from: "", to: "" },
   memberSidebarOpen: true,
   userProfileTarget: null,
   userProfileData: null,
@@ -5432,6 +5433,7 @@ function renderAuditFilter(): string {
   const opts = Object.entries(AUDIT_ACTION_INFO)
     .map(([code, info]) => `<option value="${escapeHtml(code)}"${f.action === code ? " selected" : ""}>${escapeHtml(info.ru)}</option>`)
     .join("");
+  const hasAnyFilter = !!(f.action || f.actor || f.from || f.to);
   return `
     <div class="audit-filter">
       <select id="audit-filter-action">
@@ -5439,7 +5441,10 @@ function renderAuditFilter(): string {
         ${opts}
       </select>
       <input id="audit-filter-actor" type="text" placeholder="Имя автора…" value="${escapeHtml(f.actor)}" />
-      ${(f.action || f.actor) ? `<button id="audit-filter-clear" class="ghost" title="Сбросить">✕</button>` : ""}
+      <input id="audit-filter-from" type="date" title="С" value="${escapeHtml(f.from)}" />
+      <input id="audit-filter-to" type="date" title="По" value="${escapeHtml(f.to)}" />
+      ${hasAnyFilter ? `<button id="audit-filter-clear" class="ghost" title="Сбросить">✕</button>` : ""}
+      <button id="audit-export-csv" class="primary" title="Скачать отфильтрованные события в CSV">Экспорт CSV</button>
     </div>
   `;
 }
@@ -5447,15 +5452,61 @@ function renderAuditFilter(): string {
 function applyAuditFilter(entries: AuditEntry[]): AuditEntry[] {
   const f = state.auditFilter;
   const actorQ = f.actor.trim().toLowerCase();
-  if (!f.action && !actorQ) return entries;
+  // I.12: from = начало дня в локальной TZ; to = конец дня (включительно).
+  // Сравниваем createdAt как `new Date(...)`-таймстампы.
+  const fromTs = f.from ? new Date(`${f.from}T00:00:00`).getTime() : null;
+  const toTs = f.to ? new Date(`${f.to}T23:59:59.999`).getTime() : null;
+  if (!f.action && !actorQ && fromTs === null && toTs === null) return entries;
   return entries.filter((e) => {
     if (f.action && e.action !== f.action) return false;
     if (actorQ) {
       const actorName = e.actorId ? describePeer(e.actorId).toLowerCase() : "система";
       if (!actorName.includes(actorQ)) return false;
     }
+    if (fromTs !== null || toTs !== null) {
+      const ts = new Date(e.createdAt).getTime();
+      if (fromTs !== null && ts < fromTs) return false;
+      if (toTs !== null && ts > toTs) return false;
+    }
     return true;
   });
+}
+
+// I.12: CSV-экспорт отфильтрованных записей. RFC 4180-совместимый escape —
+// каждое поле в кавычках, внутренние `"` дублируются. Excel понимает
+// UTF-8 BOM для русских заголовков. Filename — `audit-<slug>-<YYYY-MM-DD>.csv`.
+function exportAuditCsv(): void {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  if (!ws) return;
+  const rows = applyAuditFilter(state.auditEntries);
+  if (rows.length === 0) {
+    setTransientStatus("Под фильтр ничего не попало — нечего экспортировать");
+    return;
+  }
+  const header = ["Дата (ISO)", "Автор", "Действие", "Тип объекта", "ID объекта"];
+  const escape = (v: string): string => `"${v.replace(/"/g, '""')}"`;
+  const lines = [header.map(escape).join(",")];
+  for (const e of rows) {
+    const actor = e.actorId ? describePeer(e.actorId) : "система";
+    const info = AUDIT_ACTION_INFO[e.action as keyof typeof AUDIT_ACTION_INFO];
+    const action = info ? info.ru : e.action;
+    lines.push(
+      [e.createdAt, actor, action, e.targetType, e.targetId].map(escape).join(",")
+    );
+  }
+  const csv = "﻿" + lines.join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const today = new Date().toISOString().slice(0, 10);
+  const slug = (ws.slug || ws.name || "workspace").replace(/[^a-z0-9_-]+/gi, "-");
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `audit-${slug}-${today}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  setTransientStatus(`Скачано: ${rows.length} событий`);
 }
 
 // G.10: профиль-модалка в Discord-стиле — карточка с акцентным баннером
@@ -6916,14 +6967,25 @@ function attachShellHandlers(): void {
     // applyAuditFilter, поэтому надо ререндер. Каретку сохраняем через PRESERVED_INPUT_SELECTORS.
     render();
   });
-  rootEl.querySelector<HTMLButtonElement>("#audit-filter-clear")?.addEventListener("click", () => {
-    state.auditFilter = { action: "", actor: "" };
+  rootEl.querySelector<HTMLInputElement>("#audit-filter-from")?.addEventListener("change", (ev) => {
+    state.auditFilter.from = (ev.currentTarget as HTMLInputElement).value;
     render();
+  });
+  rootEl.querySelector<HTMLInputElement>("#audit-filter-to")?.addEventListener("change", (ev) => {
+    state.auditFilter.to = (ev.currentTarget as HTMLInputElement).value;
+    render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#audit-filter-clear")?.addEventListener("click", () => {
+    state.auditFilter = { action: "", actor: "", from: "", to: "" };
+    render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#audit-export-csv")?.addEventListener("click", () => {
+    exportAuditCsv();
   });
 
   rootEl.querySelector<HTMLButtonElement>("#open-audit")?.addEventListener("click", async () => {
     state.modal = "audit";
-    state.auditFilter = { action: "", actor: "" };
+    state.auditFilter = { action: "", actor: "", from: "", to: "" };
     render();
     // Members нужны для резолва UUID → displayName в журнале. Тянем
     // параллельно с audit-ом, не блокируем основной запрос.
