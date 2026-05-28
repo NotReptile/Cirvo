@@ -10,7 +10,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@rucord/shared-ts": "file:../../libs/shared-ts"
+    "@rucord/shared-ts": "file:../../libs/shared-ts",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1",

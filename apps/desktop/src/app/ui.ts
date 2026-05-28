@@ -20,6 +20,7 @@ import {
   formatChord,
   getActions as getHotkeyActions,
   getBinding as getHotkeyBinding,
+  onBindingChange,
   registerHotkey,
   releaseAllHold,
   resetBinding as resetHotkeyBinding,
@@ -28,6 +29,10 @@ import {
   type ActionDef,
   type ActionId
 } from "./hotkeys";
+import {
+  setHandlers as setGlobalHandlers,
+  syncGlobalShortcuts
+} from "./tauriHotkeys";
 import {
   applyOutputDevice,
   buildAudioConstraints,
@@ -1654,6 +1659,63 @@ function registerHotkeyActions(): void {
   // и так пропустит ↑ в инпуте (модификаторов нет, isEditable=true).
   registerHotkey("edit-last-message", () => {
     /* в-композере handler — оставлен по месту */
+  });
+
+  // K.2: те же handler'ы пробрасываем в `tauriHotkeys`-канал, чтобы
+  // глобальный shortcut дёргал ровно ту же логику. Window-listener тоже
+  // остаётся активен — это покрывает web-сборку и аварийный fallback
+  // если global-shortcut не дал accelerator (например, занят другой
+  // программой). isGlobalEligible(...) фильтрует — нет смысла дублировать
+  // search/switcher в глобал.
+  setGlobalHandlers("toggle-mute", { tap: () => {
+    if (voiceMgr.isActive()) voiceMgr.toggleMute();
+    if (callMgr.isActive()) callMgr.toggleMute();
+  }});
+  setGlobalHandlers("toggle-deafen", { tap: () => toggleDeafen() });
+  setGlobalHandlers("toggle-camera", { tap: async () => {
+    if (voiceMgr.isActive()) await voiceMgr.toggleCamera();
+    else if (callMgr.isActive()) await callMgr.toggleCamera();
+  }});
+  setGlobalHandlers("toggle-screen-share", { tap: async () => {
+    if (voiceMgr.isActive()) await voiceMgr.toggleScreenShare();
+    else if (callMgr.isActive()) await callMgr.toggleScreenShare();
+  }});
+  setGlobalHandlers("voice-disconnect", { tap: async () => {
+    if (voiceMgr.isActive()) await voiceMgr.leave();
+  }});
+  setGlobalHandlers("push-to-talk", {
+    down: () => {
+      if (_pttReleaseTimer) {
+        clearTimeout(_pttReleaseTimer);
+        _pttReleaseTimer = null;
+      }
+      _pttHeld = true;
+      if (_deafened) return;
+      if (voiceMgr.isActive()) voiceMgr.setMute(false);
+      if (callMgr.isActive()) callMgr.setMute(false);
+      updatePttIndicator();
+    },
+    up: () => {
+      const delay = Math.max(0, getVoiceSettings().pttReleaseDelay | 0);
+      const finish = (): void => {
+        _pttHeld = false;
+        _pttReleaseTimer = null;
+        if (voiceMgr.isActive()) voiceMgr.setMute(true);
+        if (callMgr.isActive()) callMgr.setMute(true);
+        updatePttIndicator();
+      };
+      if (delay > 0) {
+        _pttReleaseTimer = setTimeout(finish, delay);
+      } else {
+        finish();
+      }
+    }
+  });
+
+  // Первичная синхронизация + подписка на rebind-события.
+  void syncGlobalShortcuts(getHotkeyBinding);
+  onBindingChange(() => {
+    void syncGlobalShortcuts(getHotkeyBinding);
   });
 }
 

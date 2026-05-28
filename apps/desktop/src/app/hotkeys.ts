@@ -179,6 +179,15 @@ function saveBindings(): void {
   } catch {
     /* quota / disabled */
   }
+  for (const fn of changeListeners) fn();
+}
+
+// K.2: после любой смены binding'а уведомляем подписчиков (ui.ts перерегает
+// глобальные хоткеи через tauriHotkeys.ts). Чистка listener'ов не нужна —
+// они живут весь lifetime приложения.
+const changeListeners: Array<() => void> = [];
+export function onBindingChange(fn: () => void): void {
+  changeListeners.push(fn);
 }
 
 loadBindings();
