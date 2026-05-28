@@ -3946,3 +3946,90 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border-top: 1px solid var(--border);
   padding-top: 12px;
 }
+
+/* K.8: стилизованные confirm/prompt-диалоги. Живут в #rucord-dialogs
+   контейнере, z-index выше всего (даже settings-modal). Caller получает
+   Promise; backdrop-click и Esc — отмена. */
+#rucord-dialogs { position: fixed; inset: 0; z-index: 200; pointer-events: none; }
+.dlg-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  animation: dlg-fade-in 0.12s ease-out;
+}
+.dlg-backdrop.dlg-fade-out { animation: dlg-fade-out 0.12s ease-in forwards; }
+@keyframes dlg-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes dlg-fade-out { to { opacity: 0; } }
+.dlg-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 22px 16px;
+  min-width: 360px;
+  max-width: 480px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  transform: scale(0.96);
+  opacity: 0;
+  transition: transform 0.12s ease-out, opacity 0.12s ease-out;
+}
+.dlg-card-in { transform: scale(1); opacity: 1; }
+.dlg-title { margin: 0 0 8px; font-size: 16px; color: var(--text); font-weight: 600; }
+.dlg-body { margin: 0 0 14px; font-size: 14px; color: var(--text-mute); line-height: 1.45; }
+.dlg-label { display: block; font-size: 12px; color: var(--text-mute); margin-bottom: 6px; }
+.dlg-typed-label { display: block; font-size: 12px; color: var(--text-mute); margin: 8px 0 6px; }
+.dlg-typed-label code {
+  background: var(--bg);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: var(--text);
+}
+.dlg-prompt-input, .dlg-typed-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+.dlg-prompt-input:focus, .dlg-typed-input:focus { outline: none; border-color: var(--accent); }
+.dlg-error {
+  color: #ed4245;
+  font-size: 12px;
+  margin: 4px 0 0;
+  min-height: 14px;
+}
+.dlg-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.dlg-actions button {
+  padding: 8px 16px;
+  font-size: 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.dlg-actions button:hover { filter: brightness(1.08); }
+.dlg-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.dlg-actions button.primary:hover { background: var(--accent-hover); }
+.dlg-actions button.danger {
+  background: #ed4245;
+  border-color: #ed4245;
+  color: white;
+}
+.dlg-actions button.danger:hover { filter: brightness(1.1); }
+.dlg-actions button:disabled { opacity: 0.45; cursor: not-allowed; }

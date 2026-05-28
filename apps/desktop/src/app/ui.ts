@@ -48,6 +48,7 @@ import {
   playNotificationSound,
   isEveryoneMention
 } from "./notificationSettings";
+import { confirmDialog, promptDialog } from "./dialogs";
 
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
@@ -2218,8 +2219,14 @@ function renderAuth(): void {
   `;
   const switchBtn = rootEl.querySelector<HTMLButtonElement>(".auth-switch-server");
   if (switchBtn) {
-    switchBtn.addEventListener("click", () => {
-      if (!confirm("Отключиться от текущего сервера и ввести новый адрес? Локальные токены будут удалены.")) return;
+    switchBtn.addEventListener("click", async () => {
+      const ok = await confirmDialog({
+        title: "Сменить сервер",
+        body: "Отключиться от текущего сервера и ввести новый адрес? Локальные токены будут удалены.",
+        confirmLabel: "Сменить",
+        danger: true
+      });
+      if (!ok) return;
       try { localStorage.removeItem("rucord:tokens"); } catch {}
       clearStoredServerUrl();
       window.location.reload();
@@ -5151,9 +5158,20 @@ function attachWorkspaceRolesHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#role-create")?.addEventListener("click", async () => {
     const wsId = rs.workspaceId;
     if (!wsId) return;
-    const name = window.prompt("Имя новой роли:")?.trim();
+    const nameRaw = await promptDialog({
+      title: "Новая роль",
+      label: "Название",
+      placeholder: "например, Модератор"
+    });
+    const name = nameRaw?.trim();
     if (!name) return;
-    const code = window.prompt("Код роли (a-z, 0-9, _-; уникальный в воркспейсе):", slugify(name))?.trim();
+    const codeRaw = await promptDialog({
+      title: "Код роли",
+      body: "Только латиница (a-z), цифры, _ и -. Должен быть уникален в воркспейсе.",
+      label: "Код",
+      initial: slugify(name)
+    });
+    const code = codeRaw?.trim();
     if (!code) return;
     try {
       const created = await httpClient.post<WorkspaceRole>(`/api/v1/workspaces/${wsId}/roles`, {
@@ -5239,7 +5257,13 @@ function attachWorkspaceRolesHandlers(): void {
     const wsId = rs.workspaceId;
     const sel = rs.roles.find((r) => r.id === rs.selectedRoleId);
     if (!wsId || !sel) return;
-    if (!window.confirm(`Удалить роль «${sel.name}»? Назначения участникам исчезнут.`)) return;
+    const ok = await confirmDialog({
+      title: "Удалить роль",
+      body: `Удалить роль «${sel.name}»? Назначения участникам исчезнут.`,
+      confirmLabel: "Удалить",
+      danger: true
+    });
+    if (!ok) return;
     try {
       await httpClient.del(`/api/v1/workspaces/${wsId}/roles/${sel.id}`);
       rs.selectedRoleId = null;
@@ -6653,8 +6677,13 @@ function attachSettingsHandlers(): void {
       render();
     });
   });
-  rootEl.querySelector<HTMLButtonElement>("#settings-logout-btn")?.addEventListener("click", () => {
-    if (!confirm("Выйти из аккаунта?")) return;
+  rootEl.querySelector<HTMLButtonElement>("#settings-logout-btn")?.addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "Выйти из аккаунта?",
+      confirmLabel: "Выйти",
+      danger: true
+    });
+    if (!ok) return;
     void httpClient.logout();
   });
   attachSettingsVoiceHandlers();
@@ -6905,8 +6934,13 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
 }
 
 function attachShellHandlers(): void {
-  rootEl.querySelector<HTMLButtonElement>("#profile-logout-btn")?.addEventListener("click", () => {
-    if (!confirm("Выйти из аккаунта?")) return;
+  rootEl.querySelector<HTMLButtonElement>("#profile-logout-btn")?.addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "Выйти из аккаунта?",
+      confirmLabel: "Выйти",
+      danger: true
+    });
+    if (!ok) return;
     void httpClient.logout();
   });
 
@@ -7175,7 +7209,13 @@ function attachShellHandlers(): void {
       if (!state.selectedWorkspaceId) return;
       const userId = btn.dataset.userId;
       if (!userId) return;
-      if (!confirm("Удалить участника из воркспейса?")) return;
+      const ok = await confirmDialog({
+        title: "Удалить участника",
+        body: "Участник будет исключён из воркспейса. Его сообщения останутся.",
+        confirmLabel: "Удалить",
+        danger: true
+      });
+      if (!ok) return;
       try {
         await httpClient.del(`/api/v1/workspaces/${state.selectedWorkspaceId}/members/${userId}`);
         state.members = state.members.filter((m) => m.userId !== userId);
@@ -7525,7 +7565,13 @@ function attachShellHandlers(): void {
         return;
       }
       if (action === "remove-icon") {
-        if (!window.confirm(`Удалить иконку воркспейса «${ws.name}»?`)) {
+        const ok = await confirmDialog({
+          title: "Удалить иконку",
+          body: `Удалить иконку воркспейса «${ws.name}»?`,
+          confirmLabel: "Удалить",
+          danger: true
+        });
+        if (!ok) {
           render();
           return;
         }
@@ -7698,7 +7744,13 @@ function attachShellHandlers(): void {
         return;
       }
       if (action === "rename") {
-        const next = window.prompt("Новое имя канала:", ch.name)?.trim();
+        const nextRaw = await promptDialog({
+          title: "Переименовать канал",
+          label: "Новое имя",
+          initial: ch.name,
+          placeholder: "общая, voice, гейминг…"
+        });
+        const next = nextRaw?.trim();
         if (!next || next === ch.name) {
           render();
           return;
@@ -7716,7 +7768,14 @@ function attachShellHandlers(): void {
         return;
       }
       if (action === "delete") {
-        if (!window.confirm(`Удалить канал #${ch.name}? История сообщений и вложения удалятся безвозвратно.`)) {
+        const ok = await confirmDialog({
+          title: "Удалить канал",
+          body: `История сообщений и вложения канала #${ch.name} удалятся безвозвратно.`,
+          confirmText: ch.name,
+          confirmLabel: "Удалить",
+          danger: true
+        });
+        if (!ok) {
           render();
           return;
         }
@@ -7737,7 +7796,12 @@ function attachShellHandlers(): void {
   });
 
   rootEl.querySelector<HTMLButtonElement>("#ws-rail-create")?.addEventListener("click", async () => {
-    const name = window.prompt("Имя нового воркспейса:")?.trim();
+    const raw = await promptDialog({
+      title: "Новый воркспейс",
+      label: "Название",
+      placeholder: "Моё сообщество"
+    });
+    const name = raw?.trim();
     if (!name) return;
     const slug = slugify(name);
     if (slug.length < 3) {
@@ -7757,7 +7821,12 @@ function attachShellHandlers(): void {
   });
 
   rootEl.querySelector<HTMLButtonElement>("#ws-rail-invite")?.addEventListener("click", async () => {
-    const code = window.prompt("Введите код инвайта:")?.trim();
+    const raw = await promptDialog({
+      title: "Принять приглашение",
+      label: "Код инвайта",
+      placeholder: "abc123…"
+    });
+    const code = raw?.trim();
     if (!code) return;
     try {
       const res = await httpClient.post<{ workspaceId: string; role: string }>(
@@ -7861,7 +7930,13 @@ function attachShellHandlers(): void {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
       if (!id) return;
-      if (!confirm("Удалить сообщение?")) return;
+      const ok = await confirmDialog({
+        title: "Удалить сообщение?",
+        body: "Сообщение будет помечено удалённым; отменить нельзя.",
+        confirmLabel: "Удалить",
+        danger: true
+      });
+      if (!ok) return;
       try {
         await httpClient.del(`/api/v1/messages/${id}`);
       } catch (err) {
@@ -8246,9 +8321,11 @@ function attachShellHandlers(): void {
       // Согласие = uploadFile(text) → повторный POST с пустым body и
       // тем же набором вложений + reply. Отказ — восстанавливаем форму.
       if (isBodyTooLongError(err) && body) {
-        const accepted = confirm(
-          `Сообщение слишком длинное (${body.length} симв.). Отправить как текстовый файл?`
-        );
+        const accepted = await confirmDialog({
+          title: "Сообщение слишком длинное",
+          body: `Тело — ${body.length} символов. Отправить его как текстовый файл вложением?`,
+          confirmLabel: "Отправить файл"
+        });
         if (accepted) {
           state.status = "Отправка как файл…";
           render();
@@ -8818,8 +8895,14 @@ function attachAdminHandlers(): void {
     void loadAdminMetrics();
   });
 
-  rootEl.querySelector<HTMLButtonElement>("#admin-retention-run")?.addEventListener("click", () => {
-    if (!window.confirm("Запустить очистку по retention-политике? Старые сообщения и orphan-файлы будут удалены безвозвратно.")) return;
+  rootEl.querySelector<HTMLButtonElement>("#admin-retention-run")?.addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "Очистка по retention",
+      body: "Старые сообщения и orphan-файлы будут удалены безвозвратно. Запустить сейчас?",
+      confirmLabel: "Запустить",
+      danger: true
+    });
+    if (!ok) return;
     void runRetentionSweep();
   });
 }
@@ -8842,12 +8925,25 @@ async function runRetentionSweep(): Promise<void> {
 async function runAdminUserAction(userId: string, action: string): Promise<void> {
   try {
     if (action === "ban") {
-      const reason = window.prompt("Причина бана (необязательно):", "") ?? "";
+      const reasonRaw = await promptDialog({
+        title: "Бан пользователя",
+        label: "Причина (необязательно)",
+        placeholder: "будет показана в audit-логе",
+        multiline: true
+      });
+      if (reasonRaw === null) return;
+      const reason = reasonRaw.trim();
       await httpClient.post(`/api/v1/server/users/${userId}/ban`, reason ? { reason } : {});
     } else if (action === "unban") {
       await httpClient.post(`/api/v1/server/users/${userId}/unban`, {});
     } else if (action === "delete") {
-      if (!window.confirm("Удалить пользователя? Действие необратимо.")) return;
+      const ok = await confirmDialog({
+        title: "Удалить пользователя",
+        body: "Аккаунт, его сообщения и медиа исчезнут. Восстановить нельзя.",
+        confirmLabel: "Удалить",
+        danger: true
+      });
+      if (!ok) return;
       await httpClient.del(`/api/v1/server/users/${userId}`);
     } else {
       return;
