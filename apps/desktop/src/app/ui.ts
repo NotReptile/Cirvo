@@ -2614,7 +2614,7 @@ function renderChannelMenu(): string {
   return `
     <div class="channel-menu-backdrop" data-channel-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
-      <div class="channel-menu-header">${escapeHtml(channelPrefix(ch))} ${escapeHtml(ch.name)}</div>
+      <div class="channel-menu-header">${channelPrefix(ch)} ${escapeHtml(ch.name)}</div>
       ${hasUnread ? `<button class="channel-menu-item" data-channel-action="mark-read" data-id="${ch.id}">Пометить как прочитанное</button>` : ""}
       ${canModerate ? `<button class="channel-menu-item" data-channel-action="invite" data-id="${ch.id}">Пригласить</button>` : ""}
       <button class="channel-menu-item" data-channel-action="mute" data-id="${ch.id}">${muted ? "Снять заглушение" : "Заглушить канал"}</button>
@@ -3130,10 +3130,14 @@ function renderDMChannelView(dm: DMItem): string {
   `;
 }
 
+// K.7: единый стиль иконок каналов. Возвращает безопасный HTML с SVG —
+// `currentColor`, контролируется через `.channel-prefix` в CSS. Приватный
+// канал перебивает kind — lock-иконка вместо hash/speaker. DM-каналы
+// рендерятся отдельным компонентом, channelPrefix к ним не применяется.
 function channelPrefix(ch: Channel): string {
-  if (ch.isPrivate) return "🔒";
-  if (ch.kind === "voice") return "🔊";
-  return "#";
+  if (ch.isPrivate) return icon("lock", { size: 16, className: "channel-icon" });
+  if (ch.kind === "voice") return icon("channel-voice", { size: 16, className: "channel-icon" });
+  return icon("channel-text", { size: 16, className: "channel-icon" });
 }
 
 function renderBellButton(): string {
@@ -3196,7 +3200,7 @@ function renderChannelView(channel: Channel): string {
   return `
     <header class="channel-header">
       <div class="channel-header-title">
-        <h2>${channel.isPrivate ? "🔒" : "#"} ${escapeHtml(channel.name)}</h2>
+        <h2>${channelPrefix(channel)}<span class="channel-header-name">${escapeHtml(channel.name)}</span></h2>
         ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
       </div>
       <div class="channel-header-actions">

@@ -482,7 +482,24 @@ input:focus { outline: none; border-color: var(--accent); }
   font-weight: 600;
   font-size: 12px;
 }
-.channel-prefix { width: 20px; text-align: center; font-weight: 600; }
+/* K.7: channel-prefix теперь содержит SVG-иконку. Flex-центр + фикс ширина,
+   currentColor через .channel-icon наследует цвет родителя (--text-mute
+   для normal-каналов, --text-strong для unread, white для active). */
+.channel-prefix {
+  width: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.channel-icon { display: block; }
+.channel-header h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.channel-header h2 .channel-icon { color: var(--text-mute); }
+.channel-menu-header .channel-icon { display: inline-block; vertical-align: middle; margin-right: 4px; }
 
 .inline-form { display: flex; gap: 6px; }
 .inline-form input { flex: 1; padding: 6px 8px; font-size: 12px; }
