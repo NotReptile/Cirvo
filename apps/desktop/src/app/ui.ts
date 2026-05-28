@@ -5904,7 +5904,7 @@ const SETTINGS_TAB_GROUPS: SettingsTabGroup[] = [
     title: "Аккаунт",
     tabs: [
       { id: "profile", label: "Профиль" },
-      { id: "privacy", label: "Конфиденциальность", todo: "I.6" }
+      { id: "privacy", label: "Конфиденциальность" }
     ]
   },
   {
@@ -5951,6 +5951,8 @@ const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { tab: "hotkeys", label: "Каналы", keywords: ["unread", "переход", "пометить прочитанным", "alt"] },
   { tab: "hotkeys", label: "Сообщения", keywords: ["редактировать"] },
   { tab: "hotkeys", label: "Общие", keywords: ["quick switcher", "поиск", "ctrl k", "ctrl f"] },
+  { tab: "privacy", label: "Активные сеансы", keywords: ["сессии", "sessions", "устройства", "devices", "logout"] },
+  { tab: "privacy", label: "Выйти со всех устройств", keywords: ["logout", "logout-all", "revoke"] },
   { tab: "notifications", label: "Уведомления на рабочем столе", keywords: ["desktop", "popup", "разрешение", "permission"] },
   { tab: "notifications", label: "Звук", keywords: ["sound", "beep", "звук", "тишина"] },
   { tab: "notifications", label: "Подавление", keywords: ["everyone", "here", "mute", "глушить"] },
@@ -6051,6 +6053,7 @@ function renderSettingsTabContent(tab: SettingsTab): string {
   if (tab === "hotkeys") return renderSettingsHotkeysTab();
   if (tab === "appearance") return renderSettingsAppearanceTab();
   if (tab === "notifications") return renderSettingsNotificationsTab();
+  if (tab === "privacy") return renderSettingsPrivacyTab();
   const def = findSettingsTab(tab);
   const todoHint = def.todo ? ` · ${def.todo}` : "";
   return `
@@ -6419,6 +6422,136 @@ function attachSettingsNotificationsHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#notif-request-permission")?.addEventListener("click", async () => {
     await requestBrowserNotificationPermission();
     render();
+  });
+}
+
+// I.10: privacy & sessions tab. Список активных сессий + кнопки revoke
+// per-session + «Выйти со всех устройств». Cache в модуль-локалке, чтобы
+// не дёргать API на каждый render().
+interface SessionView {
+  id: string;
+  deviceLabel: string;
+  userAgent?: string;
+  createdAt: string;
+  lastSeenAt: string;
+  current: boolean;
+}
+let _sessions: SessionView[] | null = null;
+let _sessionsLoading = false;
+let _sessionsError: string | null = null;
+
+function ensureSessionsLoaded(): void {
+  if (_sessions !== null || _sessionsLoading) return;
+  _sessionsLoading = true;
+  void httpClient
+    .get<{ items: SessionView[] }>("/api/v1/users/me/sessions")
+    .then((r) => {
+      _sessions = r.items ?? [];
+      _sessionsLoading = false;
+      _sessionsError = null;
+      if (state.modal === "settings" && state.settings.tab === "privacy") render();
+    })
+    .catch((err) => {
+      _sessionsLoading = false;
+      _sessionsError = describeError(err);
+      if (state.modal === "settings" && state.settings.tab === "privacy") render();
+    });
+}
+
+function renderSettingsPrivacyTab(): string {
+  ensureSessionsLoaded();
+  const list = _sessions ?? [];
+  const sessionsBlock = _sessionsLoading
+    ? `<div class="settings-hint">Загрузка сессий…</div>`
+    : _sessionsError
+      ? `<div class="modal-error">${escapeHtml(_sessionsError)}</div>`
+      : list.length === 0
+        ? `<div class="settings-hint">Активных сессий нет.</div>`
+        : `<ul class="sessions-list">
+            ${list.map((s) => `
+              <li class="sessions-item${s.current ? " current" : ""}">
+                <div class="sessions-item-info">
+                  <div class="sessions-item-label">
+                    ${escapeHtml(s.deviceLabel || "Устройство")}
+                    ${s.current ? `<span class="sessions-current-badge">текущая</span>` : ""}
+                  </div>
+                  ${s.userAgent ? `<div class="sessions-item-ua">${escapeHtml(s.userAgent)}</div>` : ""}
+                  <div class="sessions-item-meta">
+                    Создана ${formatTimeSmart(s.createdAt)} · последний вход ${formatTimeSmart(s.lastSeenAt)}
+                  </div>
+                </div>
+                ${s.current
+                  ? ""
+                  : `<button class="danger session-revoke" data-session-id="${escapeHtml(s.id)}">Завершить</button>`}
+              </li>
+            `).join("")}
+          </ul>`;
+  return `
+    <div class="settings-section">
+      <h3>Активные сеансы</h3>
+      <small class="settings-hint">
+        Все устройства, на которых ты сейчас залогинен. Завершить текущий сеанс — через «Выйти из аккаунта».
+      </small>
+      ${sessionsBlock}
+    </div>
+    <div class="settings-section">
+      <h3>Выйти со всех устройств</h3>
+      <small class="settings-hint">
+        Отзовёт refresh-токены всех сессий кроме текущей. Полезно если ты потерял девайс или сменил пароль.
+      </small>
+      <div class="admin-actions">
+        <button id="privacy-logout-all" class="danger">Выйти со всех устройств</button>
+      </div>
+    </div>
+    <div class="settings-section">
+      <h3>Экспорт данных</h3>
+      <small class="settings-hint">
+        Загрузка JSON со своим профилем, сообщениями и аватарами. Скоро.
+      </small>
+    </div>
+  `;
+}
+
+function attachSettingsPrivacyHandlers(): void {
+  if (state.modal !== "settings" || state.settings.tab !== "privacy") return;
+  rootEl.querySelectorAll<HTMLButtonElement>(".session-revoke").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const sid = btn.dataset.sessionId;
+      if (!sid) return;
+      const ok = await confirmDialog({
+        title: "Завершить сеанс",
+        body: "Refresh-токен этой сессии будет отозван. Устройство выйдет из аккаунта.",
+        confirmLabel: "Завершить",
+        danger: true
+      });
+      if (!ok) return;
+      try {
+        await httpClient.del(`/api/v1/users/me/sessions/${sid}`);
+        _sessions = (_sessions ?? []).filter((s) => s.id !== sid);
+        render();
+      } catch (err) {
+        _sessionsError = describeError(err);
+        render();
+      }
+    });
+  });
+  rootEl.querySelector<HTMLButtonElement>("#privacy-logout-all")?.addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "Выйти со всех устройств?",
+      body: "Все сессии кроме текущей будут завершены.",
+      confirmLabel: "Выйти со всех",
+      danger: true
+    });
+    if (!ok) return;
+    try {
+      const resp = await httpClient.post<{ revoked: number }>("/api/v1/auth/logout-all", {});
+      _sessions = (_sessions ?? []).filter((s) => s.current);
+      setTransientStatus(`Завершено сеансов: ${resp.revoked}`);
+      render();
+    } catch (err) {
+      _sessionsError = describeError(err);
+      render();
+    }
   });
 }
 
@@ -6995,7 +7128,13 @@ function attachSettingsHandlers(): void {
   // вызываем безусловно (не только когда modal=settings), чтобы при закрытии
   // модалки стримы освобождались.
   stopVoiceTestsIfNotActive();
-  if (state.modal !== "settings") return;
+  // I.10: при закрытии модалки сбрасываем sessions-кеш, чтобы следующее
+  // открытие privacy-таба перетянуло актуальный список.
+  if (state.modal !== "settings") {
+    _sessions = null;
+    _sessionsError = null;
+    return;
+  }
   rootEl.querySelectorAll<HTMLButtonElement>("[data-settings-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const tab = btn.dataset.settingsTab as SettingsTab | undefined;
@@ -7020,6 +7159,7 @@ function attachSettingsHandlers(): void {
   attachSettingsHotkeysHandlers();
   attachSettingsAppearanceHandlers();
   attachSettingsNotificationsHandlers();
+  attachSettingsPrivacyHandlers();
   attachSettingsSearchHandler();
 }
 

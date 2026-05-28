@@ -61,7 +61,11 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Public("POST /api/v1/auth/login", rl("auth_login", authLoginRule, m.handleLogin))
 	router.Public("POST /api/v1/auth/refresh", rl("auth_refresh", authRefreshRule, m.handleRefresh))
 	router.Protected("POST /api/v1/auth/logout", m.handleLogout)
+	router.Protected("POST /api/v1/auth/logout-all", m.handleLogoutAll)
 	router.Protected("GET /api/v1/users/me", m.handleMe)
+	// I.10: privacy/sessions — список активных сессий + точечный revoke.
+	router.Protected("GET /api/v1/users/me/sessions", m.handleListSessions)
+	router.Protected("DELETE /api/v1/users/me/sessions/{sessionId}", m.handleRevokeSession)
 }
 
 type registerRequest struct {
@@ -394,6 +398,106 @@ func (m *Module) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		RefreshToken:    newRaw,
 		SessionID:       sessionID.String(),
 	})
+}
+
+// I.10: list активных (не revoked) сессий юзера. Возвращаем самые свежие
+// сверху. `current=true` для своего session_id — клиент рисует «текущая».
+type sessionView struct {
+	ID           string  `json:"id"`
+	DeviceLabel  string  `json:"deviceLabel"`
+	UserAgent    *string `json:"userAgent,omitempty"`
+	CreatedAt    string  `json:"createdAt"`
+	LastSeenAt   string  `json:"lastSeenAt"`
+	Current      bool    `json:"current"`
+}
+
+func (m *Module) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	currentSessionID, _ := authctx.SessionID(r.Context())
+	rows, err := m.db.Query(r.Context(),
+		`select id, device_label, user_agent, created_at, last_seen_at
+		 from user_sessions
+		 where user_id = $1 and revoked_at is null and refresh_expires_at > now()
+		 order by last_seen_at desc`,
+		userID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer rows.Close()
+	items := make([]sessionView, 0)
+	for rows.Next() {
+		var (
+			id         uuid.UUID
+			label      string
+			ua         *string
+			created    time.Time
+			lastSeen   time.Time
+		)
+		if err := rows.Scan(&id, &label, &ua, &created, &lastSeen); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
+			return
+		}
+		items = append(items, sessionView{
+			ID:          id.String(),
+			DeviceLabel: label,
+			UserAgent:   ua,
+			CreatedAt:   created.UTC().Format(time.RFC3339),
+			LastSeenAt:  lastSeen.UTC().Format(time.RFC3339),
+			Current:     id == currentSessionID,
+		})
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// I.10: точечный revoke. Запретить ревокать СВОЮ текущую сессию через этот
+// endpoint — для этого есть /auth/logout. Иначе клиент бы остался с access-
+// токеном, а refresh уже revoked — следующий refresh бы упал.
+func (m *Module) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	currentSessionID, _ := authctx.SessionID(r.Context())
+	rawID := r.PathValue("sessionId")
+	targetID, err := uuid.Parse(rawID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid session id")
+		return
+	}
+	if targetID == currentSessionID {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "use /auth/logout to end current session")
+		return
+	}
+	tag, err := m.db.Exec(r.Context(),
+		`update user_sessions set revoked_at = now()
+		 where id = $1 and user_id = $2 and revoked_at is null`,
+		targetID, userID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not revoke session")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "session not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// I.10: revoke ВСЕХ сессий юзера кроме текущей. Возвращает количество
+// отозванных. Текущая остаётся живой — иначе клиент окажется без refresh'а.
+func (m *Module) handleLogoutAll(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	currentSessionID, _ := authctx.SessionID(r.Context())
+	tag, err := m.db.Exec(r.Context(),
+		`update user_sessions set revoked_at = now()
+		 where user_id = $1 and revoked_at is null and id <> $2`,
+		userID, currentSessionID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not revoke sessions")
+		return
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"revoked": tag.RowsAffected()})
 }
 
 func (m *Module) handleLogout(w http.ResponseWriter, r *http.Request) {
