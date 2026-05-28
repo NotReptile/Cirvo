@@ -17,6 +17,11 @@
   --accent-hover: #4752c4;
   --text: #e6e8eb;
   --text-mute: #9ba3b4;
+  /* K.6: промежуточный тон между --text и --text-mute для имён каналов
+     в sidebar'е (Discord-pattern). Normal channel заметно светлее muted,
+     unread — ещё ярче через --text-strong. */
+  --text-channel: #b5bac1;
+  --text-strong: #ffffff;
   --danger: #e35d6a;
 }
 
@@ -30,6 +35,8 @@
   --accent-hover: #4752c4;
   --text: #2e3338;
   --text-mute: #6a7480;
+  --text-channel: #4f5660;
+  --text-strong: #060607;
   --danger: #d83c3e;
 }
 
@@ -348,11 +355,18 @@ input:focus { outline: none; border-color: var(--accent); }
 .workspace-list li:hover, .channel-list li:hover { background: var(--bg-elev-2); color: var(--text); }
 .workspace-list li.active, .channel-list li.active { background: var(--accent); color: white; }
 
-/* C.5: unread channel state */
+/* K.6: имя канала в обычном состоянии — заметно светлее, чем text-mute,
+   но не такое яркое как --text. Prefix (#/voice-icon) держим mute'ом,
+   чтобы хэш не перебивал имя. */
+.channel-list li { color: var(--text-channel); }
+.channel-list li .channel-prefix { color: var(--text-mute); }
+
+/* C.5 + K.6: unread — bold + максимально контрастный цвет. */
 .channel-list li.has-unread:not(.active) {
-  color: var(--text);
+  color: var(--text-strong);
   font-weight: 600;
 }
+.channel-list li.has-unread:not(.active) .channel-prefix { color: var(--text-strong); }
 .channel-list li .channel-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* J.2: hover-actions на канале (Discord-like). По умолчанию скрыты,
@@ -523,8 +537,11 @@ input:focus { outline: none; border-color: var(--accent); }
   margin: 4px 6px;
 }
 
-/* Замьюченный канал в sidebar: имя приглушено, badge'и (если просочились) тоже. */
-.channel-list li.muted .channel-name { opacity: 0.5; }
+/* K.6: замьюченный канал в sidebar — приглушённый + перечёркнутый.
+   Раньше был просто opacity 0.5, но при normal=text-channel это было плохо
+   видно. Сейчас 0.4 на всю строку + line-through на имени; badge скрыт. */
+.channel-list li.muted { opacity: 0.4; }
+.channel-list li.muted .channel-name { text-decoration: line-through; }
 .channel-list li.muted .unread-badge { display: none; }
 
 /* Popup управления громкостью remote-участника (ПКМ на чужом voice-tile). */
