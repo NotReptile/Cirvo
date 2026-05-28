@@ -5495,6 +5495,33 @@ const SETTINGS_TAB_GROUPS: SettingsTabGroup[] = [
   }
 ];
 
+// I.11: индекс «что лежит в каждом табе». Используется для live-фильтра
+// в #settings-search. Label — точное название H3-секции (для scrollIntoView
+// после переключения таба ищем h3 с этим textContent'ом). Keywords —
+// дополнительные синонимы, чтобы «микрофон» подсвечивал секцию «Голос».
+interface SettingsSearchEntry {
+  tab: SettingsTab;
+  label: string;
+  keywords?: string[];
+}
+
+const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
+  { tab: "profile", label: "Профиль", keywords: ["аватар", "имя", "никнейм", "почта", "пароль", "биография", "баннер"] },
+  { tab: "voice", label: "Голос", keywords: ["микрофон", "громкость", "вход", "audio", "input"] },
+  { tab: "voice", label: "Камера", keywords: ["видео", "разрешение", "720p", "1080p", "webcam"] },
+  { tab: "voice", label: "Режим рации (push-to-talk)", keywords: ["ptt", "рация", "зажать", "talkie"] },
+  { tab: "voice", label: "Шумоподавление", keywords: ["denoiser", "rucord", "ns", "noise", "шум"] },
+  { tab: "voice", label: "Расширенные", keywords: ["ec", "agc", "эхо", "autogain", "усиление"] },
+  { tab: "hotkeys", label: "Голос", keywords: ["mute", "deafen", "горячие клавиши", "хоткей", "shortcut"] },
+  { tab: "hotkeys", label: "Каналы", keywords: ["unread", "переход", "пометить прочитанным", "alt"] },
+  { tab: "hotkeys", label: "Сообщения", keywords: ["редактировать"] },
+  { tab: "hotkeys", label: "Общие", keywords: ["quick switcher", "поиск", "ctrl k", "ctrl f"] },
+  { tab: "appearance", label: "Тема", keywords: ["dark", "light", "тёмная", "светлая", "auto"] },
+  { tab: "appearance", label: "Акцентный цвет", keywords: ["accent", "color", "цвет"] },
+  { tab: "appearance", label: "Плотность", keywords: ["density", "cozy", "compact", "уютная", "компактная"] },
+  { tab: "appearance", label: "Сообщения", keywords: ["группировка", "role", "цвет ролей", "group"] }
+];
+
 function findSettingsTab(id: SettingsTab): SettingsTabDef {
   for (const group of SETTINGS_TAB_GROUPS) {
     const tab = group.tabs.find((t) => t.id === id);
@@ -5528,8 +5555,9 @@ function renderSettingsModal(): string {
       <div class="settings-search-wrap">
         <input id="settings-search" class="settings-search" type="text"
                placeholder="Поиск настроек"
-               value="${escapeHtml(state.settings.search)}" disabled
-               title="Поиск настроек — в разработке (I.11)" />
+               value="${escapeHtml(state.settings.search)}"
+               autocomplete="off" spellcheck="false" />
+        <div id="settings-search-results" class="settings-search-results" hidden></div>
       </div>
       <nav class="settings-nav">
         ${SETTINGS_TAB_GROUPS.map(renderSettingsGroup).join("")}
@@ -6463,6 +6491,100 @@ function attachSettingsHandlers(): void {
   attachSettingsVoiceHandlers();
   attachSettingsHotkeysHandlers();
   attachSettingsAppearanceHandlers();
+  attachSettingsSearchHandler();
+}
+
+// I.11: live-filter настроек. Прямой DOM-mutate без render() — иначе
+// каждый ввод сорвал бы фокус и каретку из инпута. На клик по результату
+// переключаем таб через render() и скроллим к h3 по textContent'у.
+let _pendingSearchScroll: string | null = null;
+
+function attachSettingsSearchHandler(): void {
+  const input = rootEl.querySelector<HTMLInputElement>("#settings-search");
+  const results = rootEl.querySelector<HTMLDivElement>("#settings-search-results");
+  if (!input || !results) return;
+
+  const renderResults = (): void => {
+    const q = input.value.trim().toLowerCase();
+    state.settings.search = input.value;
+    if (q.length < 2) {
+      results.hidden = true;
+      results.innerHTML = "";
+      return;
+    }
+    const matches = SETTINGS_SEARCH_INDEX.filter((e) => {
+      const hay = (e.label + " " + (e.keywords ?? []).join(" ")).toLowerCase();
+      return hay.includes(q);
+    });
+    if (matches.length === 0) {
+      results.hidden = false;
+      results.innerHTML = `<div class="settings-search-empty">Ничего не найдено</div>`;
+      return;
+    }
+    results.hidden = false;
+    results.innerHTML = matches
+      .map((m) => {
+        const tabLabel = findSettingsTab(m.tab).label;
+        return `
+          <button class="settings-search-item"
+                  data-search-tab="${m.tab}"
+                  data-search-anchor="${escapeHtml(m.label)}">
+            <span class="settings-search-item-label">${escapeHtml(m.label)}</span>
+            <span class="settings-search-item-tab">${escapeHtml(tabLabel)}</span>
+          </button>
+        `;
+      })
+      .join("");
+  };
+
+  input.addEventListener("input", renderResults);
+  input.addEventListener("focus", renderResults);
+  // setTimeout — даём click по результату сработать до того как dropdown скроется.
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      results.hidden = true;
+    }, 150);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      input.value = "";
+      state.settings.search = "";
+      results.hidden = true;
+      results.innerHTML = "";
+      input.blur();
+    }
+  });
+
+  results.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>("[data-search-tab]");
+    if (!btn) return;
+    const tab = btn.dataset.searchTab as SettingsTab | undefined;
+    const anchor = btn.dataset.searchAnchor ?? "";
+    if (!tab) return;
+    state.settings.tab = tab;
+    state.settings.search = "";
+    _pendingSearchScroll = anchor;
+    state.profileEdit.field = null;
+    state.profileEdit.error = null;
+    state.profileEdit.okMessage = null;
+    render();
+  });
+
+  if (_pendingSearchScroll) {
+    const anchor = _pendingSearchScroll;
+    _pendingSearchScroll = null;
+    requestAnimationFrame(() => {
+      const body = rootEl.querySelector<HTMLDivElement>(".settings-content-body");
+      if (!body) return;
+      const target = Array.from(body.querySelectorAll("h3")).find(
+        (h) => h.textContent?.trim() === anchor
+      );
+      if (!target) return;
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      target.classList.add("settings-anchor-flash");
+      setTimeout(() => target.classList.remove("settings-anchor-flash"), 1500);
+    });
+  }
 }
 
 interface ProfileFieldOpts {
