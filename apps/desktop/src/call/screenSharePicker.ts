@@ -46,13 +46,26 @@ export async function acquireScreenShareStream(quality?: ScreenShareQuality): Pr
     if (!picked) {
       throw new Error("screen share cancelled");
     }
-    // Quality determine fps; resolution — определяется размером источника.
-    // JPEG quality 65 = разумный компромисс между CPU и читаемостью.
+    // K.5(a): quality preset → fps + JPEG quality. Resolution = native размер
+    // источника (нельзя апскейлить экран без encoder-side), но frameRate
+    // и JPEG-качество можно подстроить под выбранный пресет:
+    //   SD (≤540p) — quality 50, низкая нагрузка
+    //   HD (≤720p) — quality 60
+    //   FHD (≤1080p) — quality 70 (default)
+    //   4K (>1080p) — quality 80, для статичных скринов
     const fps = quality?.frameRate ?? 15;
-    const stream = await startCapture(picked.id, fps, 65);
+    const jpegQuality = quality ? presetToJpegQuality(quality.height) : 65;
+    const stream = await startCapture(picked.id, fps, jpegQuality);
     return { stream, fromTauri: true };
   }
   return acquireDisplayMedia(quality);
+}
+
+function presetToJpegQuality(height: number): number {
+  if (height <= 540) return 50;
+  if (height <= 720) return 60;
+  if (height <= 1080) return 70;
+  return 80;
 }
 
 async function acquireDisplayMedia(quality?: ScreenShareQuality): Promise<AcquireResult> {

@@ -19,6 +19,10 @@ export interface ApiError {
   code: string;
   message: string;
   requestId?: string;
+  // J.3(b): для 429 ответов читаем Retry-After (в секундах). Используется
+  // composer'ом для slow-mode countdown — показывает «подожди X сек» вместо
+  // generic-ошибки.
+  retryAfter?: number;
 }
 
 interface ErrorEnvelope {
@@ -259,10 +263,13 @@ async function parseBody<T>(response: Response): Promise<T> {
 }
 
 async function toApiError(response: Response): Promise<ApiError> {
+  const retryAfterRaw = response.headers.get("Retry-After");
+  const retryAfter = retryAfterRaw ? Math.max(0, parseInt(retryAfterRaw, 10) || 0) : undefined;
   const fallback: ApiError = {
     status: response.status,
     code: "http_error",
-    message: response.statusText || `HTTP ${response.status}`
+    message: response.statusText || `HTTP ${response.status}`,
+    retryAfter
   };
   try {
     const data = (await response.json()) as ErrorEnvelope;
@@ -271,7 +278,8 @@ async function toApiError(response: Response): Promise<ApiError> {
         status: response.status,
         code: data.error.code,
         message: data.error.message,
-        requestId: data.error.requestId
+        requestId: data.error.requestId,
+        retryAfter
       };
     }
   } catch {

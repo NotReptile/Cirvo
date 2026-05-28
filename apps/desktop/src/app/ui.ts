@@ -33,6 +33,7 @@ import {
   setHandlers as setGlobalHandlers,
   syncGlobalShortcuts
 } from "./tauriHotkeys";
+import { installTooltips } from "./tooltips";
 import {
   applyOutputDevice,
   buildAudioConstraints,
@@ -953,6 +954,7 @@ export function renderApp(
   watchSystemTheme();
 
   installGlobalKeyboardShortcuts();
+  installTooltips();
   realtime.subscribe(handleRealtimeEvent);
   callManager.subscribe((snap) => {
     state.callSnapshot = snap.state === "idle" ? null : snap;
@@ -1495,6 +1497,22 @@ let _deafened = false;
 let _pttHeld = false;
 let _pttReleaseTimer: ReturnType<typeof setTimeout> | null = null;
 
+// I.9(b): ручной toggleMute должен отменить отложенный PTT-mute. Иначе
+// сценарий «отпустил клавишу → manual unmute → через N мс PTT delay
+// сработает и снова замьютит» оставляет UI и реальное состояние
+// рассинхронизированными. Вызывается из всех точек toggleMute (hotkey,
+// strip-кнопка, call-bar-кнопка, Tauri-global).
+function manualToggleMute(): void {
+  if (_pttReleaseTimer) {
+    clearTimeout(_pttReleaseTimer);
+    _pttReleaseTimer = null;
+    _pttHeld = false;
+    updatePttIndicator();
+  }
+  if (voiceMgr.isActive()) voiceMgr.toggleMute();
+  if (callMgr.isActive()) callMgr.toggleMute();
+}
+
 // K.4: deafen-toggle вынесен из hotkeys-handler в named-функцию,
 // чтобы тот же handler можно было дёрнуть из кнопки в voice-strip /
 // call-bar. Глушит все remote-стримы (`<video>` с поток-attribute'ами)
@@ -1591,10 +1609,7 @@ function installGlobalKeyboardShortcuts(): void {
 }
 
 function registerHotkeyActions(): void {
-  registerHotkey("toggle-mute", () => {
-    if (voiceMgr.isActive()) voiceMgr.toggleMute();
-    if (callMgr.isActive()) callMgr.toggleMute();
-  });
+  registerHotkey("toggle-mute", () => manualToggleMute());
   registerHotkey("toggle-deafen", () => toggleDeafen());
   registerHotkey("toggle-camera", async () => {
     if (voiceMgr.isActive()) await voiceMgr.toggleCamera();
@@ -1667,10 +1682,7 @@ function registerHotkeyActions(): void {
   // если global-shortcut не дал accelerator (например, занят другой
   // программой). isGlobalEligible(...) фильтрует — нет смысла дублировать
   // search/switcher в глобал.
-  setGlobalHandlers("toggle-mute", { tap: () => {
-    if (voiceMgr.isActive()) voiceMgr.toggleMute();
-    if (callMgr.isActive()) callMgr.toggleMute();
-  }});
+  setGlobalHandlers("toggle-mute", { tap: () => manualToggleMute() });
   setGlobalHandlers("toggle-deafen", { tap: () => toggleDeafen() });
   setGlobalHandlers("toggle-camera", { tap: async () => {
     if (voiceMgr.isActive()) await voiceMgr.toggleCamera();
@@ -3553,11 +3565,15 @@ function renderChannelView(channel: Channel): string {
       <input
         name="body"
         autocomplete="off"
-        placeholder="${canSend ? `Сообщение в #${channel.name}` : "Этот канал не принимает сообщения"}"
+        placeholder="${canSend
+          ? (slowModeRemainingSec(channel.id) > 0
+              ? `Медленный режим: ${slowModeRemainingSec(channel.id)}с до следующего сообщения`
+              : `Сообщение в #${channel.name}`)
+          : "Этот канал не принимает сообщения"}"
         ${canSend ? "" : "disabled"}
         value="${escapeHtml(canSend ? loadDraft(channel.id) : "")}"
       />
-      <button type="submit" ${canSend ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
+      <button type="submit" ${canSend && slowModeRemainingSec(channel.id) === 0 ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
 }
@@ -4475,7 +4491,7 @@ function renderUserProfilePopup(): string {
           ${username ? `<div class="user-profile-username">@${escapeHtml(username)}</div>` : ""}
           ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
           ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(role)}</span></div>` : ""}
-          ${bio ? `<div class="user-profile-bio">${escapeHtml(bio)}</div>` : ""}
+          ${bio ? `<div class="user-profile-bio">${renderBody(bio)}</div>` : ""}
           ${
             isSelf
               ? ""
@@ -4872,6 +4888,10 @@ function attachProfileEditHandlers(): void {
   const dnInput = rootEl.querySelector<HTMLInputElement>("#profile-display-input");
   dnInput?.addEventListener("input", () => {
     state.profileEdit.draftDisplayName = dnInput.value;
+    // I.6(b): live-preview в profile-card-head без render() (сохраняет
+    // фокус и каретку инпута).
+    const previewName = rootEl.querySelector<HTMLDivElement>(".profile-card-display");
+    if (previewName) previewName.textContent = dnInput.value.trim() || state.me?.displayName || state.me?.username || "";
   });
   rootEl.querySelector<HTMLButtonElement>("#profile-display-save")?.addEventListener("click", () => {
     void saveDisplayName();
@@ -4895,6 +4915,9 @@ function attachProfileEditHandlers(): void {
     // Обновляем счётчик символов без render() (текстарея сохраняет фокус).
     const hint = bioInput.parentElement?.querySelector<HTMLElement>(".profile-field-hint");
     if (hint) hint.textContent = `${600 - bioInput.value.length} симв.`;
+    // I.6(b): live-preview bio в profile-card-head через renderBody.
+    const previewBio = rootEl.querySelector<HTMLDivElement>(".profile-card-bio-preview");
+    if (previewBio) previewBio.innerHTML = renderBody(bioInput.value);
   });
   rootEl.querySelector<HTMLButtonElement>("#profile-bio-save")?.addEventListener("click", () => {
     void saveProfileExtra("bio");
@@ -4905,6 +4928,13 @@ function attachProfileEditHandlers(): void {
     state.profileEdit.draftBannerColor = bcInput.value;
     const label = rootEl.querySelector<HTMLSpanElement>("#profile-banner-color-val");
     if (label) label.textContent = bcInput.value;
+    // I.6(b): live-preview banner background. Если banner_media_id есть,
+    // временно убираем data-banner-media чтобы CSS solid-color победил.
+    const banner = rootEl.querySelector<HTMLDivElement>(".profile-banner-area");
+    if (banner) {
+      banner.style.background = bcInput.value;
+      banner.removeAttribute("data-banner-media");
+    }
   });
   rootEl.querySelector<HTMLButtonElement>("#profile-banner-color-clear")?.addEventListener("click", () => {
     state.profileEdit.draftBannerColor = "";
@@ -7060,16 +7090,26 @@ function renderSettingsProfileTab(): string {
   const me = state.me;
   if (!me) return "";
   const editing = state.profileEdit.field;
-  const displayName = me.displayName || me.username;
+  const pe = state.profileEdit;
+  // I.6(b): live-preview — при editing подменяем поле в profile-card-head
+  // на текущий draft. Юзер сразу видит как профиль будет выглядеть
+  // для других, не уходя из настроек.
+  const previewDisplayName = editing === "displayName" && pe.draftDisplayName.trim()
+    ? pe.draftDisplayName.trim()
+    : (me.displayName || me.username);
+  const previewBio = editing === "bio" ? pe.draftBio : (me.bio ?? "");
+  const previewBannerColor = editing === "bannerColor" ? pe.draftBannerColor : (me.bannerColor ?? "");
   // I.6: баннер — либо image (banner_media_id), либо solid-цвет
   // (banner_color), либо дефолтный gradient. data-banner-media для
-  // lazy-load (тот же mediaBlobCache, что для аватаров).
-  const bannerStyle = me.bannerMediaId
+  // lazy-load (тот же mediaBlobCache, что для аватаров). Если редактируем
+  // bannerColor — игнорим banner_media_id и показываем live solid-цвет.
+  const useMedia = me.bannerMediaId && editing !== "bannerColor";
+  const bannerStyle = useMedia
     ? "" // image приедет через data-banner-media
-    : me.bannerColor
-      ? `background: ${escapeHtml(me.bannerColor)};`
+    : previewBannerColor
+      ? `background: ${escapeHtml(previewBannerColor)};`
       : "";
-  const bannerAttrs = me.bannerMediaId ? ` data-banner-media="${escapeHtml(me.bannerMediaId)}"` : "";
+  const bannerAttrs = useMedia ? ` data-banner-media="${escapeHtml(me.bannerMediaId)}"` : "";
   return `
     <div class="profile-card-head">
       <div class="profile-banner-area" style="${bannerStyle}"${bannerAttrs}>
@@ -7086,7 +7126,7 @@ function renderSettingsProfileTab(): string {
       <div class="profile-card-avatar-wrap">
         ${renderAvatar({
           avatarMediaId: me.avatarMediaId,
-          fallbackText: displayName,
+          fallbackText: previewDisplayName,
           sizePx: 96,
           className: "profile-card-avatar"
         })}
@@ -7098,9 +7138,12 @@ function renderSettingsProfileTab(): string {
           : ""}
       </div>
       <div class="profile-card-name">
-        <div class="profile-card-display">${escapeHtml(displayName)}</div>
+        <div class="profile-card-display">${escapeHtml(previewDisplayName)}</div>
         <div class="profile-card-username">@${escapeHtml(me.username)}</div>
       </div>
+      ${previewBio
+        ? `<div class="profile-card-bio-preview">${renderBody(previewBio)}</div>`
+        : ""}
     </div>
     <div class="profile-card-fields">
       ${renderProfileField({
@@ -7902,7 +7945,7 @@ function attachShellHandlers(): void {
     callMgr.hangup();
   });
   rootEl.querySelector<HTMLButtonElement>("#call-mute")?.addEventListener("click", () => {
-    callMgr.toggleMute();
+    manualToggleMute();
   });
   rootEl.querySelector<HTMLButtonElement>("#call-deafen")?.addEventListener("click", () => {
     toggleDeafen();
@@ -7939,7 +7982,7 @@ function attachShellHandlers(): void {
   // voice-кнопки могут существовать одновременно в room (content) и в
   // strip (sidebar) — навешиваем хэндлер на все.
   for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-mute")) {
-    btn.addEventListener("click", () => voiceMgr.toggleMute());
+    btn.addEventListener("click", () => manualToggleMute());
   }
   for (const btn of rootEl.querySelectorAll<HTMLButtonElement>("#voice-deafen")) {
     btn.addEventListener("click", () => toggleDeafen());
@@ -9045,6 +9088,18 @@ function attachShellHandlers(): void {
         render();
       }
     } catch (err) {
+      // J.3(b): slow-mode 429 → сохраняем draft, ставим countdown.
+      const slow = isSlowModeError(err);
+      if (slow) {
+        setSlowMode(channelIdSnapshot, slow.retry);
+        setTransientStatus(`Медленный режим: подожди ${slow.retry}с`);
+        input.value = body;
+        saveDraft(channelIdSnapshot, body);
+        state.pendingUploads = pendingSnapshot;
+        state.replyingTo = replyingSnapshot;
+        render();
+        return;
+      }
       // Body too long → предлагаем отправить тело как .txt-вложение.
       // Бэк отдаёт "body too long" сообщением (см. message/module.go).
       // Согласие = uploadFile(text) → повторный POST с пустым body и
@@ -9267,6 +9322,73 @@ function describeError(err: unknown): string {
 // Бэк-сигнал «body too long» (см. message/module.go) — единственная
 // валидационная ошибка POST /messages, которую UX обрабатывает отдельно
 // (предлагает отправить тело как .txt-вложение).
+// J.3(b): slow-mode countdown. Когда message-create отдаёт 429 с Retry-After,
+// записываем `Date.now() + retry*1000` в карту, композер показывает таймер
+// и блокирует submit. Тикер обновляет UI раз в секунду пока есть активные
+// каналы.
+const _slowModeUntil = new Map<string, number>();
+let _slowModeTickHandle: ReturnType<typeof setInterval> | null = null;
+
+function slowModeRemainingSec(channelId: string): number {
+  const until = _slowModeUntil.get(channelId);
+  if (!until) return 0;
+  const remaining = Math.ceil((until - Date.now()) / 1000);
+  if (remaining <= 0) {
+    _slowModeUntil.delete(channelId);
+    return 0;
+  }
+  return remaining;
+}
+
+function setSlowMode(channelId: string, retryAfterSec: number): void {
+  if (retryAfterSec <= 0) return;
+  _slowModeUntil.set(channelId, Date.now() + retryAfterSec * 1000);
+  ensureSlowModeTicker();
+}
+
+function ensureSlowModeTicker(): void {
+  if (_slowModeTickHandle) return;
+  _slowModeTickHandle = setInterval(() => {
+    // Чистим истекшие, проверяем нужен ли ещё тикер.
+    let active = false;
+    for (const [chId, until] of _slowModeUntil) {
+      if (until - Date.now() <= 0) _slowModeUntil.delete(chId);
+      else active = true;
+    }
+    if (!active) {
+      if (_slowModeTickHandle) clearInterval(_slowModeTickHandle);
+      _slowModeTickHandle = null;
+    }
+    // Обновляем только composer-инпут (placeholder) и submit-кнопку без render() —
+    // иначе сорвался бы фокус и каретка композера.
+    const input = rootEl.querySelector<HTMLInputElement>('#send-form input[name="body"]');
+    const submit = rootEl.querySelector<HTMLButtonElement>('#send-form button[type="submit"]');
+    if (input && state.selectedChannelId) {
+      const rem = slowModeRemainingSec(state.selectedChannelId);
+      const ch = state.channels.find((c) => c.id === state.selectedChannelId);
+      if (rem > 0) {
+        input.placeholder = `Медленный режим: ${rem}с до следующего сообщения`;
+        if (submit) submit.disabled = true;
+      } else if (ch) {
+        input.placeholder = `Сообщение в #${ch.name}`;
+        if (submit) submit.disabled = false;
+      }
+    }
+  }, 1000);
+}
+
+// J.3(b): slow-mode error от backend'а (429 + slow-mode reason). Backend
+// ставит CodeRateLimited на конкретно slow-mode-422 (см. message.handleCreate).
+function isSlowModeError(err: unknown): { retry: number } | null {
+  const api = err as ApiError;
+  if (!api || typeof api !== "object") return null;
+  if (api.status !== 429) return null;
+  if (api.code !== "rate_limited") return null;
+  const msg = (api.message ?? "").toLowerCase();
+  if (!msg.includes("slow mode")) return null;
+  return { retry: api.retryAfter ?? 5 };
+}
+
 function isBodyTooLongError(err: unknown): boolean {
   const api = err as ApiError;
   if (!api || typeof api !== "object") return false;
