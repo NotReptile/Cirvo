@@ -3168,7 +3168,7 @@ function renderChannelCategory(
            </span>`
         : "";
       return `
-        <li class="${cls}" data-ch="${ch.id}">
+        <li class="${cls}" data-ch="${ch.id}" data-cat-id="${escapeHtml(catId ?? "")}"${canManage ? ' draggable="true"' : ""}>
           <span class="channel-prefix">${channelPrefix(ch)}</span>
           <span class="channel-name">${escapeHtml(ch.name)}</span>
           ${badge}
@@ -3187,8 +3187,12 @@ function renderChannelCategory(
          <span class="ch-category-glyph">${collapseGlyph}</span>
        </button>`
     : `<span class="ch-category-label">${escapeHtml(title)}</span>`;
+  // J.5(a): категория drag-reorder. Только реальные категории (не orphan).
+  const dragAttrs = category && canManage
+    ? ` draggable="true" data-cat-drag="${escapeHtml(category.id)}"`
+    : "";
   return `
-    <div class="section-title ch-category-title ${isCollapsed ? "collapsed" : ""}">
+    <div class="section-title ch-category-title ${isCollapsed ? "collapsed" : ""}"${dragAttrs}>
       ${titleEl}
       <span class="ch-category-actions">
         ${addBtn}
@@ -7562,6 +7566,213 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
   `;
 }
 
+// J.5(a): drag-reorder каналов и категорий. Поддержано:
+//   - перетащить канал в пределах одной категории (изменяет position),
+//   - перетащить канал в другую категорию (изменяет categoryId + position),
+//   - перетащить категорию между категориями (изменяет position).
+// Не поддерживается: пересортировка orphan-канала среди категорий (просто
+// перетаскивай в категорию или после/до другого orphan-канала).
+//
+// Алгоритм: при drop берём целевой index в группе и переназначаем
+// position для всех затронутых элементов как `(idx+1) * 100`. Это
+// проще midpoint'ов и не страдает от collisions; зато на каждый drop
+// идёт N PATCH-ов. Для воркспейса в 100 каналов это пренебрежимо
+// мало (sidebar не моргает — обновление local-state-first).
+let _dragKind: "channel" | "category" | null = null;
+let _dragId: string | null = null;
+
+function attachDragReorderHandlers(): void {
+  // --- Channel drag ---
+  rootEl.querySelectorAll<HTMLLIElement>('[data-ch][draggable="true"]').forEach((li) => {
+    li.addEventListener("dragstart", (e) => {
+      const id = li.dataset.ch;
+      if (!id) return;
+      _dragKind = "channel";
+      _dragId = id;
+      e.dataTransfer?.setData("text/plain", id);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      li.classList.add("drag-source");
+    });
+    li.addEventListener("dragend", () => {
+      _dragKind = null;
+      _dragId = null;
+      li.classList.remove("drag-source");
+      rootEl.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+    });
+    li.addEventListener("dragover", (e) => {
+      if (_dragKind !== "channel") return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      const rect = li.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      li.classList.toggle("drop-after", after);
+      li.classList.toggle("drop-before", !after);
+    });
+    li.addEventListener("dragleave", () => {
+      li.classList.remove("drop-before", "drop-after");
+    });
+    li.addEventListener("drop", (e) => {
+      if (_dragKind !== "channel" || !_dragId) return;
+      e.preventDefault();
+      const targetId = li.dataset.ch;
+      const targetCatId = li.dataset.catId || null;
+      const rect = li.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      li.classList.remove("drop-before", "drop-after");
+      if (targetId && targetId !== _dragId) {
+        void moveChannelTo(_dragId, targetCatId, targetId, after);
+      }
+    });
+  });
+
+  // --- Drop канала на заголовок категории = переместить канал в начало
+  //     этой категории. ---
+  rootEl.querySelectorAll<HTMLDivElement>("[data-cat-drag]").forEach((header) => {
+    header.addEventListener("dragstart", (e) => {
+      const id = header.dataset.catDrag;
+      if (!id) return;
+      _dragKind = "category";
+      _dragId = id;
+      e.dataTransfer?.setData("text/plain", id);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      header.classList.add("drag-source");
+    });
+    header.addEventListener("dragend", () => {
+      _dragKind = null;
+      _dragId = null;
+      header.classList.remove("drag-source");
+      rootEl.querySelectorAll(".drop-before, .drop-after").forEach((el) => el.classList.remove("drop-before", "drop-after"));
+    });
+    header.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      if (_dragKind === "channel") {
+        // Канал на категорию — подсветим целиком.
+        header.classList.add("drop-after");
+      } else if (_dragKind === "category") {
+        const rect = header.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        header.classList.toggle("drop-after", after);
+        header.classList.toggle("drop-before", !after);
+      }
+    });
+    header.addEventListener("dragleave", () => {
+      header.classList.remove("drop-before", "drop-after");
+    });
+    header.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const targetCatId = header.dataset.catDrag;
+      header.classList.remove("drop-before", "drop-after");
+      if (!targetCatId || !_dragId) return;
+      if (_dragKind === "channel") {
+        void moveChannelTo(_dragId, targetCatId, null, false);
+      } else if (_dragKind === "category" && _dragId !== targetCatId) {
+        const rect = header.getBoundingClientRect();
+        const after = e.clientY > rect.top + rect.height / 2;
+        void moveCategoryTo(_dragId, targetCatId, after);
+      }
+    });
+  });
+}
+
+async function moveChannelTo(
+  channelId: string,
+  newCategoryId: string | null,
+  beforeChannelId: string | null,
+  insertAfter: boolean
+): Promise<void> {
+  const ch = state.channels.find((c) => c.id === channelId);
+  if (!ch) return;
+  // Сначала optimistic: уберём из старого места, вставим в новое, renumber'нём
+  // позиции в затронутых категориях. PATCH'и шлём в фоне.
+  const oldCategoryId = ch.categoryId ?? null;
+  // Все каналы целевой категории в текущем порядке.
+  const targetSiblings = state.channels
+    .filter((c) => (c.categoryId ?? null) === newCategoryId && c.id !== channelId)
+    .sort((a, b) => a.position - b.position);
+  let insertIdx: number;
+  if (beforeChannelId) {
+    insertIdx = targetSiblings.findIndex((c) => c.id === beforeChannelId);
+    if (insertIdx < 0) insertIdx = targetSiblings.length;
+    else if (insertAfter) insertIdx += 1;
+  } else {
+    insertIdx = 0;
+  }
+  const newOrder = [...targetSiblings.slice(0, insertIdx), ch, ...targetSiblings.slice(insertIdx)];
+  // Renumber: position = (idx + 1) * 100.
+  const updates: { id: string; position: number; categoryId?: string | null }[] = [];
+  newOrder.forEach((c, idx) => {
+    const newPos = (idx + 1) * 100;
+    const needsUpdate = c.id === channelId
+      ? c.position !== newPos || (c.categoryId ?? null) !== newCategoryId
+      : c.position !== newPos;
+    if (needsUpdate) {
+      updates.push({
+        id: c.id,
+        position: newPos,
+        categoryId: c.id === channelId ? newCategoryId : undefined
+      });
+    }
+  });
+  // Optimistic local update.
+  state.channels = state.channels.map((c) => {
+    if (c.id === channelId) {
+      const newPos = (newOrder.indexOf(ch) + 1) * 100;
+      return { ...c, categoryId: newCategoryId, position: newPos };
+    }
+    const u = updates.find((x) => x.id === c.id);
+    if (u) return { ...c, position: u.position };
+    return c;
+  });
+  // Если канал ушёл из старой категории, та категория тоже может потребовать renumber'а
+  // (между бывшими соседями появилась "дыра", но позиции остаются монотонными — не страшно).
+  void oldCategoryId;
+  render();
+  // PATCH-flush в фоне.
+  for (const u of updates) {
+    const body: Record<string, unknown> = { position: u.position };
+    if (u.categoryId !== undefined) body.categoryId = u.categoryId ?? "";
+    try {
+      await httpClient.patch<Channel>(`/api/v1/channels/${u.id}`, body);
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+      return;
+    }
+  }
+}
+
+async function moveCategoryTo(
+  categoryId: string,
+  targetCategoryId: string,
+  insertAfter: boolean
+): Promise<void> {
+  const cats = [...state.categories].sort((a, b) => a.position - b.position);
+  const fromIdx = cats.findIndex((c) => c.id === categoryId);
+  if (fromIdx < 0) return;
+  const [moved] = cats.splice(fromIdx, 1);
+  let toIdx = cats.findIndex((c) => c.id === targetCategoryId);
+  if (toIdx < 0) toIdx = cats.length;
+  else if (insertAfter) toIdx += 1;
+  cats.splice(toIdx, 0, moved);
+  const updates: { id: string; position: number }[] = [];
+  cats.forEach((c, idx) => {
+    const newPos = (idx + 1) * 100;
+    if (c.position !== newPos) updates.push({ id: c.id, position: newPos });
+  });
+  state.categories = cats.map((c, idx) => ({ ...c, position: (idx + 1) * 100 }));
+  render();
+  for (const u of updates) {
+    try {
+      await httpClient.patch<ChannelCategory>(`/api/v1/categories/${u.id}`, { position: u.position });
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+      return;
+    }
+  }
+}
+
 function attachShellHandlers(): void {
   // J.3: NSFW gate — клик «Продолжить» сохраняет ack и перерисовывает чат-вид;
   // «Назад» сбрасывает выбранный канал.
@@ -8095,6 +8306,7 @@ function attachShellHandlers(): void {
       render();
     });
   });
+  attachDragReorderHandlers();
 
   // J.2: hover-кнопки на канале. stopPropagation, чтобы клик не съел
   // также `selectChannel`-handler на <li>.

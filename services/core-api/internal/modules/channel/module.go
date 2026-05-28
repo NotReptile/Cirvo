@@ -331,6 +331,9 @@ type updateRequest struct {
 	// Не-nil валидный UUID = присвоить категорию (проверяем что
 	// категория из того же workspace'а).
 	CategoryID *string `json:"categoryId"`
+	// J.5(a): drag-reorder каналов. Клиент шлёт integer-позицию
+	// (мидпоинт между соседями); порядок в sidebar = ORDER BY position.
+	Position *int `json:"position"`
 }
 
 // handleUpdate — PATCH /api/v1/channels/{id}. Изменяем name/topic/isPrivate.
@@ -432,9 +435,10 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		   slow_mode_seconds = coalesce($7, slow_mode_seconds),
 		   is_nsfw           = coalesce($8, is_nsfw),
 		   category_id       = case when $9::bool then $10::uuid else category_id end,
+		   position          = coalesce($11, position),
 		   updated_at        = $6
 		 where id = $1`,
-		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now, req.SlowModeSeconds, req.IsNsfw, categoryTouch, newCategoryID,
+		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now, req.SlowModeSeconds, req.IsNsfw, categoryTouch, newCategoryID, req.Position,
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
