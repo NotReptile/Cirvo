@@ -114,7 +114,6 @@ interface Me {
   customStatus?: string;
   // I.6: расширенный профиль
   bio?: string;
-  pronouns?: string;
   bannerColor?: string;
   bannerMediaId?: string;
 }
@@ -130,7 +129,6 @@ interface UserProfileData {
   presenceMode?: PresenceMode;
   customStatus?: string;
   bio?: string;
-  pronouns?: string;
   bannerColor?: string;
   bannerMediaId?: string;
 }
@@ -608,14 +606,13 @@ interface AppState {
 }
 
 interface ProfileEditState {
-  field: "displayName" | "password" | "bio" | "pronouns" | "bannerColor" | null;
+  field: "displayName" | "password" | "bio" | "bannerColor" | null;
   draftDisplayName: string;
   currentPassword: string;
   newPassword: string;
   confirmPassword: string;
   // I.6: drafts расширенных полей профиля
   draftBio: string;
-  draftPronouns: string;
   draftBannerColor: string;
   saving: boolean;
   error: string | null;
@@ -777,7 +774,6 @@ const state: AppState = {
     newPassword: "",
     confirmPassword: "",
     draftBio: "",
-    draftPronouns: "",
     draftBannerColor: "",
     saving: false,
     error: null,
@@ -4037,7 +4033,6 @@ function renderUserProfilePopup(): string {
   const customStatus = member?.customStatus || dm?.peer.customStatus || extras?.customStatus;
   const role = member?.role;
   const bio = extras?.bio;
-  const pronouns = extras?.pronouns;
   const bannerMediaId = extras?.bannerMediaId;
   const bannerColor = extras?.bannerColor;
   const inCall = state.callSnapshot !== null;
@@ -4055,7 +4050,7 @@ function renderUserProfilePopup(): string {
           </div>
         </div>
         <div class="user-profile-card">
-          <div class="user-profile-name">${escapeHtml(name)}${pronouns ? ` <span class="profile-card-pronouns">${escapeHtml(pronouns)}</span>` : ""}</div>
+          <div class="user-profile-name">${escapeHtml(name)}</div>
           ${username ? `<div class="user-profile-username">@${escapeHtml(username)}</div>` : ""}
           ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
           ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(role)}</span></div>` : ""}
@@ -4079,7 +4074,7 @@ function openUserProfile(userId: string): void {
   state.userProfileData = null;
   state.modal = "userProfile";
   render();
-  // I.6: лениво подтягиваем расширенные поля (bio/pronouns/banner). Member-листы
+  // I.6: лениво подтягиваем расширенные поля (bio/banner). Member-листы
   // их не возвращают (экономим bandwidth), профиль-попап — единственное место,
   // где они показываются.
   if (userId !== state.me?.id) {
@@ -4405,7 +4400,7 @@ async function deleteWorkspace(): Promise<void> {
 // G.10: enter/leave inline-edit mode для поля профиля. Сбрасываем draft'ы
 // и error при каждом переходе — чтобы открытие «Изменить пароль» не показало
 // ошибку от прошлой попытки.
-function startProfileEdit(field: "displayName" | "password" | "bio" | "pronouns" | "bannerColor"): void {
+function startProfileEdit(field: "displayName" | "password" | "bio" | "bannerColor"): void {
   state.profileEdit = {
     field,
     draftDisplayName: state.me?.displayName ?? "",
@@ -4413,7 +4408,6 @@ function startProfileEdit(field: "displayName" | "password" | "bio" | "pronouns"
     newPassword: "",
     confirmPassword: "",
     draftBio: state.me?.bio ?? "",
-    draftPronouns: state.me?.pronouns ?? "",
     draftBannerColor: state.me?.bannerColor ?? "",
     saving: false,
     error: null,
@@ -4426,7 +4420,6 @@ function startProfileEdit(field: "displayName" | "password" | "bio" | "pronouns"
       field === "displayName" ? "#profile-display-input"
       : field === "password" ? "#profile-pw-current"
       : field === "bio" ? "#profile-bio-input"
-      : field === "pronouns" ? "#profile-pronouns-input"
       : field === "bannerColor" ? "#profile-banner-color-input"
       : "";
     if (sel) rootEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(sel)?.focus();
@@ -4446,7 +4439,7 @@ function attachProfileEditHandlers(): void {
   rootEl.querySelectorAll<HTMLButtonElement>("[data-profile-edit]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const f = btn.dataset.profileEdit as
-        | "displayName" | "password" | "bio" | "pronouns" | "bannerColor" | undefined;
+        | "displayName" | "password" | "bio" | "bannerColor" | undefined;
       if (f) startProfileEdit(f);
     });
   });
@@ -4474,7 +4467,7 @@ function attachProfileEditHandlers(): void {
     void savePassword();
   });
 
-  // I.6: bio / pronouns / bannerColor edits.
+  // I.6: bio / bannerColor edits.
   const bioInput = rootEl.querySelector<HTMLTextAreaElement>("#profile-bio-input");
   bioInput?.addEventListener("input", () => {
     state.profileEdit.draftBio = bioInput.value;
@@ -4484,14 +4477,6 @@ function attachProfileEditHandlers(): void {
   });
   rootEl.querySelector<HTMLButtonElement>("#profile-bio-save")?.addEventListener("click", () => {
     void saveProfileExtra("bio");
-  });
-
-  const pronInput = rootEl.querySelector<HTMLInputElement>("#profile-pronouns-input");
-  pronInput?.addEventListener("input", () => {
-    state.profileEdit.draftPronouns = pronInput.value;
-  });
-  rootEl.querySelector<HTMLButtonElement>("#profile-pronouns-save")?.addEventListener("click", () => {
-    void saveProfileExtra("pronouns");
   });
 
   const bcInput = rootEl.querySelector<HTMLInputElement>("#profile-banner-color-input");
@@ -4554,23 +4539,21 @@ function attachProfileEditHandlers(): void {
   });
 }
 
-// I.6: общий save для bio/pronouns/bannerColor — все через PUT /users/me
+// I.6: общий save для bio/bannerColor — все через PUT /users/me
 // с pointer-полем. Сервер возвращает обновлённый meView, обновляем state.me.
-async function saveProfileExtra(field: "bio" | "pronouns" | "bannerColor"): Promise<void> {
+async function saveProfileExtra(field: "bio" | "bannerColor"): Promise<void> {
   const pe = state.profileEdit;
   pe.saving = true;
   pe.error = null;
   render();
   const body: Record<string, string> = {};
   if (field === "bio") body.bio = pe.draftBio.trim();
-  if (field === "pronouns") body.pronouns = pe.draftPronouns.trim();
   if (field === "bannerColor") body.bannerColor = pe.draftBannerColor.trim();
   try {
     const updated = await httpClient.put<Me & { updatedAt: string }>("/api/v1/users/me", body);
     state.me = {
       ...(state.me as Me),
       bio: updated.bio,
-      pronouns: updated.pronouns,
       bannerColor: updated.bannerColor,
       displayName: updated.displayName ?? state.me?.displayName,
       avatarMediaId: updated.avatarMediaId ?? state.me?.avatarMediaId,
@@ -4578,7 +4561,7 @@ async function saveProfileExtra(field: "bio" | "pronouns" | "bannerColor"): Prom
     };
     state.profileEdit.field = null;
     state.profileEdit.saving = false;
-    setTransientStatus(field === "bio" ? "Био обновлено" : field === "pronouns" ? "Местоимения обновлены" : "Цвет баннера обновлён");
+    setTransientStatus(field === "bio" ? "Био обновлено" : "Цвет баннера обновлён");
   } catch (err) {
     pe.saving = false;
     pe.error = describeError(err);
@@ -6279,7 +6262,7 @@ function renderSettingsProfileTab(): string {
           : ""}
       </div>
       <div class="profile-card-name">
-        <div class="profile-card-display">${escapeHtml(displayName)}${me.pronouns ? ` <span class="profile-card-pronouns">${escapeHtml(me.pronouns)}</span>` : ""}</div>
+        <div class="profile-card-display">${escapeHtml(displayName)}</div>
         <div class="profile-card-username">@${escapeHtml(me.username)}</div>
       </div>
     </div>
@@ -6290,13 +6273,6 @@ function renderSettingsProfileTab(): string {
         field: "displayName",
         editing: editing === "displayName",
         body: renderProfileEditDisplayName(me.displayName ?? "")
-      })}
-      ${renderProfileField({
-        label: "Местоимения",
-        value: me.pronouns || "—",
-        field: "pronouns",
-        editing: editing === "pronouns",
-        body: renderProfileEditPronouns()
       })}
       ${renderProfileField({
         label: "Биография",
@@ -6337,23 +6313,6 @@ function renderSettingsProfileTab(): string {
         editing: editing === "password",
         body: renderProfileEditPassword()
       })}
-    </div>
-  `;
-}
-
-function renderProfileEditPronouns(): string {
-  const pe = state.profileEdit;
-  const errBlock = pe.error ? `<div class="modal-error">${escapeHtml(pe.error)}</div>` : "";
-  return `
-    <input id="profile-pronouns-input" type="text" maxlength="32"
-           placeholder="например, он/его"
-           value="${escapeHtml(pe.draftPronouns)}" />
-    ${errBlock}
-    <div class="profile-field-actions">
-      <button class="ghost" data-profile-cancel>Отмена</button>
-      <button id="profile-pronouns-save" class="primary" ${pe.saving ? "disabled" : ""}>
-        ${pe.saving ? "Сохранение…" : "Сохранить"}
-      </button>
     </div>
   `;
 }
@@ -6426,7 +6385,7 @@ function attachSettingsHandlers(): void {
 interface ProfileFieldOpts {
   label: string;
   value: string;
-  field: "displayName" | "username" | "email" | "password" | "bio" | "pronouns" | "bannerColor";
+  field: "displayName" | "username" | "email" | "password" | "bio" | "bannerColor";
   editing: boolean;
   disabled?: boolean;
   disabledHint?: string;

@@ -3,8 +3,6 @@
 -- bio                 — короткий «о себе», markdown (рендерит фронт),
 --                       лимит 600 символов на бэке. Не индексируем
 --                       (не предполагаем поиск по био).
--- pronouns            — местоимения «он/она/они», свободный текст до 32.
---                       Отдельно от displayName — может пустовать.
 -- banner_color        — hex-цвет баннера профиль-карточки. Применяется
 --                       когда banner_media_id == NULL (либо у юзера
 --                       нет загруженной картинки).
@@ -17,18 +15,15 @@
 
 alter table users
   add column if not exists bio text,
-  add column if not exists pronouns text,
   add column if not exists banner_color text,
   add column if not exists banner_media_id uuid
     references media_objects(id) on delete set null;
 
--- Лёгкий guard: bio ≤ 600, pronouns ≤ 32, banner_color короткий hex.
--- Реальная валидация — на бэке (profile-handler), а check'и тут — sanity.
+-- Лёгкий guard: bio ≤ 600, banner_color короткий hex. Реальная
+-- валидация — на бэке (profile-handler), а check'и тут — sanity.
 alter table users
   add constraint users_bio_len_chk
     check (bio is null or length(bio) <= 600),
-  add constraint users_pronouns_len_chk
-    check (pronouns is null or length(pronouns) <= 32),
   add constraint users_banner_color_len_chk
     check (banner_color is null or length(banner_color) <= 16);
 

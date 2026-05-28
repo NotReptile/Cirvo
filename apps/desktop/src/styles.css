@@ -3781,12 +3781,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 }
 .profile-banner-btn:hover { background: rgba(0, 0, 0, 0.6); }
 
-.profile-card-pronouns {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--text-mute);
-  margin-left: 6px;
-}
 .profile-field textarea {
   width: 100%;
   background: var(--bg);

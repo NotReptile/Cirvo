@@ -26,7 +26,6 @@ const (
 	maxDisplayName  = 64
 	maxCustomStatus = 64
 	maxBio          = 600
-	maxPronouns     = 32
 	maxBannerColor  = 16
 )
 
@@ -65,7 +64,6 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 type updateRequest struct {
 	DisplayName *string `json:"displayName"`
 	Bio         *string `json:"bio"`
-	Pronouns    *string `json:"pronouns"`
 	BannerColor *string `json:"bannerColor"`
 }
 
@@ -88,7 +86,6 @@ type profileView struct {
 	CustomStatus  string `json:"customStatus,omitempty"`
 	// I.6: расширенные поля профиля. Все опциональные.
 	Bio           string `json:"bio,omitempty"`
-	Pronouns      string `json:"pronouns,omitempty"`
 	BannerColor   string `json:"bannerColor,omitempty"`
 	BannerMediaID string `json:"bannerMediaId,omitempty"`
 }
@@ -294,7 +291,7 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
 		return
 	}
-	if req.DisplayName == nil && req.Bio == nil && req.Pronouns == nil && req.BannerColor == nil {
+	if req.DisplayName == nil && req.Bio == nil && req.BannerColor == nil {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nothing to update")
 		return
 	}
@@ -321,16 +318,6 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		setParts = append(setParts, "bio = nullif($"+strconv.Itoa(idx)+"::text, '')")
-		args = append(args, trimmed)
-		idx++
-	}
-	if req.Pronouns != nil {
-		trimmed := strings.TrimSpace(*req.Pronouns)
-		if len(trimmed) > maxPronouns {
-			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "pronouns too long")
-			return
-		}
-		setParts = append(setParts, "pronouns = nullif($"+strconv.Itoa(idx)+"::text, '')")
 		args = append(args, trimmed)
 		idx++
 	}
@@ -628,17 +615,16 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 		presenceMode string
 		customStatus *string
 		bio          *string
-		pronouns     *string
 		bannerColor  *string
 		bannerID     *uuid.UUID
 	)
 	if err := m.db.QueryRow(ctx,
 		`select email, username, display_name, avatar_media_id, presence_mode, custom_status,
-		        bio, pronouns, banner_color, banner_media_id
+		        bio, banner_color, banner_media_id
 		 from users where id = $1`,
 		userID,
 	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus,
-		&bio, &pronouns, &bannerColor, &bannerID); err != nil {
+		&bio, &bannerColor, &bannerID); err != nil {
 		return meView{}, err
 	}
 	view := meView{
@@ -657,9 +643,6 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 	}
 	if bio != nil {
 		view.Bio = *bio
-	}
-	if pronouns != nil {
-		view.Pronouns = *pronouns
 	}
 	if bannerColor != nil {
 		view.BannerColor = *bannerColor
@@ -684,7 +667,6 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		presenceMode string
 		customStatus *string
 		bio          *string
-		pronouns     *string
 		bannerColor  *string
 		bannerID     *uuid.UUID
 	)
@@ -692,11 +674,11 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		`select username, display_name, avatar_media_id,
 		        `+effectivePresenceModeExpr("u")+`,
 		        `+effectiveCustomStatusExpr("u")+`,
-		        u.bio, u.pronouns, u.banner_color, u.banner_media_id
+		        u.bio, u.banner_color, u.banner_media_id
 		 from users u where u.id = $1`,
 		targetID,
 	).Scan(&username, &display, &avatarID, &presenceMode, &customStatus,
-		&bio, &pronouns, &bannerColor, &bannerID)
+		&bio, &bannerColor, &bannerID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -728,9 +710,6 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if bio != nil {
 		view.Bio = *bio
-	}
-	if pronouns != nil {
-		view.Pronouns = *pronouns
 	}
 	if bannerColor != nil {
 		view.BannerColor = *bannerColor
