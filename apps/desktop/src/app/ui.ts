@@ -42,6 +42,12 @@ import {
   type EnumeratedDevices,
   type VoiceSettings
 } from "../call/voiceSettings";
+import {
+  getNotificationSettings,
+  updateNotificationSettings,
+  playNotificationSound,
+  isEveryoneMention
+} from "./notificationSettings";
 
 // Backend параллельно принимает до 10 (см. parseAttachmentIDs в message/module.go).
 const MAX_ATTACHMENTS = 10;
@@ -932,7 +938,7 @@ async function bootstrapSession(): Promise<void> {
     await loadWorkspaces();
     void loadNotifications();
     void loadDMs();
-    void requestBrowserNotificationPermission();
+    if (getNotificationSettings().desktopEnabled) void requestBrowserNotificationPermission();
     startIdleAutoDetect();
     state.status = "";
     render();
@@ -1326,6 +1332,14 @@ function maybeShowBrowserNotification(item: NotificationItem): void {
   // Звонки (call_incoming) приходят без channelId, их не глушим.
   const chId = item.payload.channelId;
   if (chId && state.mutedChannels.has(chId)) return;
+  // I.8: глобальные настройки. desktopEnabled = false — не дёргаем popup,
+  // но звук всё равно проигрываем (если включён). muteEveryone — глушим
+  // и popup и звук, если payload содержит @everyone/@here.
+  const settings = getNotificationSettings();
+  const isEveryone = isEveryoneMention(item.payload.snippet);
+  if (settings.muteEveryone && isEveryone && item.kind !== "call_incoming") return;
+  playNotificationSound();
+  if (!settings.desktopEnabled) return;
   const title = notificationTitle(item);
   const body = notificationBody(item);
   try {
@@ -5476,7 +5490,7 @@ const SETTINGS_TAB_GROUPS: SettingsTabGroup[] = [
     title: "Взаимодействие",
     tabs: [
       { id: "voice", label: "Голос и видео", todo: "I.2 / I.3" },
-      { id: "notifications", label: "Уведомления", todo: "I.8" },
+      { id: "notifications", label: "Уведомления" },
       { id: "hotkeys", label: "Горячие клавиши", todo: "I.4" },
       { id: "language", label: "Язык и время", todo: "I.7" }
     ]
@@ -5516,6 +5530,9 @@ const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { tab: "hotkeys", label: "Каналы", keywords: ["unread", "переход", "пометить прочитанным", "alt"] },
   { tab: "hotkeys", label: "Сообщения", keywords: ["редактировать"] },
   { tab: "hotkeys", label: "Общие", keywords: ["quick switcher", "поиск", "ctrl k", "ctrl f"] },
+  { tab: "notifications", label: "Уведомления на рабочем столе", keywords: ["desktop", "popup", "разрешение", "permission"] },
+  { tab: "notifications", label: "Звук", keywords: ["sound", "beep", "звук", "тишина"] },
+  { tab: "notifications", label: "Подавление", keywords: ["everyone", "here", "mute", "глушить"] },
   { tab: "appearance", label: "Тема", keywords: ["dark", "light", "тёмная", "светлая", "auto"] },
   { tab: "appearance", label: "Акцентный цвет", keywords: ["accent", "color", "цвет"] },
   { tab: "appearance", label: "Плотность", keywords: ["density", "cozy", "compact", "уютная", "компактная"] },
@@ -5612,6 +5629,7 @@ function renderSettingsTabContent(tab: SettingsTab): string {
   if (tab === "voice") return renderSettingsVoiceTab();
   if (tab === "hotkeys") return renderSettingsHotkeysTab();
   if (tab === "appearance") return renderSettingsAppearanceTab();
+  if (tab === "notifications") return renderSettingsNotificationsTab();
   const def = findSettingsTab(tab);
   const todoHint = def.todo ? ` · ${def.todo}` : "";
   return `
@@ -5895,6 +5913,90 @@ function attachSettingsAppearanceHandlers(): void {
   });
   rootEl.querySelector<HTMLInputElement>("#ap-role-colors")?.addEventListener("change", (e) => {
     updateAppearance({ roleColors: (e.currentTarget as HTMLInputElement).checked });
+    render();
+  });
+}
+
+// I.8: вкладка «Уведомления». Toggle desktop-уведомлений (с кнопкой
+// «Разрешить» если permission=default), toggle звука + кнопка «Прослушать»,
+// toggle подавления @everyone/@here.
+function renderSettingsNotificationsTab(): string {
+  const s = getNotificationSettings();
+  const permission = typeof Notification !== "undefined" ? Notification.permission : "default";
+  const permissionLabel =
+    permission === "granted"
+      ? `<span class="settings-hint" style="color:#43b581">Разрешение выдано.</span>`
+      : permission === "denied"
+        ? `<span class="settings-hint" style="color:#d6453a">Заблокировано в браузере. Разрешите вручную в настройках сайта.</span>`
+        : `<button id="notif-request-permission" class="primary">Запросить разрешение</button>`;
+
+  return `
+    <div class="settings-section">
+      <h3>Уведомления на рабочем столе</h3>
+      <label class="settings-check">
+        <input type="checkbox" id="notif-desktop" ${s.desktopEnabled ? "checked" : ""} />
+        <span>Показывать всплывающие уведомления, когда RuCord свёрнут</span>
+      </label>
+      <small class="settings-hint">
+        Когда окно активно, появляется только бейдж и счётчик — система не отвлекает.
+      </small>
+      <div class="settings-row" style="margin-top: 8px;">${permissionLabel}</div>
+    </div>
+
+    <div class="settings-section">
+      <h3>Звук</h3>
+      <label class="settings-check">
+        <input type="checkbox" id="notif-sound" ${s.soundEnabled ? "checked" : ""} />
+        <span>Проигрывать звук при упоминании, ответе и входящем звонке</span>
+      </label>
+      <div class="settings-row" style="margin-top: 8px;">
+        <button id="notif-sound-test" class="primary">Прослушать</button>
+      </div>
+      <small class="settings-hint">
+        Короткий двухчастотный сигнал. Кастомные звуки появятся позже.
+      </small>
+    </div>
+
+    <div class="settings-section">
+      <h3>Подавление</h3>
+      <label class="settings-check">
+        <input type="checkbox" id="notif-mute-everyone" ${s.muteEveryone ? "checked" : ""} />
+        <span>Не уведомлять про @everyone и @here</span>
+      </label>
+      <small class="settings-hint">
+        Сами упоминания в чате всё равно подсветятся; глушится только всплывающее
+        уведомление и звук. Эвристика по тексту сообщения — серверный @everyone
+        ещё не реализован.
+      </small>
+    </div>
+  `;
+}
+
+function attachSettingsNotificationsHandlers(): void {
+  if (state.modal !== "settings" || state.settings.tab !== "notifications") return;
+  rootEl.querySelector<HTMLInputElement>("#notif-desktop")?.addEventListener("change", async (e) => {
+    const enabled = (e.currentTarget as HTMLInputElement).checked;
+    updateNotificationSettings({ desktopEnabled: enabled });
+    if (enabled && typeof Notification !== "undefined" && Notification.permission === "default") {
+      await requestBrowserNotificationPermission();
+      render();
+    }
+  });
+  rootEl.querySelector<HTMLInputElement>("#notif-sound")?.addEventListener("change", (e) => {
+    updateNotificationSettings({ soundEnabled: (e.currentTarget as HTMLInputElement).checked });
+  });
+  rootEl.querySelector<HTMLInputElement>("#notif-mute-everyone")?.addEventListener("change", (e) => {
+    updateNotificationSettings({ muteEveryone: (e.currentTarget as HTMLInputElement).checked });
+  });
+  rootEl.querySelector<HTMLButtonElement>("#notif-sound-test")?.addEventListener("click", () => {
+    // Тест звука — игнорим `soundEnabled` чтобы юзер услышал даже когда выключено.
+    const prev = getNotificationSettings().soundEnabled;
+    if (!prev) updateNotificationSettings({ soundEnabled: true });
+    playNotificationSound();
+    if (!prev) updateNotificationSettings({ soundEnabled: false });
+  });
+  rootEl.querySelector<HTMLButtonElement>("#notif-request-permission")?.addEventListener("click", async () => {
+    await requestBrowserNotificationPermission();
     render();
   });
 }
@@ -6491,6 +6593,7 @@ function attachSettingsHandlers(): void {
   attachSettingsVoiceHandlers();
   attachSettingsHotkeysHandlers();
   attachSettingsAppearanceHandlers();
+  attachSettingsNotificationsHandlers();
   attachSettingsSearchHandler();
 }
 
