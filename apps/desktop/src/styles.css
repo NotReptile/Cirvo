@@ -4428,3 +4428,38 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 }
 .ssp-footer button.primary:hover { background: var(--accent-hover); }
 .ssp-footer button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* K.7(b): lock-overlay для приватных каналов. Раньше lock полностью
+   замещал kind-иконку — теперь base-иконка (text/voice) + lock в правом
+   нижнем углу, юзер видит и тип, и приватность. */
+.channel-icon-stack {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.channel-icon-lock {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  background: var(--bg-elev-2);
+  border-radius: 2px;
+  padding: 1px;
+  color: var(--text-mute);
+  line-height: 0;
+}
+.channel-list li.active .channel-icon-lock { background: var(--accent); color: white; }
+
+/* I.11(a)+(b): подсветка matched substring в результатах поиска настроек
+   и keyboard-навигация по dropdown'у. */
+.settings-search-item mark {
+  background: rgba(88, 101, 242, 0.35);
+  color: var(--text);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+.settings-search-item.active { background: var(--bg-elev-2); }
+.settings-search-item.active .settings-search-item-tab { color: var(--text); }

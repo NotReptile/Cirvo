@@ -577,8 +577,11 @@ func (m *Module) createSession(ctx context.Context, tx pgx.Tx, userID uuid.UUID,
 	now := time.Now().UTC()
 	expires := now.Add(refreshTTL)
 
+	// I.10(c): если label не пришёл от клиента — пробуем вывести из UA.
+	// «Chrome on Windows» / «Safari on iPhone» / «Firefox on Linux» и т.п.
+	// Это эвристика; полноценный UA-parser таскать не хочется.
 	if deviceLabel == "" {
-		deviceLabel = "unknown"
+		deviceLabel = deviceLabelFromUA(userAgent)
 	}
 
 	_, err = tx.Exec(ctx,
@@ -627,4 +630,50 @@ func nullableString(s string) any {
 
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "SQLSTATE 23505")
+}
+
+// I.10(c): эвристика «Browser on OS» из User-Agent'а. Порядок матчинга
+// важен — Edg должен проверяться до Chrome (Edge включает Chrome в UA);
+// Tauri-обёртка (WebView2) идёт как Chrome on Windows — так и хочется,
+// идентифицировать установленный exe-клиент отдельно никак не получится
+// (UA приходит WebView2 как Chromium-Edge или Chromium-WebKit).
+func deviceLabelFromUA(ua string) string {
+	if ua == "" {
+		return "Unknown device"
+	}
+	low := strings.ToLower(ua)
+
+	var browser string
+	switch {
+	case strings.Contains(low, "edg/"):
+		browser = "Edge"
+	case strings.Contains(low, "opr/") || strings.Contains(low, "opera"):
+		browser = "Opera"
+	case strings.Contains(low, "firefox/"):
+		browser = "Firefox"
+	case strings.Contains(low, "chrome/"):
+		browser = "Chrome"
+	case strings.Contains(low, "safari/"):
+		browser = "Safari"
+	default:
+		browser = "Browser"
+	}
+
+	var os string
+	switch {
+	case strings.Contains(low, "windows"):
+		os = "Windows"
+	case strings.Contains(low, "android"):
+		os = "Android"
+	case strings.Contains(low, "iphone"), strings.Contains(low, "ipad"):
+		os = "iOS"
+	case strings.Contains(low, "mac os"), strings.Contains(low, "macintosh"):
+		os = "macOS"
+	case strings.Contains(low, "linux"):
+		os = "Linux"
+	default:
+		os = "Unknown"
+	}
+
+	return browser + " on " + os
 }

@@ -611,7 +611,7 @@ interface AppState {
   // Пригласить / Настройки сервера / Создать канал / Создать категорию.
   workspaceMenuOpen: boolean;
   // I.12: from/to — ISO даты YYYY-MM-DD; пустые = без ограничения.
-  auditFilter: { action: string; actor: string; from: string; to: string };
+  auditFilter: { action: string; actor: string; from: string; to: string; targetType: string };
   // Правая панель участников (Discord-style). На широких экранах открыта
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
@@ -805,7 +805,7 @@ const state: AppState = {
   voiceVolumeMenu: null,
   statusMenu: null,
   workspaceMenuOpen: false,
-  auditFilter: { action: "", actor: "", from: "", to: "" },
+  auditFilter: { action: "", actor: "", from: "", to: "", targetType: "" },
   memberSidebarOpen: true,
   userProfileTarget: null,
   userProfileData: null,
@@ -1654,12 +1654,11 @@ function registerHotkeyActions(): void {
   registerHotkey("next-channel-unread", () => navigateUnreadChannel(1));
   registerHotkey("prev-channel-unread", () => navigateUnreadChannel(-1));
   registerHotkey("mark-server-read", () => markServerRead());
-  // edit-last-message: реальный handler уже в композере (keydown по input).
-  // Регистрация тут пустая — глобальный dispatcher не должен ловить ↑
-  // вне инпута и тащить юзера в edit-mode случайно. shouldIgnore(ev,def)
-  // и так пропустит ↑ в инпуте (модификаторов нет, isEditable=true).
+  // edit-last-message: дёргает ту же логику, что и ArrowUp в композере.
+  // Если кастомный chord с модификаторами — global-dispatcher сработает
+  // даже из инпута (shouldIgnore разрешает Ctrl-/Meta-/Alt-комбо).
   registerHotkey("edit-last-message", () => {
-    /* в-композере handler — оставлен по месту */
+    if (tryEditLastOwnMessage()) focusComposer();
   });
 
   // K.2: те же handler'ы пробрасываем в `tauriHotkeys`-канал, чтобы
@@ -1718,6 +1717,31 @@ function registerHotkeyActions(): void {
   onBindingChange(() => {
     void syncGlobalShortcuts(getHotkeyBinding);
   });
+}
+
+// I.4(3): edit-last-message helper. Возвращает true если нашли своё последнее
+// сообщение и переключили в edit-mode. Не зовёт ev.preventDefault — это
+// делает caller (в композере / global-dispatcher).
+function tryEditLastOwnMessage(): boolean {
+  const myId = state.me?.id;
+  if (!myId) return false;
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const m = state.messages[i];
+    if (m.authorId !== myId) continue;
+    if (m.kind && m.kind !== "user") continue;
+    if (m.deletedAt) continue;
+    state.editingMessageId = m.id;
+    state.pickerForMessageId = null;
+    render();
+    return true;
+  }
+  return false;
+}
+
+function focusComposer(): void {
+  setTimeout(() => {
+    rootEl.querySelector<HTMLInputElement>(".send-form input[name=body]")?.focus();
+  }, 0);
 }
 
 function navigateUnreadChannel(direction: 1 | -1): void {
@@ -3352,12 +3376,17 @@ function renderDMChannelView(dm: DMItem): string {
 
 // K.7: единый стиль иконок каналов. Возвращает безопасный HTML с SVG —
 // `currentColor`, контролируется через `.channel-prefix` в CSS. Приватный
-// канал перебивает kind — lock-иконка вместо hash/speaker. DM-каналы
-// рендерятся отдельным компонентом, channelPrefix к ним не применяется.
+// канал перебивает kind — поверх base-иконки (text/voice) накладываем
+// маленький lock-overlay, чтобы юзер видел и тип канала, и его приватность
+// (раньше lock полностью замещал kind — путало). DM-каналы рендерятся
+// отдельным компонентом, channelPrefix к ним не применяется.
 function channelPrefix(ch: Channel): string {
-  if (ch.isPrivate) return icon("lock", { size: 16, className: "channel-icon" });
-  if (ch.kind === "voice") return icon("channel-voice", { size: 16, className: "channel-icon" });
-  return icon("channel-text", { size: 16, className: "channel-icon" });
+  const base = ch.kind === "voice"
+    ? icon("channel-voice", { size: 16, className: "channel-icon" })
+    : icon("channel-text", { size: 16, className: "channel-icon" });
+  if (!ch.isPrivate) return base;
+  // Lock-overlay 10x10 поверх правого нижнего угла base-иконки.
+  return `<span class="channel-icon-stack">${base}<span class="channel-icon-lock">${icon("lock", { size: 10 })}</span></span>`;
 }
 
 function renderBellButton(): string {
@@ -5804,12 +5833,23 @@ function renderAuditFilter(): string {
   const opts = Object.entries(AUDIT_ACTION_INFO)
     .map(([code, info]) => `<option value="${escapeHtml(code)}"${f.action === code ? " selected" : ""}>${escapeHtml(info.ru)}</option>`)
     .join("");
-  const hasAnyFilter = !!(f.action || f.actor || f.from || f.to);
+  // I.12(b): targetType-фильтр. Собираем уникальные значения из текущих
+  // entries (а не из захардкоженного списка) — список actions со временем
+  // меняется, не хочется забыть обновить.
+  const targetTypes = Array.from(new Set(state.auditEntries.map((e) => e.targetType).filter(Boolean))).sort();
+  const targetOpts = targetTypes
+    .map((t) => `<option value="${escapeHtml(t)}"${f.targetType === t ? " selected" : ""}>${escapeHtml(t)}</option>`)
+    .join("");
+  const hasAnyFilter = !!(f.action || f.actor || f.from || f.to || f.targetType);
   return `
     <div class="audit-filter">
       <select id="audit-filter-action">
         <option value=""${!f.action ? " selected" : ""}>Все события</option>
         ${opts}
+      </select>
+      <select id="audit-filter-target">
+        <option value=""${!f.targetType ? " selected" : ""}>Все типы объектов</option>
+        ${targetOpts}
       </select>
       <input id="audit-filter-actor" type="text" placeholder="Имя автора…" value="${escapeHtml(f.actor)}" />
       <input id="audit-filter-from" type="date" title="С" value="${escapeHtml(f.from)}" />
@@ -5827,9 +5867,10 @@ function applyAuditFilter(entries: AuditEntry[]): AuditEntry[] {
   // Сравниваем createdAt как `new Date(...)`-таймстампы.
   const fromTs = f.from ? new Date(`${f.from}T00:00:00`).getTime() : null;
   const toTs = f.to ? new Date(`${f.to}T23:59:59.999`).getTime() : null;
-  if (!f.action && !actorQ && fromTs === null && toTs === null) return entries;
+  if (!f.action && !f.targetType && !actorQ && fromTs === null && toTs === null) return entries;
   return entries.filter((e) => {
     if (f.action && e.action !== f.action) return false;
+    if (f.targetType && e.targetType !== f.targetType) return false;
     if (actorQ) {
       const actorName = e.actorId ? describePeer(e.actorId).toLowerCase() : "система";
       if (!actorName.includes(actorQ)) return false;
@@ -6216,8 +6257,35 @@ function maybeCaptureKey(ev: KeyboardEvent): boolean {
   const chord = chordFromEvent(ev);
   if (!chord) return true; // ждём не-модификаторную клавишу
   ev.preventDefault();
-  setHotkeyChord(_capturingActionId, chord);
+  const targetId = _capturingActionId;
   _capturingActionId = null;
+  // I.4(4): если этот chord уже занят другим action'ом — спросим, заменить ли.
+  // Без подтверждения молча перепривяжем, юзер потом удивится почему
+  // оба action'а срабатывают.
+  const sig = formatChord(chord);
+  const conflicts = getHotkeyActions().filter((a) => {
+    if (a.id === targetId) return false;
+    const b = getHotkeyBinding(a.id);
+    return b.enabled && b.chord && formatChord(b.chord) === sig;
+  });
+  if (conflicts.length > 0) {
+    const names = conflicts.map((c) => c.label).join(", ");
+    render();
+    void (async () => {
+      const ok = await confirmDialog({
+        title: "Хоткей уже занят",
+        body: `${sig} назначен на: ${names}. Заменить — снимет привязки с этих action'ов.`,
+        confirmLabel: "Заменить",
+        danger: true
+      });
+      if (!ok) return;
+      for (const c of conflicts) setHotkeyChord(c.id, null);
+      setHotkeyChord(targetId, chord);
+      render();
+    })();
+    return true;
+  }
+  setHotkeyChord(targetId, chord);
   render();
   return true;
 }
@@ -7174,9 +7242,32 @@ function attachSettingsSearchHandler(): void {
   const results = rootEl.querySelector<HTMLDivElement>("#settings-search-results");
   if (!input || !results) return;
 
+  // I.11(a): подсвечивает первое вхождение query в label через <mark>.
+  // Регистрация query одинаковая для матчинга и highlight — обе lowercased,
+  // но индекс восстанавливаем по оригинальному label, чтобы не порушить cyrillic.
+  const highlightLabel = (label: string, q: string): string => {
+    const idx = label.toLowerCase().indexOf(q);
+    if (idx < 0) return escapeHtml(label);
+    return escapeHtml(label.slice(0, idx)) +
+      `<mark>${escapeHtml(label.slice(idx, idx + q.length))}</mark>` +
+      escapeHtml(label.slice(idx + q.length));
+  };
+
+  // I.11(b): индекс выделенной строки в dropdown'е. -1 = ничего не выделено.
+  let activeIdx = -1;
+
+  const updateActive = (): void => {
+    const items = results.querySelectorAll<HTMLButtonElement>(".settings-search-item");
+    items.forEach((el, i) => el.classList.toggle("active", i === activeIdx));
+    if (activeIdx >= 0 && items[activeIdx]) {
+      items[activeIdx].scrollIntoView({ block: "nearest" });
+    }
+  };
+
   const renderResults = (): void => {
     const q = input.value.trim().toLowerCase();
     state.settings.search = input.value;
+    activeIdx = -1;
     if (q.length < 2) {
       results.hidden = true;
       results.innerHTML = "";
@@ -7199,12 +7290,21 @@ function attachSettingsSearchHandler(): void {
           <button class="settings-search-item"
                   data-search-tab="${m.tab}"
                   data-search-anchor="${escapeHtml(m.label)}">
-            <span class="settings-search-item-label">${escapeHtml(m.label)}</span>
+            <span class="settings-search-item-label">${highlightLabel(m.label, q)}</span>
             <span class="settings-search-item-tab">${escapeHtml(tabLabel)}</span>
           </button>
         `;
       })
       .join("");
+    // Первая строка выделена по умолчанию — Enter сразу её выберет.
+    activeIdx = 0;
+    updateActive();
+  };
+
+  const selectActive = (): void => {
+    const items = results.querySelectorAll<HTMLButtonElement>(".settings-search-item");
+    const btn = activeIdx >= 0 ? items[activeIdx] : items[0];
+    btn?.click();
   };
 
   input.addEventListener("input", renderResults);
@@ -7222,6 +7322,21 @@ function attachSettingsSearchHandler(): void {
       results.hidden = true;
       results.innerHTML = "";
       input.blur();
+      return;
+    }
+    const items = results.querySelectorAll<HTMLButtonElement>(".settings-search-item");
+    if (items.length === 0) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      activeIdx = (activeIdx + 1) % items.length;
+      updateActive();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      activeIdx = (activeIdx - 1 + items.length) % items.length;
+      updateActive();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      selectActive();
     }
   });
 
@@ -7495,6 +7610,10 @@ function attachShellHandlers(): void {
     state.auditFilter.action = (ev.currentTarget as HTMLSelectElement).value;
     render();
   });
+  rootEl.querySelector<HTMLSelectElement>("#audit-filter-target")?.addEventListener("change", (ev) => {
+    state.auditFilter.targetType = (ev.currentTarget as HTMLSelectElement).value;
+    render();
+  });
   rootEl.querySelector<HTMLInputElement>("#audit-filter-actor")?.addEventListener("input", (ev) => {
     state.auditFilter.actor = (ev.currentTarget as HTMLInputElement).value;
     // Без render() — обновляем только список. Но фильтр живёт в state и
@@ -7510,7 +7629,7 @@ function attachShellHandlers(): void {
     render();
   });
   rootEl.querySelector<HTMLButtonElement>("#audit-filter-clear")?.addEventListener("click", () => {
-    state.auditFilter = { action: "", actor: "", from: "", to: "" };
+    state.auditFilter = { action: "", actor: "", from: "", to: "", targetType: "" };
     render();
   });
   rootEl.querySelector<HTMLButtonElement>("#audit-export-csv")?.addEventListener("click", () => {
@@ -7519,7 +7638,7 @@ function attachShellHandlers(): void {
 
   rootEl.querySelector<HTMLButtonElement>("#open-audit")?.addEventListener("click", async () => {
     state.modal = "audit";
-    state.auditFilter = { action: "", actor: "", from: "", to: "" };
+    state.auditFilter = { action: "", actor: "", from: "", to: "", targetType: "" };
     render();
     // Members нужны для резолва UUID → displayName в журнале. Тянем
     // параллельно с audit-ом, не блокируем основной запрос.
@@ -8839,19 +8958,9 @@ function attachShellHandlers(): void {
         !state.editingMessageId &&
         (!state.mentionAutocomplete || mentionPopup.hidden)
       ) {
-        const myId = state.me?.id;
-        if (myId) {
-          for (let i = state.messages.length - 1; i >= 0; i--) {
-            const m = state.messages[i];
-            if (m.authorId !== myId) continue;
-            if (m.kind && m.kind !== "user") continue;
-            if (m.deletedAt) continue;
-            ev.preventDefault();
-            state.editingMessageId = m.id;
-            state.pickerForMessageId = null;
-            render();
-            return;
-          }
+        if (tryEditLastOwnMessage()) {
+          ev.preventDefault();
+          return;
         }
       }
       if (!state.mentionAutocomplete || mentionPopup.hidden) return;
