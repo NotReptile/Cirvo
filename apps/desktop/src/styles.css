@@ -92,6 +92,35 @@ input {
   width: 100%;
 }
 input:focus { outline: none; border-color: var(--accent); }
+/* Чекбоксы/радио/color/range/file/date — НЕ должны быть width:100%; иначе
+   в flex-row они распирают контейнер и видимый control оказывается «в центре»
+   с label'ом, убегающим за край. Возвращаем нативное поведение. */
+input[type="checkbox"],
+input[type="radio"],
+input[type="color"],
+input[type="range"],
+input[type="file"],
+input[type="date"],
+input[type="time"] {
+  width: auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+input[type="range"] { width: 100%; padding: 0; background: transparent; border: none; }
+input[type="date"], input[type="time"] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+}
+input[type="color"] {
+  width: 36px;
+  height: 28px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
 
 .auth-screen {
   display: grid;
