@@ -68,11 +68,15 @@ func userIDKey(r *http.Request) string {
 type createRequest struct {
 	MaxUses   int    `json:"maxUses"`
 	ExpiresAt string `json:"expiresAt"`
+	// J.3(a): per-channel invite. Если задан и канал приватный —
+	// при accept делаем и channel_member. Если пустой — workspace-scope.
+	ChannelID string `json:"channelId"`
 }
 
 type inviteView struct {
 	ID          string     `json:"id"`
 	WorkspaceID string     `json:"workspaceId"`
+	ChannelID   string     `json:"channelId,omitempty"`
 	Code        string     `json:"code"`
 	MaxUses     int        `json:"maxUses"`
 	UsedCount   int        `json:"usedCount"`
@@ -91,6 +95,9 @@ type previewView struct {
 type acceptResponse struct {
 	WorkspaceID string `json:"workspaceId"`
 	Role        string `json:"role"`
+	// J.3(a): если инвайт был channel-scoped, отдаём channelId — клиент
+	// откроет конкретный канал после accept'а.
+	ChannelID string `json:"channelId,omitempty"`
 }
 
 func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -137,6 +144,34 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		expiresAt = &parsed
 	}
 
+	// J.3(a): валидация channel-scope. Канал должен принадлежать тому же
+	// workspace'у; kind == text (voice/dm не имеют URL-driven join'а).
+	var channelUUID *uuid.UUID
+	if strings.TrimSpace(req.ChannelID) != "" {
+		cid, err := uuid.Parse(req.ChannelID)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid channelId")
+			return
+		}
+		var chWS uuid.UUID
+		var chKind string
+		err = m.db.QueryRow(r.Context(),
+			`select workspace_id, kind from channels where id = $1`, cid).Scan(&chWS, &chKind)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel not found")
+			return
+		}
+		if chWS != workspaceID {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel belongs to another workspace")
+			return
+		}
+		if chKind != "text" {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel must be text")
+			return
+		}
+		channelUUID = &cid
+	}
+
 	code, err := generateCode()
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "code generation failed")
@@ -146,9 +181,9 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	id := uuid.New()
 	now := time.Now().UTC()
 	_, err = m.db.Exec(r.Context(),
-		`insert into workspace_invites (id, workspace_id, code, max_uses, used_count, expires_at, created_by_user_id, created_at)
-		 values ($1, $2, $3, $4, 0, $5, $6, $7)`,
-		id, workspaceID, code, req.MaxUses, expiresAt, userID, now,
+		`insert into workspace_invites (id, workspace_id, code, max_uses, used_count, expires_at, created_by_user_id, created_at, channel_id)
+		 values ($1, $2, $3, $4, 0, $5, $6, $7, $8)`,
+		id, workspaceID, code, req.MaxUses, expiresAt, userID, now, channelUUID,
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not create invite")
@@ -163,7 +198,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		TargetID:    id.String(),
 	})
 
-	sharedhttp.WriteJSON(w, http.StatusCreated, inviteView{
+	view := inviteView{
 		ID:          id.String(),
 		WorkspaceID: workspaceID.String(),
 		Code:        code,
@@ -172,7 +207,11 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:   expiresAt,
 		CreatedAt:   now,
 		CreatedBy:   userID.String(),
-	})
+	}
+	if channelUUID != nil {
+		view.ChannelID = channelUUID.String()
+	}
+	sharedhttp.WriteJSON(w, http.StatusCreated, view)
 }
 
 func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +232,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := m.db.Query(r.Context(),
-		`select id, workspace_id, code, max_uses, used_count, expires_at, revoked_at, created_at, created_by_user_id
+		`select id, workspace_id, code, max_uses, used_count, expires_at, revoked_at, created_at, created_by_user_id, channel_id
 		 from workspace_invites
 		 where workspace_id = $1
 		 order by created_at desc`,
@@ -216,8 +255,9 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 			revoked   *time.Time
 			created   time.Time
 			createdBy *uuid.UUID
+			channelID *uuid.UUID
 		)
-		if err := rows.Scan(&id, &wsID, &code, &maxUses, &usedCount, &expires, &revoked, &created, &createdBy); err != nil {
+		if err := rows.Scan(&id, &wsID, &code, &maxUses, &usedCount, &expires, &revoked, &created, &createdBy, &channelID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -233,6 +273,9 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		if createdBy != nil {
 			view.CreatedBy = createdBy.String()
+		}
+		if channelID != nil {
+			view.ChannelID = channelID.String()
 		}
 		items = append(items, view)
 	}
@@ -348,12 +391,13 @@ func (m *Module) handleAccept(w http.ResponseWriter, r *http.Request) {
 		usedCount int
 		expires   *time.Time
 		revoked   *time.Time
+		channelID *uuid.UUID
 	)
 	err = tx.QueryRow(r.Context(),
-		`select id, workspace_id, max_uses, used_count, expires_at, revoked_at
+		`select id, workspace_id, max_uses, used_count, expires_at, revoked_at, channel_id
 		 from workspace_invites where code = $1 for update`,
 		code,
-	).Scan(&inviteID, &wsID, &maxUses, &usedCount, &expires, &revoked)
+	).Scan(&inviteID, &wsID, &maxUses, &usedCount, &expires, &revoked, &channelID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "invite not found")
@@ -404,6 +448,27 @@ func (m *Module) handleAccept(w http.ResponseWriter, r *http.Request) {
 		existingRole = workspace.RoleMember
 	}
 
+	// J.3(a): channel-scoped инвайт + приватный канал = добавляем в
+	// channel_members (если ещё не там). На публичный канал просто
+	// пропускаем — он и так виден всем участникам.
+	if channelID != nil {
+		var isPrivate bool
+		err = tx.QueryRow(r.Context(),
+			`select is_private from channels where id = $1`, *channelID).Scan(&isPrivate)
+		if err == nil && isPrivate {
+			_, err = tx.Exec(r.Context(),
+				`insert into channel_members (channel_id, user_id, joined_at)
+				 values ($1, $2, $3)
+				 on conflict do nothing`,
+				*channelID, userID, now,
+			)
+			if err != nil {
+				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not add to channel")
+				return
+			}
+		}
+	}
+
 	_, err = tx.Exec(r.Context(),
 		`update workspace_invites set used_count = used_count + 1 where id = $1`,
 		inviteID,
@@ -440,10 +505,14 @@ func (m *Module) handleAccept(w http.ResponseWriter, r *http.Request) {
 		m.postWelcomeJoin(bgCtx, wsID, userID)
 	}
 
-	sharedhttp.WriteJSON(w, http.StatusOK, acceptResponse{
+	resp := acceptResponse{
 		WorkspaceID: wsID.String(),
 		Role:        existingRole,
-	})
+	}
+	if channelID != nil {
+		resp.ChannelID = channelID.String()
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, resp)
 }
 
 // postWelcomeJoin читает workspaces.welcome_channel_id и, если он задан,

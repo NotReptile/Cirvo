@@ -247,6 +247,9 @@ interface Invite {
   revokedAt?: string;
   createdAt: string;
   createdBy?: string;
+  // J.3(a): channel-scoped инвайт. Если задан и канал приватный,
+  // accept добавит юзера в channel_members.
+  channelId?: string;
 }
 
 interface Member {
@@ -259,6 +262,11 @@ interface Member {
   avatarMediaId?: string;
   presenceMode?: PresenceMode;
   customStatus?: string;
+  // I.6(c): extended-поля для user-profile-popup. Возвращаются в /members
+  // чтобы popup открывался мгновенно без отдельного GET /users/{id}.
+  bio?: string;
+  bannerColor?: string;
+  bannerMediaId?: string;
 }
 
 interface AuditEntry {
@@ -4514,10 +4522,25 @@ function openUserProfile(userId: string): void {
   state.userProfileTarget = userId;
   state.userProfileData = null;
   state.modal = "userProfile";
+  // I.6(c): если юзер уже в state.members и у нас есть extended-поля
+  // (bio/banner) — используем их сразу, popup открывается мгновенно.
+  // GET всё равно дёргаем — данные могли устареть; но первичный рендер
+  // не пустой.
+  const cached = state.members.find((m) => m.userId === userId);
+  if (cached && (cached.bio !== undefined || cached.bannerColor !== undefined || cached.bannerMediaId !== undefined)) {
+    state.userProfileData = {
+      id: cached.userId,
+      username: cached.username,
+      displayName: cached.displayName,
+      avatarMediaId: cached.avatarMediaId,
+      bio: cached.bio,
+      bannerColor: cached.bannerColor,
+      bannerMediaId: cached.bannerMediaId,
+      presenceMode: cached.presenceMode,
+      customStatus: cached.customStatus
+    } as UserProfileData;
+  }
   render();
-  // I.6: лениво подтягиваем расширенные поля (bio/banner). Member-листы
-  // их не возвращают (экономим bandwidth), профиль-попап — единственное место,
-  // где они показываются.
   if (userId !== state.me?.id) {
     void (async () => {
       try {
@@ -4527,7 +4550,7 @@ function openUserProfile(userId: string): void {
           render();
         }
       } catch {
-        /* 404/network — оставляем без bio/banner */
+        /* 404/network — оставляем что было из кеша */
       }
     })();
   }
@@ -8696,12 +8719,16 @@ function attachShellHandlers(): void {
     const code = raw?.trim();
     if (!code) return;
     try {
-      const res = await httpClient.post<{ workspaceId: string; role: string }>(
+      const res = await httpClient.post<{ workspaceId: string; role: string; channelId?: string }>(
         `/api/v1/invites/${encodeURIComponent(code)}/accept`
       );
       await loadWorkspaces();
       realtimeClient.reconnect();
       await selectWorkspace(res.workspaceId);
+      // J.3(a): если инвайт был channel-scoped — открываем сразу нужный канал.
+      if (res.channelId) {
+        await selectChannel(res.channelId);
+      }
       setTransientStatus("Вы вступили в воркспейс");
     } catch (err) {
       state.status = describeError(err);
@@ -10070,14 +10097,7 @@ function renderChannelSettingsModal(): string {
     : cs.data
       ? renderChannelPermissionsTable()
       : `<div class="search-empty">Нет данных</div>`;
-  else if (cs.tab === "invites") body = `
-    <div class="settings-stub" style="padding:40px 0">
-      <div class="settings-stub-title">Per-channel приглашения — скоро</div>
-      <div class="settings-stub-text">
-        Пока используйте workspace-инвайт (кнопка <code>+</code> на канале в sidebar).
-      </div>
-    </div>
-  `;
+  else if (cs.tab === "invites") body = renderChannelSettingsInvites();
   else if (cs.tab === "delete") body = renderChannelSettingsDelete();
 
   return `
@@ -10148,6 +10168,43 @@ function renderChannelSettingsOverview(): string {
       <button id="cs-overview-save" class="primary" ${cs.saving ? "disabled" : ""}>
         ${cs.saving ? "Сохраняю…" : "Сохранить"}
       </button>
+    </div>
+  `;
+}
+
+// J.3(a): таб «Приглашения» в channel-settings — отдельные инвайты,
+// привязанные именно к этому каналу. accept приватного канала добавит
+// юзера в channel_members; для публичного просто откроет канал.
+function renderChannelSettingsInvites(): string {
+  const cs = state.channelSettings;
+  if (!cs.channelId) return `<div class="search-empty">Канал не найден</div>`;
+  const channelInvites = state.invites.filter(
+    (i) => i.channelId === cs.channelId && !i.revokedAt
+  );
+  const list = channelInvites.length === 0
+    ? `<div class="invites-empty">Нет персональных инвайтов на этот канал.</div>`
+    : `<ul class="invite-list">
+        ${channelInvites.map((i) => `
+          <li data-invite="${i.id}">
+            <code class="invite-code">${escapeHtml(i.code)}</code>
+            <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}</span>
+            <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" title="Копировать код">⧉</button>
+            <button class="ghost invite-revoke" data-invite="${i.id}" title="Отозвать">✕</button>
+          </li>
+        `).join("")}
+      </ul>`;
+  return `
+    <div class="settings-section">
+      <h3>Инвайты на этот канал</h3>
+      <small class="settings-hint">
+        Код ведёт прямо в канал. Если канал приватный, приглашённый
+        автоматически добавляется в channel_members.
+      </small>
+      <form id="cs-create-channel-invite" class="inline-form" style="margin-top:12px">
+        <input name="maxUses" type="number" min="0" max="10000" placeholder="макс. использований (0 = ∞)" />
+        <button type="submit" class="primary">Создать инвайт</button>
+      </form>
+      <div style="margin-top:12px">${list}</div>
     </div>
   `;
 }
@@ -10277,8 +10334,37 @@ function attachChannelSettingsHandlers(): void {
         void loadChannelPermissions();
         return;
       }
+      if (tab === "invites" && state.invites.length === 0 && !state.invitesLoading) {
+        // J.3(a): ленивая подгрузка ws-инвайтов чтобы отфильтровать
+        // канал-скоупные. Дёргаем тот же loadInvites — он наполняет
+        // state.invites; рендер отфильтрует.
+        void loadInvites();
+      }
       render();
     });
+  });
+
+  // J.3(a): per-channel invite create form.
+  rootEl.querySelector<HTMLFormElement>("#cs-create-channel-invite")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const wsId = state.selectedWorkspaceId;
+    const chId = state.channelSettings.channelId;
+    if (!wsId || !chId) return;
+    const form = e.currentTarget as HTMLFormElement;
+    const maxUsesRaw = (form.elements.namedItem("maxUses") as HTMLInputElement)?.value;
+    const maxUses = Math.max(0, parseInt(maxUsesRaw ?? "0", 10) || 0);
+    try {
+      const created = await httpClient.post<Invite>(
+        `/api/v1/workspaces/${wsId}/invites`,
+        { maxUses, channelId: chId }
+      );
+      state.invites = [created, ...state.invites];
+      form.reset();
+      render();
+    } catch (err) {
+      state.channelSettings.error = describeError(err);
+      render();
+    }
   });
 
   // Permissions <select>'ы — write напрямую без render() для сохранения фокуса.

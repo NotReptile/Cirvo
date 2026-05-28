@@ -626,6 +626,12 @@ type memberView struct {
 	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
 	PresenceMode  string    `json:"presenceMode,omitempty"`
 	CustomStatus  string    `json:"customStatus,omitempty"`
+	// I.6(c): bio/banner возвращаем чтобы user-profile-popup открывался
+	// мгновенно (без отдельного GET /users/{id}). bandwidth-overhead
+	// небольшой — bio ≤600 байт, banner-color короткая строка.
+	Bio           string `json:"bio,omitempty"`
+	BannerColor   string `json:"bannerColor,omitempty"`
+	BannerMediaID string `json:"bannerMediaId,omitempty"`
 }
 
 func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
@@ -657,7 +663,7 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		          else u.presence_mode
 		        end as effective_mode,
 		        case when u.presence_mode = 'invisible' then null else u.custom_status end as effective_status,
-		        u.avatar_media_id
+		        u.avatar_media_id, u.bio, u.banner_color, u.banner_media_id
 		 from workspace_members wm
 		 join users u on u.id = wm.user_id
 		 where wm.workspace_id = $1
@@ -681,8 +687,11 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 			effMode      string
 			effStatus    *string
 			avatarID     *uuid.UUID
+			bio          *string
+			bannerColor  *string
+			bannerID     *uuid.UUID
 		)
-		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &effMode, &effStatus, &avatarID); err != nil {
+		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &effMode, &effStatus, &avatarID, &bio, &bannerColor, &bannerID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -702,6 +711,15 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		}
 		if effStatus != nil {
 			view.CustomStatus = *effStatus
+		}
+		if bio != nil {
+			view.Bio = *bio
+		}
+		if bannerColor != nil {
+			view.BannerColor = *bannerColor
+		}
+		if bannerID != nil {
+			view.BannerMediaID = bannerID.String()
 		}
 		items = append(items, view)
 	}
