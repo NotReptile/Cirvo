@@ -285,7 +285,7 @@ interface DMItem {
   unreadCount: number;
 }
 
-type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | null;
+type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | "invites" | null;
 
 // I.1: полноэкранная settings-модалка по Discord-pattern. Левый sidebar
 // с табами + контент справа. Tab «profile» = тело старой profile-card
@@ -601,6 +601,9 @@ interface AppState {
   // H.8: попап под avatar'ом в user-strip. Открывается на клик кнопки
   // статуса; содержит радиокнопки per-mode + поле customStatus.
   statusMenu: { x: number; y: number; draftMode: PresenceMode; draftCustom: string } | null;
+  // J.5: dropdown под заголовком воркспейса (Discord-pattern) — содержит
+  // Пригласить / Настройки сервера / Создать канал / Создать категорию.
+  workspaceMenuOpen: boolean;
   // I.12: from/to — ISO даты YYYY-MM-DD; пустые = без ограничения.
   auditFilter: { action: string; actor: string; from: string; to: string };
   // Правая панель участников (Discord-style). На широких экранах открыта
@@ -795,6 +798,7 @@ const state: AppState = {
   voiceVolumes: {},
   voiceVolumeMenu: null,
   statusMenu: null,
+  workspaceMenuOpen: false,
   auditFilter: { action: "", actor: "", from: "", to: "" },
   memberSidebarOpen: true,
   userProfileTarget: null,
@@ -1541,6 +1545,11 @@ function installGlobalKeyboardShortcuts(): void {
     if (ev.key === "Escape") {
       if (state.statusMenu) {
         state.statusMenu = null;
+        render();
+        return;
+      }
+      if (state.workspaceMenuOpen) {
+        state.workspaceMenuOpen = false;
         render();
         return;
       }
@@ -2412,17 +2421,19 @@ function renderShell(): void {
       </aside>
       <aside class="ch-panel">
         <header class="ch-panel-header">
-          <span class="ch-panel-title">${dmMode ? "Личные сообщения" : (selectedWorkspace ? escapeHtml(selectedWorkspace.name) : "Нет воркспейса")}</span>
-          ${!dmMode && selectedWorkspace && ["owner", "admin"].includes(selectedWorkspace.role ?? "")
-            ? `<button id="open-ws-settings" class="ghost ch-panel-settings" title="Настройки воркспейса" aria-label="Настройки воркспейса">${icon("settings")}</button>`
-            : ""}
+          ${dmMode || !selectedWorkspace
+            ? `<span class="ch-panel-title">${dmMode ? "Личные сообщения" : "Нет воркспейса"}</span>`
+            : `<button id="open-ws-menu" class="ch-panel-title ch-panel-menu-btn" aria-haspopup="menu" aria-expanded="${state.workspaceMenuOpen ? "true" : "false"}">
+                 <span>${escapeHtml(selectedWorkspace.name)}</span>
+                 <span class="ch-panel-menu-glyph">${state.workspaceMenuOpen ? "▴" : "▾"}</span>
+               </button>`}
         </header>
+        ${state.workspaceMenuOpen && !dmMode && selectedWorkspace ? renderWorkspaceHeaderMenu(selectedWorkspace, canModerate) : ""}
         <div class="ch-panel-body">
           ${
             dmMode
               ? renderDMSidebarList()
-              : `${state.selectedWorkspaceId ? renderChannelsBlock() : `<div class="ch-panel-empty">Выбери воркспейс слева или создай новый кнопкой +.</div>`}
-                 ${state.selectedWorkspaceId && canModerate ? renderInvitesBlock() : ""}`
+              : (state.selectedWorkspaceId ? renderChannelsBlock() : `<div class="ch-panel-empty">Выбери воркспейс слева или создай новый кнопкой +.</div>`)
           }
           ${renderVoiceStrip()}
         </div>
@@ -3006,13 +3017,11 @@ function renderChannelsBlock(): string {
   const catBlocks = categories
     .map((cat) => renderChannelCategory(cat, cat.name, channelsByCat.get(cat.id) ?? [], canManage))
     .join("");
-  const createCatBtn = canManage
-    ? `<button class="ghost ch-create-category" title="Создать категорию" aria-label="Создать категорию">${icon("plus")}<span>Категория</span></button>`
-    : "";
+  // J.5: «+ Категория» и «+ Канал»-orphan переехали в workspace-dropdown
+  // под заголовком ch-panel — sidebar остаётся чистым.
   return `
     ${orphanBlock}
     ${catBlocks}
-    ${createCatBtn ? `<div class="ch-category-footer">${createCatBtn}</div>` : ""}
   `;
 }
 
@@ -3071,12 +3080,14 @@ function renderChannelCategory(
     })
     .join("");
   // Заголовок: для категорий — кликабельный (toggle collapse), для orphan — статичный.
+  // Glyph справа от названия (Discord-pattern), label прижат к левому краю и
+  // обрезается ellipsis'ом если не влезает в одну строку.
   const titleEl = category
     ? `<button class="ch-category-toggle" ${collapseAttr}>
+         <span class="ch-category-label">${escapeHtml(title)}</span>
          <span class="ch-category-glyph">${collapseGlyph}</span>
-         <span>${escapeHtml(title)}</span>
        </button>`
-    : `<span>${escapeHtml(title)}</span>`;
+    : `<span class="ch-category-label">${escapeHtml(title)}</span>`;
   return `
     <div class="section-title ch-category-title ${isCollapsed ? "collapsed" : ""}">
       ${titleEl}
@@ -3294,41 +3305,77 @@ function renderBellButton(): string {
   return `<button id="open-notifications" class="ghost bell-btn" title="Уведомления" aria-label="Уведомления">${icon("bell")}${badge}</button>`;
 }
 
-function renderInvitesBlock(): string {
-  const list = state.invitesOpen
-    ? state.invitesLoading
-      ? `<div class="invites-empty">Загрузка…</div>`
-      : state.invites.length === 0
-        ? `<div class="invites-empty">Активных инвайтов нет</div>`
-        : `<ul class="invite-list">
-            ${state.invites
-              .filter((i) => !i.revokedAt)
-              .map(
-                (i) => `
-              <li data-invite="${i.id}">
-                <code class="invite-code">${escapeHtml(i.code)}</code>
-                <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}</span>
-                <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" title="Копировать код">⧉</button>
-                <button class="ghost invite-revoke" data-invite="${i.id}" title="Отозвать">✕</button>
-              </li>
-            `
-              )
-              .join("")}
-          </ul>`
-    : "";
+// J.5: dropdown под ch-panel-header'ом. Discord-style меню для управления
+// воркспейсом — Пригласить (открывает invites-модалку), Настройки сервера,
+// Создать канал, Создать категорию. Все эти действия раньше лежали
+// раздельно в sidebar; теперь сгруппированы по верхнему правому глифу.
+async function createCategoryFlow(wsId: string): Promise<void> {
+  const raw = await promptDialog({
+    title: "Новая категория",
+    label: "Название",
+    placeholder: "Игры, Музыка, ..."
+  });
+  const name = raw?.trim();
+  if (!name) return;
+  try {
+    const cat = await httpClient.post<ChannelCategory>(`/api/v1/workspaces/${wsId}/categories`, { name });
+    state.categories = [...state.categories, cat];
+    render();
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+  }
+}
+
+function renderWorkspaceHeaderMenu(ws: Workspace, canManage: boolean): string {
+  const isOwnerOrAdmin = ["owner", "admin"].includes(ws.role ?? "");
   return `
-    <div class="section-title invites-title">
-      <span>Инвайты</span>
-      <button id="toggle-invites" class="ghost" title="${state.invitesOpen ? "Скрыть" : "Показать"}">${state.invitesOpen ? "▾" : "▸"}</button>
+    <div class="ws-menu" role="menu">
+      ${canManage ? `<button class="ws-menu-item" data-ws-menu="invite">${icon("plus", { size: 14 })}<span>Пригласить</span></button>` : ""}
+      ${isOwnerOrAdmin ? `<button class="ws-menu-item" data-ws-menu="settings">${icon("settings", { size: 14 })}<span>Настройки сервера</span></button>` : ""}
+      ${canManage ? `<button class="ws-menu-item" data-ws-menu="create-channel">${icon("channel-text", { size: 14 })}<span>Создать канал</span></button>` : ""}
+      ${canManage ? `<button class="ws-menu-item" data-ws-menu="create-category">${icon("plus", { size: 14 })}<span>Создать категорию</span></button>` : ""}
     </div>
-    ${
-      state.invitesOpen
-        ? `<form id="create-invite" class="inline-form">
+  `;
+}
+
+function renderInvitesModal(): string {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  const list = state.invitesLoading
+    ? `<div class="invites-empty">Загрузка…</div>`
+    : state.invites.length === 0
+      ? `<div class="invites-empty">Активных инвайтов нет</div>`
+      : `<ul class="invite-list">
+          ${state.invites
+            .filter((i) => !i.revokedAt)
+            .map(
+              (i) => `
+            <li data-invite="${i.id}">
+              <code class="invite-code">${escapeHtml(i.code)}</code>
+              <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}</span>
+              <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" title="Копировать код">⧉</button>
+              <button class="ghost invite-revoke" data-invite="${i.id}" title="Отозвать">✕</button>
+            </li>
+          `
+            )
+            .join("")}
+        </ul>`;
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal" role="dialog">
+        <div class="modal-header">
+          <h3>Приглашения · ${escapeHtml(ws?.name ?? "")}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body">
+          <form id="create-invite" class="inline-form">
             <input name="maxUses" type="number" min="0" max="10000" placeholder="макс. использований (0 = ∞)" />
-            <button type="submit">Создать</button>
-          </form>${list}`
-        : ""
-    }
+            <button type="submit" class="primary">Создать инвайт</button>
+          </form>
+          ${list}
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -3480,40 +3527,67 @@ function renderVoiceChannelView(channel: Channel): string {
     return isSelf ? screenOn : !!p.screenSharing;
   });
 
-  const tiles = participants.length === 0
-    ? `<div class="muted">Пока никого. ${joined ? "Подключайся, говори :)" : "Будь первым."}</div>`
-    : sharer
-      ? `<div class="voice-tiles screen-layout">
-          <div class="voice-primary">${renderTile(sharer, "primary")}</div>
-          <div class="voice-strip-tiles">${participants
-            .filter((p) => p.sessionId !== sharer.sessionId)
-            .map((p) => renderTile(p))
-            .join("")}</div>
-        </div>`
-      : `<div class="voice-tiles">${participants.map((p) => renderTile(p)).join("")}</div>`;
+  // K.4: пустой voice-канал — Discord-style hero-view с большим именем
+  // канала, подзаголовком и primary-кнопкой по центру. Когда есть
+  // участники (joined или просто peek с активными) — обычный voice-tiles
+  // layout.
+  const header = `
+    <header class="channel-header">
+      <div class="channel-header-title">
+        <h2>${channelPrefix(channel)}<span class="channel-header-name">${escapeHtml(channel.name)}</span></h2>
+        ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
+      </div>
+    </header>
+  `;
+
+  if (participants.length === 0 && !joined) {
+    const subtitle = busyOther
+      ? "Сейчас вы в другом голосовом канале. Сначала выйдите оттуда."
+      : "Сейчас в голосовом чате никого нет";
+    return `
+      ${header}
+      <div class="voice-hero">
+        <div class="voice-hero-card">
+          <h1 class="voice-hero-title">${escapeHtml(channel.name)}</h1>
+          <div class="voice-hero-subtitle">${escapeHtml(subtitle)}</div>
+          <button id="voice-join" class="voice-hero-cta primary" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
+            ${icon("phone-outgoing", { size: 16 })}
+            <span>${joining ? "Подключаюсь…" : "Присоединиться к голосовому каналу"}</span>
+          </button>
+          ${error ? `<div class="voice-hero-error">${escapeHtml(error)}</div>` : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  const tiles = sharer
+    ? `<div class="voice-tiles screen-layout">
+        <div class="voice-primary">${renderTile(sharer, "primary")}</div>
+        <div class="voice-strip-tiles">${participants
+          .filter((p) => p.sessionId !== sharer.sessionId)
+          .map((p) => renderTile(p))
+          .join("")}</div>
+      </div>`
+    : `<div class="voice-tiles">${participants.map((p) => renderTile(p)).join("")}</div>`;
 
   const actions = joined
     ? `
       ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? "Включить микрофон" : "Заглушить", muted ? "danger" : "")}
+      ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? "Включить звук" : "Заглушить всё", isDeafened() ? "danger" : "")}
       ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? "Выключить камеру" : "Включить камеру", "", screenOn)}
       ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? "Прекратить демо" : "Поделиться экраном", screenOn ? "active" : "")}
       ${renderScreenQualitySelect()}
       ${callIconButton("voice-leave", "log-out", leaving ? "Выхожу…" : "Выйти", "hangup", leaving)}
     `
     : `
-      <button id="voice-join" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
+      <button id="voice-join" class="primary" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
         ${icon("phone-outgoing", { size: 16 })} ${joining ? "Подключаюсь…" : "Войти в голосовой"}
       </button>
       ${busyOther ? `<div class="muted">Сейчас в другом voice-канале. Сначала выйди оттуда.</div>` : ""}
     `;
 
   return `
-    <header class="channel-header">
-      <div>
-        <h2>${channel.isPrivate ? "🔒" : "🔊"} ${escapeHtml(channel.name)}</h2>
-        ${channel.topic ? `<div class="topic">${escapeHtml(channel.topic)}</div>` : ""}
-      </div>
-    </header>
+    ${header}
     <div class="voice-room">
       <div class="voice-room-body">
         <h3>Сейчас в канале</h3>
@@ -4263,6 +4337,7 @@ function renderModal(): string {
   if (state.modal === "createChannel") return renderCreateChannelModal();
   if (state.modal === "workspaceSettings") return renderWorkspaceSettingsModal();
   if (state.modal === "userProfile") return renderUserProfilePopup();
+  if (state.modal === "invites") return renderInvitesModal();
   return "";
 }
 
@@ -8076,26 +8151,56 @@ function attachShellHandlers(): void {
     });
   });
 
-  // J.5: создание новой категории через promptDialog.
-  rootEl.querySelector<HTMLButtonElement>(".ch-create-category")?.addEventListener("click", async () => {
-    const wsId = state.selectedWorkspaceId;
-    if (!wsId) return;
-    const raw = await promptDialog({
-      title: "Новая категория",
-      label: "Название",
-      placeholder: "Игры, Музыка, ..."
-    });
-    const name = raw?.trim();
-    if (!name) return;
-    try {
-      const cat = await httpClient.post<ChannelCategory>(`/api/v1/workspaces/${wsId}/categories`, { name });
-      state.categories = [...state.categories, cat];
-      render();
-    } catch (err) {
-      state.status = describeError(err);
-      render();
+  // J.5: workspace-dropdown — toggle на заголовок.
+  rootEl.querySelector<HTMLButtonElement>("#open-ws-menu")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    state.workspaceMenuOpen = !state.workspaceMenuOpen;
+    if (state.workspaceMenuOpen && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
     }
+    render();
   });
+  // Клик по любому пункту меню — закрываем и выполняем действие.
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-ws-menu]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const action = btn.dataset.wsMenu;
+      const wsId = state.selectedWorkspaceId;
+      if (!wsId) return;
+      state.workspaceMenuOpen = false;
+      if (action === "invite") {
+        state.modal = "invites";
+        render();
+        await loadInvites();
+        return;
+      }
+      if (action === "settings") {
+        openWorkspaceSettings(wsId);
+        return;
+      }
+      if (action === "create-channel") {
+        openCreateChannelModal(wsId, "text", null);
+        return;
+      }
+      if (action === "create-category") {
+        render();
+        await createCategoryFlow(wsId);
+        return;
+      }
+      render();
+    });
+  });
+  // Click-outside закрывает dropdown.
+  if (state.workspaceMenuOpen) {
+    const onOutside = (ev: MouseEvent): void => {
+      const target = ev.target as HTMLElement | null;
+      if (target?.closest(".ws-menu") || target?.closest("#open-ws-menu")) return;
+      state.workspaceMenuOpen = false;
+      document.removeEventListener("click", onOutside, true);
+      render();
+    };
+    setTimeout(() => document.addEventListener("click", onOutside, true), 0);
+  }
 
   // J.5: ⚙ управления категорией — выпадающее меню «Переименовать / Удалить».
   rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-settings").forEach((btn) => {
