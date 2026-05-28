@@ -26,6 +26,12 @@ export interface VoiceSettings {
   // в buildAudioConstraints() (off → false, остальные → true).
   denoiserMode: DenoiserMode;
   denoiserIntensity: number; // 0..100, применится когда N.* модели появятся
+  // I.9: push-to-talk режим. Когда включён — микрофон по умолчанию замьючен,
+  // unmute только пока зажат PTT-биндинг из I.4. `pttReleaseDelay` — сколько
+  // мс держать unmute после отпускания клавиши, чтобы не обрывать речь на
+  // микропаузах. 0 = моментально.
+  pushToTalk: boolean;
+  pttReleaseDelay: number; // 0..2000 ms
 }
 
 const LS_KEY = "rucord:voice-settings";
@@ -40,7 +46,9 @@ const DEFAULTS: VoiceSettings = {
   echoCancellation: true,
   autoGainControl: true,
   denoiserMode: "browser",
-  denoiserIntensity: 50
+  denoiserIntensity: 50,
+  pushToTalk: false,
+  pttReleaseDelay: 200
 };
 
 const RESOLUTION_PROFILES: Record<CameraResolution, { width: number; height: number }> = {

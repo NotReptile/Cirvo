@@ -1401,6 +1401,34 @@ let idleListenersAttached = false;
 // Esc обрабатывается отдельно — это не настраиваемая комбинация.
 let globalShortcutsInstalled = false;
 let _deafened = false;
+// I.9: PTT-режим — true пока пользователь зажимает биндинг. Используется
+// для visual indicator в voice-strip. Release-delay реализован через
+// _pttReleaseTimer: при keyup взводим setTimeout(mute), который чистится
+// если PTT нажали повторно до истечения delay'а.
+let _pttHeld = false;
+let _pttReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+
+function updatePttIndicator(): void {
+  // Прямой DOM-mutate, без render() — иначе сорвался бы фокус композера
+  // при каждом keydown PTT. CSS-класс на strip управляет цветом mic-иконки.
+  const isPtt = getVoiceSettings().pushToTalk;
+  for (const el of rootEl.querySelectorAll<HTMLElement>(".voice-strip, .call-bar")) {
+    el.classList.toggle("ptt-mode", isPtt);
+    el.classList.toggle("ptt-active", isPtt && _pttHeld);
+  }
+}
+
+// I.9: применить PTT-mode к активным сессиям. Вызывается из join/leave-flow'ов
+// (selectChannel для voice, placeCall, acceptCall) и из voice-settings, когда
+// юзер переключил флаг. Если PTT выкл — никаких автодействий, юзер сам рулит.
+function applyPttModeToActiveSessions(): void {
+  const pt = getVoiceSettings().pushToTalk;
+  if (!pt) return;
+  if (_pttHeld) return;
+  if (voiceMgr.isActive() && !voiceMgr.isMuted()) voiceMgr.setMute(true);
+  if (callMgr.isActive() && !callMgr.isMuted()) callMgr.setMute(true);
+  updatePttIndicator();
+}
 
 function installGlobalKeyboardShortcuts(): void {
   if (globalShortcutsInstalled) return;
@@ -1479,12 +1507,30 @@ function registerHotkeyActions(): void {
   });
   registerHotkey("push-to-talk", {
     down: () => {
+      if (_pttReleaseTimer) {
+        clearTimeout(_pttReleaseTimer);
+        _pttReleaseTimer = null;
+      }
+      _pttHeld = true;
+      if (_deafened) return; // deafen перебивает PTT — глухой не говорит
       if (voiceMgr.isActive()) voiceMgr.setMute(false);
       if (callMgr.isActive()) callMgr.setMute(false);
+      updatePttIndicator();
     },
     up: () => {
-      if (voiceMgr.isActive()) voiceMgr.setMute(true);
-      if (callMgr.isActive()) callMgr.setMute(true);
+      const delay = Math.max(0, getVoiceSettings().pttReleaseDelay | 0);
+      const finish = (): void => {
+        _pttHeld = false;
+        _pttReleaseTimer = null;
+        if (voiceMgr.isActive()) voiceMgr.setMute(true);
+        if (callMgr.isActive()) callMgr.setMute(true);
+        updatePttIndicator();
+      };
+      if (delay > 0) {
+        _pttReleaseTimer = setTimeout(finish, delay);
+      } else {
+        finish();
+      }
     }
   });
   registerHotkey("quick-switcher", () => {
@@ -2310,6 +2356,7 @@ function renderShell(): void {
   `;
   attachShellHandlers();
   attachVoiceVideoStreams();
+  updatePttIndicator();
 }
 
 function renderVoiceVolumeMenu(): string {
@@ -5998,6 +6045,26 @@ function renderSettingsVoiceTab(): string {
     </div>
 
     <div class="settings-section">
+      <h3>Режим рации (push-to-talk)</h3>
+      <label class="settings-check">
+        <input type="checkbox" id="vs-ptt-enable" ${s.pushToTalk ? "checked" : ""} />
+        <span>Включить режим рации</span>
+      </label>
+      <small class="settings-hint">
+        Микрофон выключен по умолчанию; передача голоса — пока зажат биндинг
+        «Push-to-talk» из <a href="#" data-settings-tab="hotkeys">горячих клавиш</a>.
+      </small>
+      <div class="settings-row settings-row-slider" ${s.pushToTalk ? "" : 'style="opacity:0.5;pointer-events:none"'}>
+        <label for="vs-ptt-delay">Задержка отпускания</label>
+        <div class="settings-slider-wrap">
+          <input id="vs-ptt-delay" type="range" min="0" max="2000" step="50" value="${s.pttReleaseDelay}" />
+          <span id="vs-ptt-delay-val" class="settings-slider-val">${s.pttReleaseDelay} мс</span>
+        </div>
+        <small class="settings-hint">Сколько держать микрофон открытым после отпускания клавиши — чтобы речь не обрывалась на микропаузах.</small>
+      </div>
+    </div>
+
+    <div class="settings-section">
       <h3>Шумоподавление</h3>
       ${renderDenoiserBlock(s)}
     </div>
@@ -6177,6 +6244,22 @@ function attachSettingsVoiceHandlers(): void {
   });
   rootEl.querySelector<HTMLInputElement>("#vs-agc")?.addEventListener("change", (e) => {
     updateVoiceSettings({ autoGainControl: (e.currentTarget as HTMLInputElement).checked });
+  });
+  // I.9: PTT-режим. Включение — auto-mute активные сессии (если PTT не зажат
+  // сейчас). Выключение — оставляем mute как есть, юзер сам разрулит.
+  rootEl.querySelector<HTMLInputElement>("#vs-ptt-enable")?.addEventListener("change", (e) => {
+    const enabled = (e.currentTarget as HTMLInputElement).checked;
+    updateVoiceSettings({ pushToTalk: enabled });
+    if (enabled) applyPttModeToActiveSessions();
+    updatePttIndicator();
+    render(); // toggle меняет disabled-state слайдера задержки
+  });
+  const pttDelay = rootEl.querySelector<HTMLInputElement>("#vs-ptt-delay");
+  pttDelay?.addEventListener("input", () => {
+    const ms = Number(pttDelay.value) | 0;
+    const label = rootEl.querySelector<HTMLSpanElement>("#vs-ptt-delay-val");
+    if (label) label.textContent = `${ms} мс`;
+    updateVoiceSettings({ pttReleaseDelay: ms });
   });
   // I.3: denoiser-режим (radio-кнопки) + intensity-слайдер.
   rootEl.querySelectorAll<HTMLInputElement>('input[name="vs-denoiser"]').forEach((r) => {
@@ -6835,6 +6918,7 @@ function attachShellHandlers(): void {
       state.modal = null;
       state.userProfileTarget = null;
       await callMgr.placeCall(userId);
+      applyPttModeToActiveSessions();
     } catch (err) {
       state.status = describeError(err);
       render();
@@ -6848,6 +6932,7 @@ function attachShellHandlers(): void {
       try {
         state.modal = null;
         await callMgr.placeCall(userId);
+        applyPttModeToActiveSessions();
       } catch (err) {
         state.status = describeError(err);
         render();
@@ -6858,6 +6943,7 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#call-accept")?.addEventListener("click", async () => {
     try {
       await callMgr.acceptIncoming();
+      applyPttModeToActiveSessions();
     } catch (err) {
       state.status = describeError(err);
       render();
@@ -6895,6 +6981,7 @@ function attachShellHandlers(): void {
     if (!channelId) return;
     try {
       await voiceMgr.join(channelId);
+      applyPttModeToActiveSessions();
     } catch (err) {
       state.status = describeError(err);
       render();
