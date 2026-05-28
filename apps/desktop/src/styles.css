@@ -4299,3 +4299,132 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   color: var(--text-mute);
   margin-top: 4px;
 }
+
+/* K.5: screen-share picker. Discord-like модалка с табами Экраны/Окна и
+   thumbnail-сеткой. Стиль наследуется от dialogs.ts — backdrop fade,
+   card scale-in. */
+.ssp-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  background: rgba(0, 0, 0, 0.6);
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  animation: dlg-fade-in 0.12s ease-out;
+}
+.ssp-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  width: 720px;
+  max-width: 92vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+}
+.ssp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.ssp-header h2 { margin: 0; font-size: 16px; color: var(--text); }
+.ssp-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-mute);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.ssp-close:hover { color: var(--text); }
+.ssp-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ssp-tab {
+  background: transparent;
+  border: 0;
+  color: var(--text-mute);
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+}
+.ssp-tab:hover { color: var(--text); }
+.ssp-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.ssp-grid {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+.ssp-source {
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text);
+  text-align: left;
+}
+.ssp-source:hover { border-color: var(--text-mute); }
+.ssp-source.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.ssp-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ssp-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.ssp-name {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ssp-empty {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: var(--text-mute);
+  padding: 40px 0;
+  font-size: 13px;
+}
+.ssp-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+.ssp-footer button {
+  padding: 8px 18px;
+  font-size: 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--text);
+  cursor: pointer;
+}
+.ssp-footer button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.ssp-footer button.primary:hover { background: var(--accent-hover); }
+.ssp-footer button:disabled { opacity: 0.4; cursor: not-allowed; }

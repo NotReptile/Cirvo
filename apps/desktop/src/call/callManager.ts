@@ -1,6 +1,7 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
+import { acquireScreenShareStream } from "./screenSharePicker";
 
 export type CallState =
   | "idle"
@@ -280,7 +281,9 @@ export class CallManager {
     if (!this.screenTrack) {
       let displayStream: MediaStream;
       try {
-        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        // K.5/K.9: своя capture-pipeline через Tauri, если доступна.
+        const result = await acquireScreenShareStream();
+        displayStream = result.stream;
       } catch {
         return false;
       }

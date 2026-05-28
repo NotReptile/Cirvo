@@ -1,6 +1,7 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
+import { acquireScreenShareStream } from "./screenSharePicker";
 
 // Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
 // (не `call.*` — иначе 1-к-1 CallManager подхватывает mesh-offer как
@@ -333,26 +334,21 @@ export class VoiceChannelManager {
     if (this.snapshot.state !== "active") return false;
     if (!this.screenTrack) {
       let displayStream: MediaStream;
+      let acquireFromTauri = false;
       try {
-        // navigator.mediaDevices.getDisplayMedia — стандартный API; на
-        // Tauri desktop нужны OS-разрешения (на macOS — Screen
-        // Recording; на Wayland — portal-prompt). Без constraints
-        // браузер выдаёт 720p ~15fps — отсюда «сыпется». ideal-поля
-        // просят максимум, фактический выдаваемый формат зависит от
-        // источника (нельзя апскейлить экран).
-        const videoConstraints: MediaTrackConstraints = quality
-          ? {
-              width: { ideal: quality.width },
-              height: { ideal: quality.height },
-              frameRate: { ideal: quality.frameRate }
-            }
-          : {};
-        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints });
+        // K.5/K.9: своя capture-pipeline через Tauri, если доступна
+        // (показывает Discord-like picker, убирает браузерную плашку
+        // «сайт делает демонстрацию»). Fallback на getDisplayMedia —
+        // браузерный picker. Подробнее в screenSharePicker.ts.
+        const result = await acquireScreenShareStream(quality);
+        displayStream = result.stream;
+        acquireFromTauri = result.fromTauri;
       } catch (err) {
         const message = err instanceof Error ? err.message : "screen share denied";
         this.update({ error: message });
         return false;
       }
+      void acquireFromTauri; // флаг доступен для будущей логики stop (сейчас track.stop достаточно)
       const track = displayStream.getVideoTracks()[0];
       if (!track) return false;
       this.screenTrack = track;

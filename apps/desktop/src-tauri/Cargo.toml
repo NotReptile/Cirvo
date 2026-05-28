@@ -21,6 +21,12 @@ tauri = { version = "2", features = [] }
 # плагина нет, поэтому target-фильтр.
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 tauri-plugin-global-shortcut = "2"
+# K.5/K.9: enumerate мониторов/окон + захват кадров для собственной screen-share
+# pipeline. Подменяет browser-getDisplayMedia → убирает плашку «сайт делает
+# демонстрацию вашего экрана» (K.9), и даёт собственный picker (K.5).
+xcap = "0.0.14"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+base64 = "0.22"
 
 [features]
 default = ["custom-protocol"]
