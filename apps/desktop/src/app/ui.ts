@@ -407,7 +407,8 @@ interface ChannelSettingsState {
   // Меняем её, при сохранении сворачиваем в overrides[].
   draft: Record<string, Record<string, "inherit" | "grant" | "deny">>;
   // J.3: draft для таба «Обзор» — отдельный от permission'ов draft.
-  overviewDraft: { name: string; topic: string; slowMode: number; isNsfw: boolean };
+  // J.5: categoryId draft — пустая строка "" = «Без категории» (NULL).
+  overviewDraft: { name: string; topic: string; slowMode: number; isNsfw: boolean; categoryId: string };
 }
 
 const ACTION_LABELS_RU: Record<string, string> = {
@@ -786,7 +787,7 @@ const state: AppState = {
     error: null,
     data: null,
     draft: {},
-    overviewDraft: { name: "", topic: "", slowMode: 0, isNsfw: false }
+    overviewDraft: { name: "", topic: "", slowMode: 0, isNsfw: false, categoryId: "" }
   },
   workspaceRoles: {
     workspaceId: null,
@@ -7954,7 +7955,8 @@ function attachShellHandlers(): void {
           name: ch?.name ?? "",
           topic: ch?.topic ?? "",
           slowMode: ch?.slowModeSeconds ?? 0,
-          isNsfw: !!ch?.isNsfw
+          isNsfw: !!ch?.isNsfw,
+          categoryId: ch?.categoryId ?? ""
         }
       };
       render();
@@ -9674,6 +9676,17 @@ function renderChannelSettingsOverview(): string {
       <small class="settings-hint"><span id="cs-topic-counter">${draft.topic.length}</span>/256</small>
     </div>
     <div class="settings-section">
+      <h3>Категория</h3>
+      <select id="cs-category" class="settings-select">
+        <option value="" ${draft.categoryId === "" ? "selected" : ""}>Без категории</option>
+        ${[...state.categories]
+          .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))
+          .map((c) => `<option value="${escapeHtml(c.id)}" ${draft.categoryId === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`)
+          .join("")}
+      </select>
+      <small class="settings-hint">Группа в sidebar'е. Каналы без категории идут отдельным блоком сверху.</small>
+    </div>
+    <div class="settings-section">
       <h3>Медленный режим</h3>
       <select id="cs-slowmode" class="settings-select">${slowOpts}</select>
       <small class="settings-hint">
@@ -9854,6 +9867,9 @@ function attachChannelSettingsHandlers(): void {
   rootEl.querySelector<HTMLSelectElement>("#cs-slowmode")?.addEventListener("change", (e) => {
     draft.slowMode = Number((e.currentTarget as HTMLSelectElement).value);
   });
+  rootEl.querySelector<HTMLSelectElement>("#cs-category")?.addEventListener("change", (e) => {
+    draft.categoryId = (e.currentTarget as HTMLSelectElement).value;
+  });
   rootEl.querySelector<HTMLInputElement>("#cs-nsfw")?.addEventListener("change", (e) => {
     draft.isNsfw = (e.currentTarget as HTMLInputElement).checked;
   });
@@ -9910,6 +9926,8 @@ async function saveChannelOverview(): Promise<void> {
   if ((draft.topic ?? "") !== (channel.topic ?? "")) patch.topic = draft.topic;
   if (draft.slowMode !== (channel.slowModeSeconds ?? 0)) patch.slowModeSeconds = draft.slowMode;
   if (draft.isNsfw !== !!channel.isNsfw) patch.isNsfw = draft.isNsfw;
+  // J.5: categoryId: "" = снять привязку (backend получит "" → NULL); UUID = переместить.
+  if ((draft.categoryId || "") !== (channel.categoryId ?? "")) patch.categoryId = draft.categoryId;
   if (Object.keys(patch).length === 0) {
     state.channelSettings.saving = false;
     setTransientStatus("Без изменений");
