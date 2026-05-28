@@ -36,6 +36,9 @@ const (
 	ActionRoleDeleted               = "role.deleted"
 	ActionRoleAssigned              = "role.assigned"
 	ActionRoleUnassigned            = "role.unassigned"
+	ActionCategoryCreated           = "category.created"
+	ActionCategoryUpdated           = "category.updated"
+	ActionCategoryDeleted           = "category.deleted"
 )
 
 // Entry describes a single audit log entry to be persisted.

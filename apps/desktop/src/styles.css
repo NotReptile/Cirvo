@@ -4073,3 +4073,64 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .nsfw-gate-card p { color: var(--text-mute); line-height: 1.5; margin: 0 0 20px; }
 .nsfw-gate-actions { display: flex; gap: 12px; justify-content: center; }
 .nsfw-gate-actions button { padding: 10px 18px; font-size: 14px; }
+
+/* J.5: category-controls (⚙ rename/delete + collapse toggle). Title-кнопка
+   занимает всю ширину и кликабельна — toggle collapse'а; справа icon-actions. */
+.ch-category-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ch-category-toggle {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.ch-category-toggle:hover { color: var(--text); }
+.ch-category-glyph {
+  display: inline-block;
+  width: 10px;
+  font-size: 10px;
+  color: var(--text-mute);
+}
+.ch-category-actions { display: inline-flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
+.ch-category-title:hover .ch-category-actions { opacity: 1; }
+.ch-category-settings {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+  border-radius: 4px;
+}
+.ch-category-settings:hover { color: var(--text); background: var(--bg-elev-2); }
+
+.ch-category-footer {
+  margin-top: 12px;
+  padding: 0 8px;
+}
+.ch-create-category {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  color: var(--text-mute);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.ch-create-category:hover { color: var(--text); border-color: var(--accent); }

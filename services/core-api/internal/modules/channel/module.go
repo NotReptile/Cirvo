@@ -84,13 +84,15 @@ type channelView struct {
 	CreatedAt       time.Time `json:"createdAt"`
 	SlowModeSeconds int       `json:"slowModeSeconds"`
 	IsNsfw          bool      `json:"isNsfw"`
+	CategoryID      *string   `json:"categoryId"`
 }
 
 type createRequest struct {
-	Kind      string `json:"kind"`
-	Name      string `json:"name"`
-	Topic     string `json:"topic"`
-	IsPrivate bool   `json:"isPrivate"`
+	Kind       string  `json:"kind"`
+	Name       string  `json:"name"`
+	Topic      string  `json:"topic"`
+	IsPrivate  bool    `json:"isPrivate"`
+	CategoryID *string `json:"categoryId"`
 }
 
 type memberRequest struct {
@@ -131,7 +133,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	//     соответствующего channel_role_overrides. base_action_mask на приватные
 	//     каналы НЕ распространяется (H.6).
 	rows, err := m.db.Query(r.Context(),
-		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw
+		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id
 		 from channels c
 		 where c.workspace_id = $1
 		   and (
@@ -162,12 +164,17 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v channelView
 		var id, wsID uuid.UUID
-		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw); err != nil {
+		var catUUID *uuid.UUID
+		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &catUUID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
 		v.ID = id.String()
 		v.WorkspaceID = wsID.String()
+		if catUUID != nil {
+			s := catUUID.String()
+			v.CategoryID = &s
+		}
 		items = append(items, v)
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -229,12 +236,36 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
+	// J.5: опциональная привязка к категории при создании.
+	var createCategoryID *uuid.UUID
+	if req.CategoryID != nil {
+		raw := strings.TrimSpace(*req.CategoryID)
+		if raw != "" {
+			cid, err := uuid.Parse(raw)
+			if err != nil {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid categoryId")
+				return
+			}
+			var catWs uuid.UUID
+			if err := m.db.QueryRow(r.Context(),
+				`select workspace_id from channel_categories where id = $1`, cid).Scan(&catWs); err != nil {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "category not found")
+				return
+			}
+			if catWs != workspaceID {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "category belongs to another workspace")
+				return
+			}
+			createCategoryID = &cid
+		}
+	}
+
 	channelID := uuid.New()
 	now := time.Now().UTC()
 	_, err = tx.Exec(r.Context(),
-		`insert into channels (id, workspace_id, kind, name, topic, is_private, position, created_at, updated_at)
-		 values ($1, $2, $3, $4, nullif($5, ''), $6, 0, $7, $7)`,
-		channelID, workspaceID, req.Kind, req.Name, req.Topic, req.IsPrivate, now,
+		`insert into channels (id, workspace_id, kind, name, topic, is_private, position, created_at, updated_at, category_id)
+		 values ($1, $2, $3, $4, nullif($5, ''), $6, 0, $7, $7, $8)`,
+		channelID, workspaceID, req.Kind, req.Name, req.Topic, req.IsPrivate, now, createCategoryID,
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not create channel")
@@ -275,6 +306,10 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Position:    0,
 		CreatedAt:   now,
 	}
+	if createCategoryID != nil {
+		s := createCategoryID.String()
+		view.CategoryID = &s
+	}
 	m.publish("channel.created", workspaceID, channelID.String(), view)
 	// H.9.iii: системная плашка «Канал создан» — только в text-канал.
 	// В voice-канал такие плашки не вписаны (там нет message-стрима).
@@ -292,6 +327,10 @@ type updateRequest struct {
 	IsPrivate       *bool   `json:"isPrivate"`
 	SlowModeSeconds *int    `json:"slowModeSeconds"`
 	IsNsfw          *bool   `json:"isNsfw"`
+	// J.5: nil = не трогать; пустая строка "" = снять привязку (NULL).
+	// Не-nil валидный UUID = присвоить категорию (проверяем что
+	// категория из того же workspace'а).
+	CategoryID *string `json:"categoryId"`
 }
 
 // handleUpdate — PATCH /api/v1/channels/{id}. Изменяем name/topic/isPrivate.
@@ -347,6 +386,33 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// J.5: categoryId — пустая строка = снять привязку (NULL),
+	// валидный UUID = присвоить (но категория должна быть из того же ws'а).
+	var newCategoryID *uuid.UUID
+	categoryTouch := false
+	if req.CategoryID != nil {
+		categoryTouch = true
+		raw := strings.TrimSpace(*req.CategoryID)
+		if raw != "" {
+			cid, err := uuid.Parse(raw)
+			if err != nil {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid categoryId")
+				return
+			}
+			var catWs uuid.UUID
+			if err := m.db.QueryRow(r.Context(),
+				`select workspace_id from channel_categories where id = $1`, cid).Scan(&catWs); err != nil {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "category not found")
+				return
+			}
+			if catWs != scope.WorkspaceID {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "category belongs to another workspace")
+				return
+			}
+			newCategoryID = &cid
+		}
+	}
+
 	// Запоминаем old name до апдейта, чтобы post-система могла оформить
 	// «Канал переименован: #old → #new». Если запрос не меняет имя — поле
 	// будет пустым и плашку не пишем.
@@ -365,9 +431,10 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		   is_private        = coalesce($5, is_private),
 		   slow_mode_seconds = coalesce($7, slow_mode_seconds),
 		   is_nsfw           = coalesce($8, is_nsfw),
+		   category_id       = case when $9::bool then $10::uuid else category_id end,
 		   updated_at        = $6
 		 where id = $1`,
-		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now, req.SlowModeSeconds, req.IsNsfw,
+		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now, req.SlowModeSeconds, req.IsNsfw, categoryTouch, newCategoryID,
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
@@ -378,11 +445,16 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// уехала одна и та же канонизированная версия (для clients без race'а
 	// между двумя одновременными PATCH'ами).
 	var v channelView
+	var reloadCat *uuid.UUID
 	err = m.db.QueryRow(r.Context(),
-		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw
+		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw)
+	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &reloadCat)
+	if reloadCat != nil {
+		s := reloadCat.String()
+		v.CategoryID = &s
+	}
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload channel")
 		return
@@ -474,11 +546,16 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v channelView
+	var getCat *uuid.UUID
 	err := m.db.QueryRow(r.Context(),
-		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw
+		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw)
+	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &getCat)
+	if getCat != nil {
+		s := getCat.String()
+		v.CategoryID = &s
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")

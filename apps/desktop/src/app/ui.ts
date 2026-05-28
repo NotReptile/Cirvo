@@ -162,6 +162,19 @@ interface Channel {
   createdAt: string;
   slowModeSeconds?: number;
   isNsfw?: boolean;
+  // J.5: null/undefined = «Без категории» (Discord-pattern, отдельный блок).
+  categoryId?: string | null;
+}
+
+// J.5: пользовательская категория каналов. CRUD через `/api/v1/workspaces/{ws}/categories`
+// и `/api/v1/categories/{id}`. Backfill миграции 26 заводит «Текстовые» / «Голосовые»
+// для каждого существующего ws'а.
+interface ChannelCategory {
+  id: string;
+  workspaceId: string;
+  name: string;
+  position: number;
+  createdAt: string;
 }
 
 interface ReactionAgg {
@@ -326,6 +339,8 @@ interface CreateChannelState {
   rolesLoading: boolean;
   saving: boolean;
   error: string | null;
+  // J.5: куда сразу положить новый канал. null = «Без категории».
+  categoryId: string | null;
 }
 
 interface WorkspaceRole {
@@ -519,6 +534,11 @@ interface AppState {
   workspaces: Workspace[];
   selectedWorkspaceId: string | null;
   channels: Channel[];
+  // J.5: пользовательские категории текущего ws'а. Загружаются параллельно
+  // с channels при `selectWorkspace`. Свёрнутость per-категории — в
+  // collapsedCategories (J.6).
+  categories: ChannelCategory[];
+  collapsedCategories: Set<string>;
   selectedChannelId: string | null;
   messages: Message[];
   authError: string | null;
@@ -673,11 +693,34 @@ interface VoicePeek {
 
 const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
 
+// J.6: persisting collapsed-categories state в localStorage. Per-категории
+// идентификатор — workspace-scoped UUID; кросс-workspace утечки не страшны.
+const COLLAPSED_CATEGORIES_KEY = "rucord:collapsed-categories";
+function loadCollapsedCategories(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_CATEGORIES_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+function saveCollapsedCategories(): void {
+  try {
+    localStorage.setItem(COLLAPSED_CATEGORIES_KEY, JSON.stringify(Array.from(state.collapsedCategories)));
+  } catch {
+    /* quota / disabled */
+  }
+}
+
 const state: AppState = {
   me: null,
   workspaces: [],
   selectedWorkspaceId: null,
   channels: [],
+  categories: [],
+  collapsedCategories: loadCollapsedCategories(),
   selectedChannelId: null,
   messages: [],
   authError: null,
@@ -774,7 +817,8 @@ const state: AppState = {
     roles: [],
     rolesLoading: false,
     saving: false,
-    error: null
+    error: null,
+    categoryId: null
   },
   workspaceSettings: {
     workspaceId: null,
@@ -915,6 +959,7 @@ export function renderApp(
         workspaces: [],
         selectedWorkspaceId: null,
         channels: [],
+        categories: [],
         selectedChannelId: null,
         messages: [],
         editingMessageId: null,
@@ -977,6 +1022,7 @@ async function selectWorkspace(id: string): Promise<void> {
   state.selectedWorkspaceId = id;
   state.selectedChannelId = null;
   state.channels = [];
+  state.categories = [];
   state.messages = [];
   state.invitesOpen = false;
   state.invites = [];
@@ -985,8 +1031,13 @@ async function selectWorkspace(id: string): Promise<void> {
   state.roleColors = {};
   state.voicePeekAll = {};
   render();
-  const data = await httpClient.get<{ items: Channel[] }>(`/api/v1/workspaces/${id}/channels`);
-  state.channels = data.items ?? [];
+  // J.5: каналы и категории тянем параллельно — оба нужны для рендера sidebar.
+  const [channelsResp, categoriesResp] = await Promise.all([
+    httpClient.get<{ items: Channel[] }>(`/api/v1/workspaces/${id}/channels`),
+    httpClient.get<{ items: ChannelCategory[] }>(`/api/v1/workspaces/${id}/categories`).catch(() => ({ items: [] }))
+  ]);
+  state.channels = channelsResp.items ?? [];
+  state.categories = categoriesResp.items ?? [];
   // Резолвинг authorId → имя в сообщениях. Не блокируем загрузку каналов.
   void loadMembers();
   void loadUnread(id);
@@ -1928,6 +1979,28 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
       state.messages = [];
     }
     delete state.unread[p.channelId];
+    render();
+    return;
+  }
+  // J.5: realtime category events.
+  if (event.event === "category.created" || event.event === "category.updated") {
+    const cat = event.payload as ChannelCategory;
+    if (cat.workspaceId !== state.selectedWorkspaceId) return;
+    if (event.event === "category.created" && !state.categories.some((c) => c.id === cat.id)) {
+      state.categories = [...state.categories, cat];
+    } else {
+      state.categories = state.categories.map((c) => (c.id === cat.id ? cat : c));
+    }
+    render();
+    return;
+  }
+  if (event.event === "category.deleted") {
+    const p = event.payload as { categoryId: string; workspaceId: string };
+    if (p.workspaceId !== state.selectedWorkspaceId) return;
+    state.categories = state.categories.filter((c) => c.id !== p.categoryId);
+    state.channels = state.channels.map((ch) =>
+      ch.categoryId === p.categoryId ? { ...ch, categoryId: null } : ch
+    );
     render();
     return;
   }
@@ -2909,27 +2982,66 @@ function renderEmpty(): string {
   return `<div class="empty"><p>Выберите канал</p></div>`;
 }
 
+// J.5: рендер sidebar'а каналов. Каналы группируются по `categoryId`;
+// orphans (NULL category_id) идут в специальном блоке «Без категории» сверху,
+// если они есть. Заголовок ws-уровневой «+» создаёт новую категорию.
 function renderChannelsBlock(): string {
   const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
   const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
-  const textChannels = state.channels.filter((ch) => ch.kind === "text");
-  const voiceChannels = state.channels.filter((ch) => ch.kind === "voice");
+  const categories = [...state.categories].sort((a, b) => a.position - b.position || a.createdAt.localeCompare(b.createdAt));
+  const channelsByCat = new Map<string | null, Channel[]>();
+  for (const ch of state.channels) {
+    const key = ch.categoryId ?? null;
+    const list = channelsByCat.get(key) ?? [];
+    list.push(ch);
+    channelsByCat.set(key, list);
+  }
+  for (const list of channelsByCat.values()) {
+    list.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  }
+  const orphanChannels = channelsByCat.get(null) ?? [];
+  const orphanBlock = orphanChannels.length > 0
+    ? renderChannelCategory(null, "Без категории", orphanChannels, canManage)
+    : "";
+  const catBlocks = categories
+    .map((cat) => renderChannelCategory(cat, cat.name, channelsByCat.get(cat.id) ?? [], canManage))
+    .join("");
+  const createCatBtn = canManage
+    ? `<button class="ghost ch-create-category" title="Создать категорию" aria-label="Создать категорию">${icon("plus")}<span>Категория</span></button>`
+    : "";
   return `
-    ${renderChannelCategory("text", "Текстовые каналы", textChannels, canManage)}
-    ${renderChannelCategory("voice", "Голосовые каналы", voiceChannels, canManage)}
+    ${orphanBlock}
+    ${catBlocks}
+    ${createCatBtn ? `<div class="ch-category-footer">${createCatBtn}</div>` : ""}
   `;
 }
 
 function renderChannelCategory(
-  kind: "text" | "voice",
+  category: ChannelCategory | null,
   title: string,
   channels: Channel[],
   canManage: boolean
 ): string {
+  // J.6: свёрнутая категория показывает только заголовок + активный канал
+  // (чтобы юзера не выкинуло из контекста).
+  const catId = category?.id ?? null;
+  const isCollapsed = catId !== null && state.collapsedCategories.has(catId);
+  const visibleChannels = isCollapsed
+    ? channels.filter((c) => c.id === state.selectedChannelId)
+    : channels;
+  // Для orphan-блока «+ канал» создаёт без категории; для категории — внутри неё.
+  const createDataAttr = category ? `data-create-in-category="${escapeHtml(category.id)}"` : `data-create-orphan="1"`;
   const addBtn = canManage
-    ? `<button class="ghost ch-category-add" data-create-kind="${kind}" title="Создать канал" aria-label="Создать канал">${icon("plus")}</button>`
+    ? `<button class="ghost ch-category-add" ${createDataAttr} title="Создать канал" aria-label="Создать канал">${icon("plus")}</button>`
     : "";
-  const items = channels
+  // ⚙ для управления самой категорией (rename/delete) — только для реальных
+  // (не orphan) категорий и canManage.
+  const settingsBtn = canManage && category
+    ? `<button class="ghost ch-category-settings" data-category-id="${escapeHtml(category.id)}" title="Управление категорией" aria-label="Управление категорией">${icon("settings")}</button>`
+    : "";
+  const collapseAttr = category ? `data-category-collapse="${escapeHtml(category.id)}"` : "";
+  const collapseGlyph = category ? (isCollapsed ? "▸" : "▾") : "";
+  const items = visibleChannels
     .map((ch) => {
       const unread = state.unread[ch.id] ?? 0;
       const muted = state.mutedChannels.has(ch.id);
@@ -2941,11 +3053,7 @@ function renderChannelCategory(
         .filter(Boolean)
         .join(" ");
       const badge = unread > 0 ? `<span class="unread-badge">${unread > 99 ? "99+" : unread}</span>` : "";
-      const inlineList = kind === "voice" ? renderVoiceInlineParticipants(ch.id) : "";
-      // J.2: hover-кнопка ⚙ настроек канала (как в Discord), для
-      // owner/admin. Заменяет первичный путь к настройкам (раньше —
-      // ⚙ в channel-header). Кнопка инвайта убрана — current invite
-      // flow workspace-scoped, per-channel-invite задаче J.3.
+      const inlineList = ch.kind === "voice" ? renderVoiceInlineParticipants(ch.id) : "";
       const actions = canManage
         ? `<span class="channel-item-actions">
              <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
@@ -2962,10 +3070,20 @@ function renderChannelCategory(
       `;
     })
     .join("");
+  // Заголовок: для категорий — кликабельный (toggle collapse), для orphan — статичный.
+  const titleEl = category
+    ? `<button class="ch-category-toggle" ${collapseAttr}>
+         <span class="ch-category-glyph">${collapseGlyph}</span>
+         <span>${escapeHtml(title)}</span>
+       </button>`
+    : `<span>${escapeHtml(title)}</span>`;
   return `
-    <div class="section-title ch-category-title">
-      <span>${title}</span>
-      ${addBtn}
+    <div class="section-title ch-category-title ${isCollapsed ? "collapsed" : ""}">
+      ${titleEl}
+      <span class="ch-category-actions">
+        ${addBtn}
+        ${settingsBtn}
+      </span>
     </div>
     <ul class="channel-list">${items}</ul>
   `;
@@ -4773,7 +4891,7 @@ async function savePassword(): Promise<void> {
 
 // H.6: открыть модалку. Параллельно (не блокируя render) тянем список
 // ролей воркспейса — нужны для секции «Доступ» при isPrivate=true.
-function openCreateChannelModal(workspaceId: string, kind: "text" | "voice"): void {
+function openCreateChannelModal(workspaceId: string, kind: "text" | "voice", categoryId: string | null = null): void {
   state.createChannel = {
     workspaceId,
     kind,
@@ -4783,7 +4901,8 @@ function openCreateChannelModal(workspaceId: string, kind: "text" | "voice"): vo
     roles: state.createChannel.workspaceId === workspaceId ? state.createChannel.roles : [],
     rolesLoading: true,
     saving: false,
-    error: null
+    error: null,
+    categoryId
   };
   state.modal = "createChannel";
   render();
@@ -4853,6 +4972,19 @@ function renderCreateChannelModal(): string {
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="modal-body">
+          <div class="cc-field">
+            <span class="cc-field-label">Тип канала</span>
+            <div class="settings-radio-group">
+              <label class="settings-radio">
+                <input type="radio" name="cc-kind" value="text" ${cc.kind === "text" ? "checked" : ""} />
+                <span>${icon("channel-text", { size: 14 })} Текстовый</span>
+              </label>
+              <label class="settings-radio">
+                <input type="radio" name="cc-kind" value="voice" ${cc.kind === "voice" ? "checked" : ""} />
+                <span>${icon("channel-voice", { size: 14 })} Голосовой</span>
+              </label>
+            </div>
+          </div>
           <label class="cc-field">
             <span class="cc-field-label">Название</span>
             <input id="create-channel-name" type="text" autocomplete="off"
@@ -4899,6 +5031,15 @@ function attachCreateChannelHandlers(): void {
     render();
   });
 
+  // J.5: переключатель типа канала. Перерендер не нужен — заголовок модалки
+  // обновится при следующем render (например после submit), здесь просто
+  // пишем в state.
+  rootEl.querySelectorAll<HTMLInputElement>('input[name="cc-kind"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (r.checked) state.createChannel.kind = r.value as "text" | "voice";
+    });
+  });
+
   rootEl.querySelectorAll<HTMLInputElement>("[data-cc-role]").forEach((cb) => {
     cb.addEventListener("change", () => {
       const id = cb.dataset.ccRole;
@@ -4931,7 +5072,8 @@ async function submitCreateChannel(): Promise<void> {
     const ch = await httpClient.post<Channel>(`/api/v1/workspaces/${cc.workspaceId}/channels`, {
       kind: cc.kind,
       name,
-      isPrivate: cc.isPrivate
+      isPrivate: cc.isPrivate,
+      categoryId: cc.categoryId ?? undefined
     });
     // Для приватного канала с выбранными ролями — выдаём channel.view
     // overrides отдельным запросом. owner всегда видит (короткое замыкание
@@ -7914,16 +8056,113 @@ function attachShellHandlers(): void {
     }
   });
 
-  // H.6: открыть модалку создания канала (заменила window.prompt). data-create-kind
-  // приходит с кнопки «+» рядом с заголовком категории (text/voice). Только
-  // ch-category-add в channels-block, не #dm-find-btn (тот тоже .ch-category-add
-  // — нужно явно фильтровать по data-create-kind).
-  rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-add[data-create-kind]").forEach((btn) => {
+  // J.5: «+ канал» внутри категории / orphan-блока. Открывает createChannel-
+  // модалку с предзаполненным categoryId — пользователь сам выбирает kind
+  // через radio в модалке (раньше kind определялся фиксированной hardcode-
+  // секцией text/voice, теперь категории могут содержать оба типа).
+  rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-add[data-create-in-category]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       if (!state.selectedWorkspaceId) return;
-      const kind = (btn.dataset.createKind as "text" | "voice" | undefined) ?? "text";
-      openCreateChannelModal(state.selectedWorkspaceId, kind);
+      const catId = btn.dataset.createInCategory ?? null;
+      openCreateChannelModal(state.selectedWorkspaceId, "text", catId);
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-add[data-create-orphan]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (!state.selectedWorkspaceId) return;
+      openCreateChannelModal(state.selectedWorkspaceId, "text", null);
+    });
+  });
+
+  // J.5: создание новой категории через promptDialog.
+  rootEl.querySelector<HTMLButtonElement>(".ch-create-category")?.addEventListener("click", async () => {
+    const wsId = state.selectedWorkspaceId;
+    if (!wsId) return;
+    const raw = await promptDialog({
+      title: "Новая категория",
+      label: "Название",
+      placeholder: "Игры, Музыка, ..."
+    });
+    const name = raw?.trim();
+    if (!name) return;
+    try {
+      const cat = await httpClient.post<ChannelCategory>(`/api/v1/workspaces/${wsId}/categories`, { name });
+      state.categories = [...state.categories, cat];
+      render();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
+  });
+
+  // J.5: ⚙ управления категорией — выпадающее меню «Переименовать / Удалить».
+  rootEl.querySelectorAll<HTMLButtonElement>(".ch-category-settings").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const catId = btn.dataset.categoryId;
+      if (!catId) return;
+      const cat = state.categories.find((c) => c.id === catId);
+      if (!cat) return;
+      const ok = await confirmDialog({
+        title: `Категория «${cat.name}»`,
+        body: "Что сделать?",
+        confirmLabel: "Переименовать",
+        cancelLabel: "Удалить"
+      });
+      if (ok) {
+        // Переименовать
+        const raw = await promptDialog({
+          title: "Переименовать категорию",
+          label: "Название",
+          initial: cat.name
+        });
+        const name = raw?.trim();
+        if (!name || name === cat.name) return;
+        try {
+          const updated = await httpClient.patch<ChannelCategory>(`/api/v1/categories/${cat.id}`, { name });
+          state.categories = state.categories.map((c) => (c.id === updated.id ? updated : c));
+          render();
+        } catch (err) {
+          state.status = describeError(err);
+          render();
+        }
+      } else {
+        // Удалить — typed-confirm на имя категории.
+        const confirmed = await confirmDialog({
+          title: "Удалить категорию",
+          body: `Категория «${cat.name}» исчезнет, каналы переедут в «Без категории».`,
+          confirmText: cat.name,
+          confirmLabel: "Удалить",
+          danger: true
+        });
+        if (!confirmed) return;
+        try {
+          await httpClient.del(`/api/v1/categories/${cat.id}`);
+          state.categories = state.categories.filter((c) => c.id !== cat.id);
+          state.channels = state.channels.map((ch) =>
+            ch.categoryId === cat.id ? { ...ch, categoryId: null } : ch
+          );
+          render();
+        } catch (err) {
+          state.status = describeError(err);
+          render();
+        }
+      }
+    });
+  });
+
+  // J.6: toggle свёрнутости категории.
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-category-collapse]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const catId = btn.dataset.categoryCollapse;
+      if (!catId) return;
+      if (state.collapsedCategories.has(catId)) state.collapsedCategories.delete(catId);
+      else state.collapsedCategories.add(catId);
+      saveCollapsedCategories();
+      render();
     });
   });
   attachCreateChannelHandlers();
