@@ -50,6 +50,7 @@ var mentionRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})`)
 // свои дополнительные параметры в where после этой константы.
 const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body, m.kind,
         coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
+        m.is_pinned, m.pinned_at,
         coalesce(
           (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine, 'userIds', user_ids))
            from (
@@ -118,6 +119,9 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("DELETE /api/v1/messages/{messageId}", m.handleDelete)
 	router.Protected("PUT /api/v1/messages/{messageId}/reactions/{emoji}", m.handleAddReaction)
 	router.Protected("DELETE /api/v1/messages/{messageId}/reactions/{emoji}", m.handleRemoveReaction)
+	router.Protected("PUT /api/v1/messages/{messageId}/pin", m.handlePin)
+	router.Protected("DELETE /api/v1/messages/{messageId}/pin", m.handleUnpin)
+	router.Protected("GET /api/v1/channels/{channelId}/pins", m.handleListPins)
 	router.Protected("POST /api/v1/channels/{channelId}/read", m.handleMarkRead)
 	router.Protected("GET /api/v1/channels/{channelId}/read", m.handleGetRead)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/unread", m.handleListUnread)
@@ -164,6 +168,8 @@ type messageView struct {
 	Attachments     []attachmentView       `json:"attachments"`
 	ReplyTo         *replySnippetView      `json:"replyTo,omitempty"`
 	Mentions        []string               `json:"mentions"`
+	IsPinned        bool                   `json:"isPinned,omitempty"`
+	PinnedAt        *time.Time             `json:"pinnedAt,omitempty"`
 }
 
 type createRequest struct {
@@ -1226,6 +1232,8 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		body, cmid, kind string
 		created          time.Time
 		edited           *time.Time
+		isPinned         bool
+		pinnedAt         *time.Time
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
 		replyJSON        []byte
@@ -1233,7 +1241,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		channelName      string
 		highlight        string
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
 		return messageView{}, "", "", err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1268,6 +1276,8 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		Attachments:     attachments,
 		ReplyTo:         reply,
 		Mentions:        mentions,
+		IsPinned:        isPinned,
+		PinnedAt:        pinnedAt,
 	}, channelName, highlight, nil
 }
 
@@ -1383,12 +1393,14 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		body, cmid, kind  string
 		created           time.Time
 		edited            *time.Time
+		isPinned          bool
+		pinnedAt          *time.Time
 		reactionsJSON     []byte
 		attachmentsJSON   []byte
 		replyJSON         []byte
 		mentionsJSON      []byte
 	)
-	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1423,6 +1435,8 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		Attachments:     attachments,
 		ReplyTo:         reply,
 		Mentions:        mentions,
+		IsPinned:        isPinned,
+		PinnedAt:        pinnedAt,
 	}, nil
 }
 
@@ -1489,12 +1503,14 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		body, cmid, kind string
 		created          time.Time
 		edited           *time.Time
+		isPinned         bool
+		pinnedAt         *time.Time
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
 		replyJSON        []byte
 		mentionsJSON     []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1529,7 +1545,202 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		Attachments:     attachments,
 		ReplyTo:         reply,
 		Mentions:        mentions,
+		IsPinned:        isPinned,
+		PinnedAt:        pinnedAt,
 	}, nil
+}
+
+// ---- pins -------------------------------------------------------------------
+
+// Discord-cap: не более 50 pinned в одном канале. В БД hard-cap не ставим
+// (миграция проще + админам иногда нужно временно превысить), проверяем здесь.
+const maxPinsPerChannel = 50
+
+func (m *Module) handlePin(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	messageID, ok := parseUUID(r, "messageId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid message id")
+		return
+	}
+	var (
+		channelID uuid.UUID
+		deletedAt *time.Time
+		isPinned  bool
+	)
+	err := m.db.QueryRow(r.Context(),
+		`select channel_id, deleted_at, is_pinned from messages where id = $1`,
+		messageID,
+	).Scan(&channelID, &deletedAt, &isPinned)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "message not found")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if deletedAt != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "cannot pin deleted message")
+		return
+	}
+	scope, ok := channel.Resolve(r.Context(), m.db, channelID, userID)
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
+		return
+	}
+	// DM: оба участника могут пинить, нет moderate-роли. Для workspace —
+	// MessageModerate (та же роль, что для delete и reaction.removeAll).
+	if scope.Kind != "dm" {
+		if _, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, userID, permission.MessageModerate); !allowed {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role to pin")
+			return
+		}
+	}
+	if isPinned {
+		// Idempotent — клиент мог продолбать predicate. Возвращаем актуальный view.
+		view, err := m.loadMessageView(r.Context(), messageID, userID)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload message")
+			return
+		}
+		sharedhttp.WriteJSON(w, http.StatusOK, view)
+		return
+	}
+	var count int
+	if err := m.db.QueryRow(r.Context(),
+		`select count(*) from messages where channel_id = $1 and is_pinned = true and deleted_at is null`,
+		channelID,
+	).Scan(&count); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	if count >= maxPinsPerChannel {
+		sharedhttp.WriteError(w, r, http.StatusConflict, sharedhttp.CodeValidationFailed,
+			"channel pin limit reached (50)")
+		return
+	}
+	now := time.Now().UTC()
+	if _, err := m.db.Exec(r.Context(),
+		`update messages set is_pinned = true, pinned_at = $1, pinned_by = $2 where id = $3`,
+		now, userID, messageID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not pin message")
+		return
+	}
+	view, err := m.loadMessageView(r.Context(), messageID, userID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload message")
+		return
+	}
+	m.publishScope("message.pinned", scope, channelID, view)
+	if scope.Kind != "dm" {
+		auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+			ActorID:     userID,
+			WorkspaceID: scope.WorkspaceID,
+			Action:      auditlog.ActionMessagePinned,
+			TargetType:  "message",
+			TargetID:    messageID.String(),
+		})
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, view)
+}
+
+func (m *Module) handleUnpin(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	messageID, ok := parseUUID(r, "messageId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid message id")
+		return
+	}
+	var (
+		channelID uuid.UUID
+		isPinned  bool
+	)
+	err := m.db.QueryRow(r.Context(),
+		`select channel_id, is_pinned from messages where id = $1`,
+		messageID,
+	).Scan(&channelID, &isPinned)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "message not found")
+			return
+		}
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	scope, ok := channel.Resolve(r.Context(), m.db, channelID, userID)
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
+		return
+	}
+	if scope.Kind != "dm" {
+		if _, _, allowed := permission.Authorize(r.Context(), m.db, scope.WorkspaceID, userID, permission.MessageModerate); !allowed {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "insufficient role to unpin")
+			return
+		}
+	}
+	if !isPinned {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if _, err := m.db.Exec(r.Context(),
+		`update messages set is_pinned = false, pinned_at = null, pinned_by = null where id = $1`,
+		messageID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not unpin message")
+		return
+	}
+	m.publishScope("message.unpinned", scope, channelID, map[string]any{
+		"id":        messageID.String(),
+		"channelId": channelID.String(),
+	})
+	if scope.Kind != "dm" {
+		auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+			ActorID:     userID,
+			WorkspaceID: scope.WorkspaceID,
+			Action:      auditlog.ActionMessageUnpinned,
+			TargetType:  "message",
+			TargetID:    messageID.String(),
+		})
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (m *Module) handleListPins(w http.ResponseWriter, r *http.Request) {
+	userID := authctx.MustUserID(r.Context())
+	channelID, ok := parseUUID(r, "channelId")
+	if !ok {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid channel id")
+		return
+	}
+	if _, ok := channel.Resolve(r.Context(), m.db, channelID, userID); !ok {
+		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
+		return
+	}
+	rows, err := m.db.Query(r.Context(),
+		`select `+messageSelectColumns+`
+		 from messages m
+		 where m.channel_id = $2 and m.is_pinned = true and m.deleted_at is null
+		 order by m.pinned_at desc nulls last
+		 limit 50`,
+		userID, channelID,
+	)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer rows.Close()
+	items := make([]messageView, 0)
+	for rows.Next() {
+		v, err := scanMessageWithReactions(rows)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
+			return
+		}
+		items = append(items, v)
+	}
+	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func parseUUID(r *http.Request, name string) (uuid.UUID, bool) {

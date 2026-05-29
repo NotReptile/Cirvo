@@ -231,6 +231,8 @@ interface Message {
   attachments?: Attachment[];
   replyTo?: ReplySnippet;
   mentions?: string[];
+  isPinned?: boolean;
+  pinnedAt?: string;
 }
 
 interface MentionAutocomplete {
@@ -567,6 +569,13 @@ interface AppState {
   members: Member[];
   membersLoading: boolean;
   pickerForMessageId: string | null;
+  // Pinned-messages popup в channel-header. channelPins ленится — грузится
+  // при первом открытии и при events `message.pinned`/`unpinned`. open=true
+  // показывает popup поверх message-list.
+  pinsPopupOpen: boolean;
+  channelPins: Message[];
+  channelPinsLoading: boolean;
+  channelPinsChannelId: string | null;
   auditEntries: AuditEntry[];
   auditLoading: boolean;
   pendingUploads: PendingUpload[];
@@ -752,6 +761,10 @@ const state: AppState = {
   members: [],
   membersLoading: false,
   pickerForMessageId: null,
+  pinsPopupOpen: false,
+  channelPins: [],
+  channelPinsLoading: false,
+  channelPinsChannelId: null,
   auditEntries: [],
   auditLoading: false,
   pendingUploads: [],
@@ -989,6 +1002,10 @@ export function renderApp(
         modal: null,
         members: [],
         pickerForMessageId: null,
+        pinsPopupOpen: false,
+        channelPins: [],
+        channelPinsLoading: false,
+        channelPinsChannelId: null,
         notifications: [],
         notificationsUnread: 0,
         dmMode: false,
@@ -1100,6 +1117,7 @@ async function selectChannel(id: string): Promise<void> {
   state.messages = [];
   state.editingMessageId = null;
   state.pickerForMessageId = null;
+  state.pinsPopupOpen = false;
   state.voicePeek = null;
   state.replyingTo = null;
   state.messagesCursor = null;
@@ -1926,6 +1944,74 @@ async function loadAudit(): Promise<void> {
   }
 }
 
+// Pinned messages: лениво грузим список при открытии popup'а. Realtime
+// `message.pinned`/`unpinned` обновляет state.channelPins на месте,
+// перезагружать не нужно.
+async function loadChannelPins(channelId: string): Promise<void> {
+  state.channelPinsLoading = true;
+  state.channelPinsChannelId = channelId;
+  state.channelPins = [];
+  render();
+  try {
+    const data = await httpClient.get<{ items: Message[] }>(`/api/v1/channels/${channelId}/pins`);
+    if (state.channelPinsChannelId !== channelId) return; // race-guard
+    state.channelPins = data.items ?? [];
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    state.channelPinsLoading = false;
+    render();
+  }
+}
+
+function togglePinsPopup(channelId: string): void {
+  if (state.pinsPopupOpen) {
+    state.pinsPopupOpen = false;
+    render();
+    return;
+  }
+  state.pinsPopupOpen = true;
+  if (state.channelPinsChannelId !== channelId) {
+    void loadChannelPins(channelId);
+  } else {
+    render();
+  }
+}
+
+function renderPinsPopup(): string {
+  if (state.channelPinsLoading) {
+    return `<div class="pins-popup"><div class="pins-empty">Загрузка…</div></div>`;
+  }
+  if (state.channelPins.length === 0) {
+    return `<div class="pins-popup">
+      <div class="pins-popup-header">Закреплённые сообщения</div>
+      <div class="pins-empty">Пока ничего не закреплено.</div>
+    </div>`;
+  }
+  const items = state.channelPins.map((m) => {
+    const author = describePeer(m.authorId);
+    const when = formatTimeSmart(m.pinnedAt ?? m.createdAt);
+    const preview = m.body
+      ? renderBody(m.body.length > 180 ? m.body.slice(0, 180) + "…" : m.body)
+      : (m.attachments && m.attachments.length > 0 ? `<em>Файл (${m.attachments.length})</em>` : "<em>пусто</em>");
+    return `
+      <div class="pin-row" data-pin-jump="${m.id}">
+        <div class="pin-row-head">
+          <span class="pin-row-author"${authorColorStyle(m.authorId)}>${escapeHtml(author)}</span>
+          <span class="pin-row-time">${when}</span>
+        </div>
+        <div class="pin-row-body">${preview}</div>
+      </div>
+    `;
+  }).join("");
+  return `
+    <div class="pins-popup">
+      <div class="pins-popup-header">Закреплённые сообщения · ${state.channelPins.length}</div>
+      <div class="pins-popup-list">${items}</div>
+    </div>
+  `;
+}
+
 function slugify(value: string): string {
   return value
     .toLowerCase()
@@ -2218,6 +2304,30 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     case "message.reaction.removed": {
       const p = event.payload as { messageId: string; userId: string; emoji: string };
       applyReactionDelta(p.messageId, p.emoji, -1, p.userId);
+      break;
+    }
+    case "message.pinned": {
+      const msg = event.payload as Message;
+      state.messages = state.messages.map((m) =>
+        m.id === msg.id ? { ...m, isPinned: true, pinnedAt: msg.pinnedAt } : m
+      );
+      if (state.channelPinsChannelId === msg.channelId) {
+        // Кладём в начало (свежеприкреплённое выше). Если уже есть — replace.
+        const without = state.channelPins.filter((p) => p.id !== msg.id);
+        state.channelPins = [msg, ...without];
+      }
+      render();
+      break;
+    }
+    case "message.unpinned": {
+      const p = event.payload as { id: string; channelId: string };
+      state.messages = state.messages.map((m) =>
+        m.id === p.id ? { ...m, isPinned: false, pinnedAt: undefined } : m
+      );
+      if (state.channelPinsChannelId === p.channelId) {
+        state.channelPins = state.channelPins.filter((x) => x.id !== p.id);
+      }
+      render();
       break;
     }
   }
@@ -3373,6 +3483,10 @@ function renderDMChannelView(dm: DMItem): string {
           <div class="topic">${escapeHtml(sub)}</div>
         </div>
       </div>
+      <div class="channel-header-actions">
+        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="Закреплённые сообщения" aria-label="Закреплённые">${icon("pin")}</button>
+      </div>
+      ${state.pinsPopupOpen && state.channelPinsChannelId === dm.channelId ? renderPinsPopup() : ""}
     </header>
     <div id="drop-zone" class="drop-zone" hidden>
       <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
@@ -3556,10 +3670,12 @@ function renderChannelView(channel: Channel): string {
         ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
       </div>
       <div class="channel-header-actions">
+        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="Закреплённые сообщения" aria-label="Закреплённые">${icon("pin")}</button>
         <button id="open-search" class="ghost" title="Поиск по сообщениям" aria-label="Поиск">${icon("search")}</button>
         ${canModerate ? `<button id="open-audit" class="ghost" title="Журнал событий" aria-label="Журнал событий">${icon("scroll")}</button>` : ""}
         <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? "Скрыть участников" : "Показать участников"}" aria-label="Участники">${icon("users")}</button>
       </div>
+      ${state.pinsPopupOpen && state.channelPinsChannelId === channel.id ? renderPinsPopup() : ""}
     </header>
     ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
       <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
@@ -4310,6 +4426,8 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
   const canModerate = !!selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
   const canDelete = isMine || canModerate;
+  // Pin/unpin: в DM может любой участник, в workspace-канале — только модератор+.
+  const canPin = state.dmMode || canModerate;
   const isEditing = state.editingMessageId === m.id;
   const reactions = Object.entries(m.reactions ?? {});
   const pickerOpen = state.pickerForMessageId === m.id;
@@ -4359,6 +4477,9 @@ function renderMessage(m: Message, grouped: boolean = false): string {
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
           <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">${icon("reply")}</button>
           ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">${icon("pencil")}</button>` : ""}
+          ${canPin
+            ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" title="${m.isPinned ? "Открепить" : "Закрепить"}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
+            : ""}
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">${icon("trash")}</button>` : ""}
         </span>
       </div>`
@@ -4369,13 +4490,18 @@ function renderMessage(m: Message, grouped: boolean = false): string {
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
           <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">${icon("reply")}</button>
           ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">${icon("pencil")}</button>` : ""}
+          ${canPin
+            ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" title="${m.isPinned ? "Открепить" : "Закрепить"}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
+            : ""}
           ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">${icon("trash")}</button>` : ""}
         </span>
       </div>`;
+  const pinnedCls = m.isPinned ? " message-pinned" : "";
   return `
-    <div class="message${groupedCls}" data-id="${m.id}">
+    <div class="message${groupedCls}${pinnedCls}" data-id="${m.id}">
       ${avatarSlot}
       <div class="message-content">
+      ${m.isPinned ? `<div class="message-pin-badge" title="Закреплённое сообщение">${icon("pin", { size: 12 })}</div>` : ""}
       ${renderReplySnippet(m.replyTo)}
       ${metaBlock}
       ${m.body ? `<div class="message-body">${renderBody(m.body)}</div>` : ""}
@@ -8002,6 +8128,34 @@ function attachShellHandlers(): void {
     });
   });
 
+  rootEl.querySelector<HTMLButtonElement>("#open-pins")?.addEventListener("click", () => {
+    const ch = state.selectedChannelId;
+    if (!ch) return;
+    togglePinsPopup(ch);
+  });
+
+  rootEl.querySelectorAll<HTMLDivElement>(".pin-row[data-pin-jump]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const id = row.dataset.pinJump;
+      if (!id) return;
+      state.pinsPopupOpen = false;
+      render();
+      // Если сообщение уже в message-list — скроллим к нему. Если нет —
+      // (закреплено старое, за пределами окна) — открываем поиск/jump-to
+      // по id. Пока минимум: только scroll если есть в DOM.
+      requestAnimationFrame(() => {
+        const el = rootEl.querySelector<HTMLDivElement>(`.message[data-id="${id}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("message-highlight");
+          setTimeout(() => el.classList.remove("message-highlight"), 1500);
+        } else {
+          setTransientStatus("Сообщение выше истории — открой поиск для перехода");
+        }
+      });
+    });
+  });
+
   rootEl.querySelector<HTMLButtonElement>("#open-search")?.addEventListener("click", () => {
     state.modal = "search";
     state.search = { query: state.search.query, loading: false, hits: state.search.hits, error: null };
@@ -9014,6 +9168,26 @@ function attachShellHandlers(): void {
       const id = btn.dataset.id ?? null;
       state.pickerForMessageId = state.pickerForMessageId === id ? null : id;
       render();
+    });
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>(".action-pin").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      if (!id) return;
+      const wasPinned = btn.dataset.pinned === "1";
+      try {
+        if (wasPinned) {
+          await httpClient.del(`/api/v1/messages/${id}/pin`);
+          setTransientStatus("Откреплено");
+        } else {
+          await httpClient.put(`/api/v1/messages/${id}/pin`);
+          setTransientStatus("Закреплено");
+        }
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
     });
   });
 

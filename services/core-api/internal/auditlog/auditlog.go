@@ -21,6 +21,8 @@ const (
 	ActionChannelMemberAdded   = "channel.member.added"
 	ActionChannelMemberRemoved = "channel.member.removed"
 	ActionMessageDeleted       = "message.deleted"
+	ActionMessagePinned        = "message.pinned"
+	ActionMessageUnpinned      = "message.unpinned"
 	ActionInviteCreated        = "invite.created"
 	ActionInviteRevoked        = "invite.revoked"
 	ActionInviteUsed           = "invite.used"

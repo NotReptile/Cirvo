@@ -4446,6 +4446,74 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   height: 16px;
   cursor: pointer;
 }
+/* Pinned messages: popup в channel-header + badge на сообщении +
+   подсветка при jump-to. Popup абсолютно позиционируется под header'ом. */
+.channel-header { position: relative; }
+.pins-popup {
+  position: absolute;
+  top: 100%;
+  right: 12px;
+  width: 360px;
+  max-height: 480px;
+  overflow: auto;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+  z-index: 50;
+  animation: rucord-tooltip-in 120ms ease-out;
+}
+.pins-popup-header {
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-mute);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-elev-2);
+}
+.pins-popup-list { padding: 4px 0; }
+.pins-empty {
+  padding: 24px 14px;
+  text-align: center;
+  color: var(--text-mute);
+  font-size: 13px;
+}
+.pin-row {
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.pin-row:last-child { border-bottom: none; }
+.pin-row:hover { background: var(--bg-elev); }
+.pin-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.pin-row-author { font-weight: 600; font-size: 13px; }
+.pin-row-time { color: var(--text-mute); font-size: 11px; }
+.pin-row-body { font-size: 13px; color: var(--text-channel, var(--text)); word-break: break-word; }
+.message-pinned { background: linear-gradient(90deg, rgba(var(--accent-rgb, 88,101,242), 0.05), transparent 120px); }
+.message-pin-badge {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  color: var(--accent);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.message { position: relative; }
+@keyframes rucord-pin-flash {
+  0% { background: rgba(var(--accent-rgb, 88,101,242), 0.25); }
+  100% { background: transparent; }
+}
+.message-highlight { animation: rucord-pin-flash 1500ms ease-out; }
 
 /* K.7(b): lock-overlay для приватных каналов. Раньше lock полностью
    замещал kind-иконку — теперь base-иконка (text/voice) + lock в правом
