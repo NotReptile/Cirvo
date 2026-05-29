@@ -15,6 +15,11 @@ import {
   startCapture,
   type ScreenSource
 } from "./tauriScreenCapture";
+import {
+  isAudioAvailable as isScreenAudioAvailable,
+  startScreenAudio,
+  stopScreenAudio
+} from "./screenAudio";
 
 export interface ScreenShareQuality {
   width: number;
@@ -28,6 +33,14 @@ interface AcquireResult {
   // при выключении screen-share); false если из getDisplayMedia (стрим
   // останавливается через track.stop() как раньше).
   fromTauri: boolean;
+  // K.5(c): true если в stream добавлен audio-track системного звука
+  // (cpal+WASAPI). При выключении нужно вызвать stopScreenAudio().
+  hasSystemAudio: boolean;
+}
+
+interface PickerChoice {
+  source: ScreenSource;
+  includeAudio: boolean;
 }
 
 export async function acquireScreenShareStream(quality?: ScreenShareQuality): Promise<AcquireResult> {
@@ -42,7 +55,8 @@ export async function acquireScreenShareStream(quality?: ScreenShareQuality): Pr
     if (sources.length === 0) {
       return acquireDisplayMedia(quality);
     }
-    const picked = await showPicker(sources);
+    const audioAvailable = await isScreenAudioAvailable();
+    const picked = await showPicker(sources, audioAvailable);
     if (!picked) {
       throw new Error("screen share cancelled");
     }
@@ -55,10 +69,26 @@ export async function acquireScreenShareStream(quality?: ScreenShareQuality): Pr
     //   4K (>1080p) — quality 80, для статичных скринов
     const fps = quality?.frameRate ?? 15;
     const jpegQuality = quality ? presetToJpegQuality(quality.height) : 65;
-    const stream = await startCapture(picked.id, fps, jpegQuality);
-    return { stream, fromTauri: true };
+    const stream = await startCapture(picked.source.id, fps, jpegQuality);
+    let hasSystemAudio = false;
+    if (picked.includeAudio) {
+      try {
+        const audioTrack = await startScreenAudio();
+        stream.addTrack(audioTrack);
+        hasSystemAudio = true;
+      } catch (err) {
+        console.warn("[screen-share] system audio failed, продолжаем без него", err);
+      }
+    }
+    return { stream, fromTauri: true, hasSystemAudio };
   }
   return acquireDisplayMedia(quality);
+}
+
+// K.5(c): caller обязан звать это в свой stopScreenShare-flow если
+// hasSystemAudio был true — иначе capture-thread+cpal-stream остаются жить.
+export async function releaseScreenAudio(): Promise<void> {
+  await stopScreenAudio();
 }
 
 function presetToJpegQuality(height: number): number {
@@ -77,7 +107,11 @@ async function acquireDisplayMedia(quality?: ScreenShareQuality): Promise<Acquir
       }
     : {};
   const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints });
-  return { stream, fromTauri: false };
+  // getDisplayMedia может сам предоставить audio-track если юзер выбрал
+  // «Включить системный звук» в браузерной плашке — детектим по наличию
+  // audio-track'а в stream.
+  const hasSystemAudio = stream.getAudioTracks().length > 0;
+  return { stream, fromTauri: false, hasSystemAudio };
 }
 
 function escapeHtml(s: string): string {
@@ -91,17 +125,26 @@ function escapeHtml(s: string): string {
 
 type Tab = "screen" | "window";
 
-function showPicker(sources: ScreenSource[]): Promise<ScreenSource | null> {
+function showPicker(sources: ScreenSource[], audioAvailable: boolean): Promise<PickerChoice | null> {
   return new Promise((resolve) => {
     let tab: Tab = "screen";
     let selectedId: string | null = sources.find((s) => s.kind === "screen")?.id ?? sources[0]?.id ?? null;
+    let includeAudio = audioAvailable; // по умолчанию включено если доступно
 
     const host = document.createElement("div");
     host.className = "ssp-backdrop";
     document.body.appendChild(host);
 
     let finished = false;
-    const finish = (v: ScreenSource | null): void => {
+    const finishPick = (id: string | null): void => {
+      if (id === null) {
+        finish(null);
+        return;
+      }
+      const src = sources.find((s) => s.id === id);
+      if (src) finish({ source: src, includeAudio });
+    };
+    const finish = (v: PickerChoice | null): void => {
       if (finished) return;
       finished = true;
       host.classList.add("dlg-fade-out");
@@ -115,11 +158,10 @@ function showPicker(sources: ScreenSource[]): Promise<ScreenSource | null> {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
         e.preventDefault();
-        finish(null);
+        finishPick(null);
       } else if (e.key === "Enter" && selectedId) {
         e.preventDefault();
-        const picked = sources.find((s) => s.id === selectedId);
-        if (picked) finish(picked);
+        finishPick(selectedId);
       }
     };
     document.addEventListener("keydown", onKey, true);
@@ -155,18 +197,25 @@ function showPicker(sources: ScreenSource[]): Promise<ScreenSource | null> {
             <button class="ssp-tab ${tab === "window" ? "active" : ""}" data-tab="window">Окна</button>
           </div>
           <div class="ssp-grid">${renderGrid()}</div>
+          ${audioAvailable
+            ? `<label class="ssp-audio-toggle">
+                 <input type="checkbox" id="ssp-audio" ${includeAudio ? "checked" : ""} />
+                 <span>Делиться системным звуком</span>
+               </label>`
+            : ""}
           <footer class="ssp-footer">
             <button class="ssp-cancel">Отмена</button>
             <button class="ssp-confirm primary" ${selectedId ? "" : "disabled"}>Поделиться</button>
           </footer>
         </div>
       `;
-      host.querySelector<HTMLButtonElement>(".ssp-close")?.addEventListener("click", () => finish(null));
-      host.querySelector<HTMLButtonElement>(".ssp-cancel")?.addEventListener("click", () => finish(null));
+      host.querySelector<HTMLButtonElement>(".ssp-close")?.addEventListener("click", () => finishPick(null));
+      host.querySelector<HTMLButtonElement>(".ssp-cancel")?.addEventListener("click", () => finishPick(null));
       host.querySelector<HTMLButtonElement>(".ssp-confirm")?.addEventListener("click", () => {
-        if (!selectedId) return;
-        const picked = sources.find((s) => s.id === selectedId);
-        if (picked) finish(picked);
+        finishPick(selectedId);
+      });
+      host.querySelector<HTMLInputElement>("#ssp-audio")?.addEventListener("change", (e) => {
+        includeAudio = (e.currentTarget as HTMLInputElement).checked;
       });
       host.querySelectorAll<HTMLButtonElement>(".ssp-tab").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -182,13 +231,11 @@ function showPicker(sources: ScreenSource[]): Promise<ScreenSource | null> {
           renderAll();
         });
         btn.addEventListener("dblclick", () => {
-          const id = btn.dataset.sourceId;
-          const picked = sources.find((s) => s.id === id);
-          if (picked) finish(picked);
+          finishPick(btn.dataset.sourceId ?? null);
         });
       });
       host.addEventListener("click", (e) => {
-        if (e.target === host) finish(null);
+        if (e.target === host) finishPick(null);
       });
     };
 

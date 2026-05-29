@@ -1,7 +1,7 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
-import { acquireScreenShareStream } from "./screenSharePicker";
+import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
 
 export type CallState =
   | "idle"
@@ -74,6 +74,8 @@ export class CallManager {
   private localStream: MediaStream | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
   private screenTrack: MediaStreamTrack | null = null;
+  // K.5(c): системный звук screen-share. Отдельный sender от mic'а.
+  private screenAudioTrack: MediaStreamTrack | null = null;
   private remoteStream: MediaStream | null = null;
   private remoteAudio: HTMLAudioElement | null = null;
   private iceServers: RTCIceServer[] | null = null;
@@ -290,6 +292,8 @@ export class CallManager {
       const track = displayStream.getVideoTracks()[0];
       if (!track) return false;
       this.screenTrack = track;
+      const audioTrack = displayStream.getAudioTracks()[0] ?? null;
+      this.screenAudioTrack = audioTrack;
       track.onended = () => {
         if (this.screenTrack === track) {
           void this.toggleScreenShare();
@@ -321,6 +325,11 @@ export class CallManager {
         }
         await this.renegotiate();
       }
+      if (audioTrack) {
+        this.localStream.addTrack(audioTrack);
+        try { this.pc.addTrack(audioTrack, this.localStream); } catch { /* ignore */ }
+        await this.renegotiate();
+      }
       this.update({ screenSharing: true, cameraOn: false });
       return true;
     }
@@ -329,6 +338,12 @@ export class CallManager {
     track.onended = null;
     this.localStream.removeTrack(track);
     track.stop();
+    const screenAudio = this.screenAudioTrack;
+    this.screenAudioTrack = null;
+    if (screenAudio) {
+      this.localStream.removeTrack(screenAudio);
+      try { screenAudio.stop(); } catch { /* ignore */ }
+    }
     for (const sender of this.pc.getSenders()) {
       if (sender.track && sender.track.kind === "video") {
         try {
@@ -337,7 +352,11 @@ export class CallManager {
           /* ignore */
         }
       }
+      if (screenAudio && sender.track === screenAudio) {
+        try { this.pc.removeTrack(sender); } catch { /* ignore */ }
+      }
     }
+    void releaseScreenAudio();
     await this.renegotiate();
     this.update({ screenSharing: false });
     return false;

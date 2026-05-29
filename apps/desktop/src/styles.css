@@ -4428,6 +4428,24 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 }
 .ssp-footer button.primary:hover { background: var(--accent-hover); }
 .ssp-footer button:disabled { opacity: 0.4; cursor: not-allowed; }
+/* K.5(c): toggle «делиться системным звуком» в picker'е. Над футером. */
+.ssp-audio-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.ssp-audio-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
 
 /* K.7(b): lock-overlay для приватных каналов. Раньше lock полностью
    замещал kind-иконку — теперь base-иконка (text/voice) + lock в правом

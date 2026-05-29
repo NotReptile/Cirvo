@@ -27,6 +27,11 @@ tauri-plugin-global-shortcut = "2"
 xcap = "0.0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 base64 = "0.22"
+# K.5(c): WASAPI loopback на Windows для захвата системного звука. cpal
+# абстрагирует host-API; на Windows строит input-stream из output-device'а
+# в loopback-режиме. Mac/Linux пока не покрываем (ScreenCaptureKit и
+# PipeWire — отдельные интеграции).
+cpal = "0.15"
 
 [features]
 default = ["custom-protocol"]

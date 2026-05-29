@@ -1,7 +1,7 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
-import { acquireScreenShareStream } from "./screenSharePicker";
+import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
 
 // Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
 // (не `call.*` — иначе 1-к-1 CallManager подхватывает mesh-offer как
@@ -127,6 +127,8 @@ export class VoiceChannelManager {
   private localStream: MediaStream | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
   private screenTrack: MediaStreamTrack | null = null;
+  // K.5(c): системный аудио-track screen-share'а. Отдельный sender от mic'а.
+  private screenAudioTrack: MediaStreamTrack | null = null;
   private iceServers: RTCIceServer[] | null = null;
   private peers = new Map<string, PeerEntry>(); // key = peer sessionId
   private unsubscribe: (() => void) | null = null;
@@ -352,6 +354,10 @@ export class VoiceChannelManager {
       const track = displayStream.getVideoTracks()[0];
       if (!track) return false;
       this.screenTrack = track;
+      // K.5(c): подцепляем системный audio-track (если acquireScreenShareStream
+      // вернул hasSystemAudio). Отдельный sender — не конфликтует с mic'ом.
+      const audioTrack = displayStream.getAudioTracks()[0] ?? null;
+      this.screenAudioTrack = audioTrack;
       track.onended = () => {
         // юзер нажал «Stop sharing» в браузере — выключаемся.
         if (this.screenTrack === track) {
@@ -389,6 +395,12 @@ export class VoiceChannelManager {
           /* ignore */
         }
       }
+      if (audioTrack) {
+        if (this.localStream) this.localStream.addTrack(audioTrack);
+        for (const peer of this.peers.values()) {
+          try { peer.pc.addTrack(audioTrack, this.localStream!); } catch { /* ignore */ }
+        }
+      }
       // Поднимаем cap по битрейту/FPS на video sender'е. По умолчанию
       // WebRTC держит ~1-2 Mbps — для статичного экрана норм, для
       // динамики/игр мало. setParameters async, ошибки в каждом peer'е
@@ -406,6 +418,14 @@ export class VoiceChannelManager {
     track.onended = null;
     if (this.localStream) this.localStream.removeTrack(track);
     track.stop();
+    // K.5(c): убираем screen-audio sender (но НЕ mic sender — он остаётся).
+    // Различаем по сохранённому screenAudioTrack — mic-sender держит другой.
+    const screenAudio = this.screenAudioTrack;
+    this.screenAudioTrack = null;
+    if (screenAudio) {
+      if (this.localStream) this.localStream.removeTrack(screenAudio);
+      try { screenAudio.stop(); } catch { /* ignore */ }
+    }
     for (const peer of this.peers.values()) {
       for (const sender of peer.pc.getSenders()) {
         if (sender.track && sender.track.kind === "video") {
@@ -415,8 +435,15 @@ export class VoiceChannelManager {
             /* ignore */
           }
         }
+        if (screenAudio && sender.track === screenAudio) {
+          try { peer.pc.removeTrack(sender); } catch { /* ignore */ }
+        }
       }
     }
+    // cpal-stream и WASAPI-loopback закрываем явно — track.stop() сам по
+    // себе не дёрнет Rust-side, потому что MediaStreamTrackGenerator не
+    // имеет внешней wire-up'ки с cpal.
+    void releaseScreenAudio();
     this.update({ screenSharing: false });
     this.broadcastState();
     return false;
@@ -556,8 +583,12 @@ export class VoiceChannelManager {
     if (this.screenTrack) {
       this.screenTrack.onended = null;
     }
+    if (this.screenAudioTrack) {
+      void releaseScreenAudio();
+    }
     this.cameraTrack = null;
     this.screenTrack = null;
+    this.screenAudioTrack = null;
   }
 
   private async ensureIceServers(): Promise<void> {
