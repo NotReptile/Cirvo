@@ -36,6 +36,17 @@ import {
 import { installTooltips } from "./tooltips";
 import { polishListboxes } from "./listbox";
 import {
+  type Locale,
+  type TimeFormat,
+  getLocale,
+  setLocale,
+  getTimeFormat,
+  setTimeFormat,
+  hour12Setting,
+  intlLocale,
+  t
+} from "./i18n";
+import {
   applyOutputDevice,
   buildAudioConstraints,
   buildVideoConstraints,
@@ -6163,36 +6174,40 @@ interface SettingsTabGroup {
   tabs: SettingsTabDef[];
 }
 
-const SETTINGS_TAB_GROUPS: SettingsTabGroup[] = [
-  {
-    title: "Аккаунт",
-    tabs: [
-      { id: "profile", label: "Профиль" },
-      { id: "privacy", label: "Конфиденциальность" }
-    ]
-  },
-  {
-    title: "Взаимодействие",
-    tabs: [
-      { id: "voice", label: "Голос и видео", todo: "I.2 / I.3" },
-      { id: "notifications", label: "Уведомления" },
-      { id: "hotkeys", label: "Горячие клавиши", todo: "I.4" },
-      { id: "language", label: "Язык и время", todo: "I.7" }
-    ]
-  },
-  {
-    title: "Внешний вид",
-    tabs: [
-      { id: "appearance", label: "Внешний вид", todo: "I.5" }
-    ]
-  },
-  {
-    title: "Расширенные",
-    tabs: [
-      { id: "advanced", label: "Расширенные", todo: "I.9" }
-    ]
-  }
-];
+// I.7: списки локализуются через t() — пересоздаём при каждом рендере,
+// чтобы смена locale в settings.language применялась мгновенно.
+function settingsTabGroups(): SettingsTabGroup[] {
+  return [
+    {
+      title: t("settings.group.account"),
+      tabs: [
+        { id: "profile", label: t("settings.tab.profile") },
+        { id: "privacy", label: t("settings.tab.privacy") }
+      ]
+    },
+    {
+      title: t("settings.group.interact"),
+      tabs: [
+        { id: "voice", label: t("settings.tab.voice"), todo: "I.2 / I.3" },
+        { id: "notifications", label: t("settings.tab.notifications") },
+        { id: "hotkeys", label: t("settings.tab.hotkeys"), todo: "I.4" },
+        { id: "language", label: t("settings.tab.language") }
+      ]
+    },
+    {
+      title: t("settings.group.appearance"),
+      tabs: [
+        { id: "appearance", label: t("settings.tab.appearance"), todo: "I.5" }
+      ]
+    },
+    {
+      title: t("settings.group.advanced"),
+      tabs: [
+        { id: "advanced", label: t("settings.tab.advanced"), todo: "I.9" }
+      ]
+    }
+  ];
+}
 
 // I.11: индекс «что лежит в каждом табе». Используется для live-фильтра
 // в #settings-search. Label — точное название H3-секции (для scrollIntoView
@@ -6223,16 +6238,18 @@ const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { tab: "appearance", label: "Тема", keywords: ["dark", "light", "тёмная", "светлая", "auto"] },
   { tab: "appearance", label: "Акцентный цвет", keywords: ["accent", "color", "цвет"] },
   { tab: "appearance", label: "Плотность", keywords: ["density", "cozy", "compact", "уютная", "компактная"] },
-  { tab: "appearance", label: "Сообщения", keywords: ["группировка", "role", "цвет ролей", "group"] }
+  { tab: "appearance", label: "Сообщения", keywords: ["группировка", "role", "цвет ролей", "group"] },
+  { tab: "language", label: "Язык интерфейса", keywords: ["locale", "language", "russian", "english", "ru", "en", "перевод"] },
+  { tab: "language", label: "Формат времени", keywords: ["12-часовой", "24-часовой", "am", "pm", "часы", "time format"] }
 ];
 
 function findSettingsTab(id: SettingsTab): SettingsTabDef {
-  for (const group of SETTINGS_TAB_GROUPS) {
+  for (const group of settingsTabGroups()) {
     const tab = group.tabs.find((t) => t.id === id);
     if (tab) return tab;
   }
   // Не должно случиться — fallback на profile.
-  return SETTINGS_TAB_GROUPS[0].tabs[0];
+  return settingsTabGroups()[0].tabs[0];
 }
 
 function renderSettingsModal(): string {
@@ -6253,21 +6270,21 @@ function renderSettingsModal(): string {
         })}
         <div class="settings-user-body">
           <div class="settings-user-name">${escapeHtml(displayName)}</div>
-          <div class="settings-user-hint">Редактировать профиль…</div>
+          <div class="settings-user-hint">${escapeHtml(t("settings.user.edit"))}</div>
         </div>
       </button>
       <div class="settings-search-wrap">
         <input id="settings-search" class="settings-search" type="text"
-               placeholder="Поиск настроек"
+               placeholder="${escapeHtml(t("settings.search"))}"
                value="${escapeHtml(state.settings.search)}"
                autocomplete="off" spellcheck="false" />
         <div id="settings-search-results" class="settings-search-results" hidden></div>
       </div>
       <nav class="settings-nav">
-        ${SETTINGS_TAB_GROUPS.map(renderSettingsGroup).join("")}
+        ${settingsTabGroups().map(renderSettingsGroup).join("")}
       </nav>
       <button id="settings-logout-btn" class="settings-logout">
-        ${icon("log-out", { size: 16 })} <span>Выйти из аккаунта</span>
+        ${icon("log-out", { size: 16 })} <span>${escapeHtml(t("settings.logout"))}</span>
       </button>
     </aside>
   `;
@@ -6318,6 +6335,7 @@ function renderSettingsTabContent(tab: SettingsTab): string {
   if (tab === "appearance") return renderSettingsAppearanceTab();
   if (tab === "notifications") return renderSettingsNotificationsTab();
   if (tab === "privacy") return renderSettingsPrivacyTab();
+  if (tab === "language") return renderSettingsLanguageTab();
   const def = findSettingsTab(tab);
   const todoHint = def.todo ? ` · ${def.todo}` : "";
   return `
@@ -6747,6 +6765,48 @@ function ensureSessionsLoaded(): void {
       _sessionsError = describeError(err);
       if (state.modal === "settings" && state.settings.tab === "privacy") render();
     });
+}
+
+// I.7: «Язык и время». RU/EN селект + radio time-format (auto/12/24).
+// Изменения применяются мгновенно: setLocale/setTimeFormat пишут в
+// localStorage и дёргают listeners → render() обновляет UI без перезагрузки.
+function renderSettingsLanguageTab(): string {
+  const locale = getLocale();
+  const fmt = getTimeFormat();
+  const sample = new Date();
+  // Превью: формат времени с текущей настройкой, чтобы юзер видел эффект.
+  const samplePreview = sample.toLocaleTimeString(intlLocale(), {
+    hour: "2-digit", minute: "2-digit", hour12: hour12Setting()
+  });
+  return `
+    <div class="settings-section">
+      <h3>${escapeHtml(t("settings.language.title"))}</h3>
+      <div class="settings-hint">${escapeHtml(t("settings.language.hint"))}</div>
+      <select id="settings-locale" class="settings-select">
+        <option value="ru"${locale === "ru" ? " selected" : ""}>${escapeHtml(t("settings.language.option.ru"))}</option>
+        <option value="en"${locale === "en" ? " selected" : ""}>${escapeHtml(t("settings.language.option.en"))}</option>
+      </select>
+    </div>
+    <div class="settings-section">
+      <h3>${escapeHtml(t("settings.timeformat.title"))}</h3>
+      <div class="settings-hint">${escapeHtml(t("settings.timeformat.hint"))}</div>
+      <div class="settings-radio-group">
+        <label class="settings-radio">
+          <input type="radio" name="settings-time-format" value="auto" ${fmt === "auto" ? "checked" : ""} />
+          <span>${escapeHtml(t("settings.timeformat.option.auto"))}</span>
+        </label>
+        <label class="settings-radio">
+          <input type="radio" name="settings-time-format" value="h24" ${fmt === "h24" ? "checked" : ""} />
+          <span>${escapeHtml(t("settings.timeformat.option.h24"))}</span>
+        </label>
+        <label class="settings-radio">
+          <input type="radio" name="settings-time-format" value="h12" ${fmt === "h12" ? "checked" : ""} />
+          <span>${escapeHtml(t("settings.timeformat.option.h12"))}</span>
+        </label>
+      </div>
+      <div class="settings-hint" style="margin-top:8px">Сейчас: <strong>${escapeHtml(samplePreview)}</strong></div>
+    </div>
+  `;
 }
 
 function renderSettingsPrivacyTab(): string {
@@ -7464,7 +7524,23 @@ function attachSettingsHandlers(): void {
   attachSettingsAppearanceHandlers();
   attachSettingsNotificationsHandlers();
   attachSettingsPrivacyHandlers();
+  attachSettingsLanguageHandlers();
   attachSettingsSearchHandler();
+}
+
+function attachSettingsLanguageHandlers(): void {
+  rootEl.querySelector<HTMLSelectElement>("#settings-locale")?.addEventListener("change", (e) => {
+    const v = (e.currentTarget as HTMLSelectElement).value as Locale;
+    setLocale(v);
+    render();
+  });
+  rootEl.querySelectorAll<HTMLInputElement>('input[name="settings-time-format"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (!r.checked) return;
+      setTimeFormat(r.value as TimeFormat);
+      render();
+    });
+  });
 }
 
 // I.11: live-filter настроек. Прямой DOM-mutate без render() — иначе
@@ -9858,7 +9934,7 @@ function shortId(id: string): string {
 function formatTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString();
+  return date.toLocaleString(intlLocale(), { hour12: hour12Setting() });
 }
 
 // formatTimeSmartShort — «14:32». Используется как hover-метка в группе
@@ -9867,12 +9943,18 @@ function formatTime(iso: string): string {
 function formatTimeSmartShort(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleTimeString(intlLocale(), { hour: "2-digit", minute: "2-digit", hour12: hour12Setting() });
 }
 
 // formatTimeSmart — «Сегодня в 14:32» / «Вчера в 23:01» / «18.05.2026 в 14:32».
 // Discord-pattern: timestamps в потоке сообщений и в notifications читаются
 // глазом мгновенно, без перевода даты в голове.
+//
+// I.7: формат часов уважает getTimeFormat() (auto/h12/h24); локаль — intlLocale().
+// Weekday и DMY также берут текущую локаль ru-RU/en-US. Сепаратор «в»/«at»
+// — через t("time.today"/"time.yesterday") (для today/yesterday) и просто
+// space-join для других дней (английский нативно говорит "Monday 14:32",
+// без предлога).
 function formatTimeSmart(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -9880,15 +9962,17 @@ function formatTimeSmart(iso: string): string {
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const startOfMsgDay = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
   const dayDiff = Math.round((startOfDay - startOfMsgDay) / 86400000);
-  const hm = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  if (dayDiff === 0) return `Сегодня в ${hm}`;
-  if (dayDiff === 1) return `Вчера в ${hm}`;
+  const locale = intlLocale();
+  const h12 = hour12Setting();
+  const hm = date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", hour12: h12 });
+  if (dayDiff === 0) return `${t("time.today")} ${hm}`;
+  if (dayDiff === 1) return `${t("time.yesterday")} ${hm}`;
   if (dayDiff > 1 && dayDiff < 7) {
-    const weekday = date.toLocaleDateString("ru-RU", { weekday: "long" });
-    return `${weekday} в ${hm}`;
+    const weekday = date.toLocaleDateString(locale, { weekday: "long" });
+    return getLocale() === "en" ? `${weekday} ${hm}` : `${weekday} в ${hm}`;
   }
-  const dmy = date.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
-  return `${dmy} в ${hm}`;
+  const dmy = date.toLocaleDateString(locale, { day: "2-digit", month: "2-digit", year: "numeric" });
+  return getLocale() === "en" ? `${dmy} ${hm}` : `${dmy} в ${hm}`;
 }
 
 function escapeHtml(value: string | undefined | null): string {
