@@ -76,6 +76,8 @@ export class CallManager {
   private screenTrack: MediaStreamTrack | null = null;
   // K.5(c): системный звук screen-share. Отдельный sender от mic'а.
   private screenAudioTrack: MediaStreamTrack | null = null;
+  // PTT-гейт (см. voiceChannelManager): отделён от snapshot.muted.
+  private pttGateOpen = true;
   private remoteStream: MediaStream | null = null;
   private remoteAudio: HTMLAudioElement | null = null;
   private iceServers: RTCIceServer[] | null = null;
@@ -210,20 +212,35 @@ export class CallManager {
     return this.setMute(!this.snapshot.muted);
   }
 
-  // I.4: явное выставление mute — для push-to-talk.
+  // Явный mute пользователя. Реальное состояние трека — комбинация mute
+  // и PTT-гейта (см. applyAudioEnabled).
   setMute(muted: boolean): boolean {
     if (this.snapshot.muted === muted) return muted;
-    if (this.localStream) {
-      for (const track of this.localStream.getAudioTracks()) {
-        track.enabled = !muted;
-      }
-    }
     this.update({ muted });
+    this.applyAudioEnabled();
     return muted;
   }
 
   isMuted(): boolean {
     return this.snapshot.muted;
+  }
+
+  // PTT-гейт. НЕ трогает snapshot.muted — микрофон визуально «включён».
+  setPttGate(open: boolean): void {
+    if (this.pttGateOpen === open) return;
+    this.pttGateOpen = open;
+    this.applyAudioEnabled();
+  }
+
+  // Мик-трек активен только если не замьючен И PTT-гейт открыт. Системный
+  // звук screen-share (screenAudioTrack) не гейтим.
+  private applyAudioEnabled(): void {
+    if (!this.localStream) return;
+    const enabled = !this.snapshot.muted && this.pttGateOpen;
+    for (const track of this.localStream.getAudioTracks()) {
+      if (track === this.screenAudioTrack) continue;
+      track.enabled = enabled;
+    }
   }
 
   isActive(): boolean {

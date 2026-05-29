@@ -126,6 +126,37 @@ services:
       minio:
         condition: service_healthy
 
+  # TURN-релей для WebRTC. Без него два клиента за NAT/CGNAT (домашний
+  # интернет, мобильный) не могут установить медиа-соединение — сигналинг
+  # проходит (видно, что собеседник зашёл в канал), но звук/видео/демонстрация
+  # не идут. coturn ретранслирует медиа через себя.
+  #
+  # Требует проброса на роутере (в дополнение к 80/443):
+  #   UDP+TCP 3478              — control/allocation
+  #   UDP 49160-49200          — relay-диапазон (хватает на небольшую группу)
+  # external-ip резолвится из RUCORD_DOMAIN при старте (duckdns → публичный IP),
+  # чтобы relay-кандидаты содержали внешний адрес, а не внутренний docker-IP.
+  coturn:
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        EXTIP=$$(getent hosts ${RUCORD_DOMAIN:-localhost} | awk '{print $$1}');
+        echo "coturn external-ip=$$EXTIP realm=${RUCORD_DOMAIN:-localhost}";
+        exec turnserver -n --no-cli --no-tls --no-dtls
+        --listening-port=3478
+        --min-port=49160 --max-port=49200
+        --realm=${RUCORD_DOMAIN:-localhost}
+        --lt-cred-mech
+        --user=${ICE_TURN_USERNAME:-rucord}:${ICE_TURN_CREDENTIAL:-rucord}
+        $${EXTIP:+--external-ip=$$EXTIP}
+        --log-file=stdout --simple-log
+
   postgres:
     image: postgres:16
     restart: unless-stopped

@@ -251,11 +251,14 @@ function shouldIgnore(ev: KeyboardEvent, def: ActionDef): boolean {
     target.tagName === "TEXTAREA" ||
     target.isContentEditable;
   if (!isEditable) return false;
-  // Hold-action (PTT) — разрешаем из инпутов, иначе нельзя говорить
-  // во время набора сообщения.
-  if (def.type === "hold") return false;
-  // Tap с модификатором — разрешаем (Ctrl+K из любого инпута).
+  // Tap/hold с модификатором — разрешаем (Ctrl+K, Ctrl+T из любого инпута):
+  // комбинация с Ctrl/Meta/Alt не вводит печатный символ, конфликта нет.
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return false;
+  // Голая клавиша в инпуте — игнорим (в т.ч. PTT на одиночную клавишу),
+  // иначе preventDefault сожрал бы вводимый символ: нельзя было бы
+  // напечатать букву, на которую забинжен push-to-talk. PTT в фоне (игра,
+  // окно не в фокусе) продолжает работать через глобальный Tauri-хоткей —
+  // window-listener тут только фолбэк для сфокусированного окна.
   return true;
 }
 

@@ -24,10 +24,14 @@ async function loadPlugin(): Promise<typeof import("@tauri-apps/plugin-global-sh
   pluginPromise = (async () => {
     if (typeof window === "undefined") return null;
     const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
-    if (!w.__TAURI_INTERNALS__) return null;
+    if (!w.__TAURI_INTERNALS__) {
+      console.info("[global-shortcut] не Tauri-окружение — глобальные хоткеи недоступны (фоллбэк на window-listener)");
+      return null;
+    }
     try {
       return await import("@tauri-apps/plugin-global-shortcut");
-    } catch {
+    } catch (err) {
+      console.warn("[global-shortcut] плагин не загрузился:", err);
       return null;
     }
   })();
@@ -148,8 +152,13 @@ export async function syncGlobalShortcuts(
         else if (h.down) h.down();
       });
       registered.set(id, next);
-    } catch {
-      /* конфликт с системным хоткеем или Tauri не дал — фоллбэк на window-listener */
+      console.info(`[global-shortcut] registered ${id} → ${next}`);
+    } catch (err) {
+      // Конфликт с системным хоткеем, голая клавиша без модификатора,
+      // которую OS не отдаёт глобально, или Tauri не дал разрешение —
+      // фоллбэк на window-listener (работает только в фокусе). Логируем,
+      // чтобы причину было видно в DevTools-сборке.
+      console.warn(`[global-shortcut] FAILED to register ${id} → ${next}:`, err);
     }
   }
 }

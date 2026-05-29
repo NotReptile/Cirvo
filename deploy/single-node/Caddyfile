@@ -19,6 +19,13 @@
 	admin off
 	# Чтобы Caddy не разлогинивал acme при self-signed варианте —
 	# email вычисляется внутри блока сайта.
+	# WebView2 (Tauri) в release-сборке валится на HTTP/3 — `Failed to
+	# fetch` без видимой причины (UDP/443 может не делать NAT-hairpin
+	# или Chromium-stack QUIC ругается на что-то локально). Edge через
+	# proxy ходит нормально, curl тоже. Отключаем h3, оставляем h1+h2.
+	servers {
+		protocols h1 h2
+	}
 }
 
 {$RUCORD_DOMAIN:localhost} {

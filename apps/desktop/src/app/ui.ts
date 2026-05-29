@@ -1586,14 +1586,54 @@ function updatePttIndicator(): void {
 
 // I.9: применить PTT-mode к активным сессиям. Вызывается из join/leave-flow'ов
 // (selectChannel для voice, placeCall, acceptCall) и из voice-settings, когда
-// юзер переключил флаг. Если PTT выкл — никаких автодействий, юзер сам рулит.
+// юзер переключил флаг. PTT гейтит передачу звука через setPttGate, НЕ трогая
+// видимый mute — микрофон в PTT-режиме остаётся «включённым» (Discord-стиль).
 function applyPttModeToActiveSessions(): void {
   const pt = getVoiceSettings().pushToTalk;
-  if (!pt) return;
-  if (_pttHeld) return;
-  if (voiceMgr.isActive() && !voiceMgr.isMuted()) voiceMgr.setMute(true);
-  if (callMgr.isActive() && !callMgr.isMuted()) callMgr.setMute(true);
+  if (!pt) {
+    // PTT выключили — гейт открываем (звук течёт по обычному mute-флагу).
+    if (voiceMgr.isActive()) voiceMgr.setPttGate(true);
+    if (callMgr.isActive()) callMgr.setPttGate(true);
+    updatePttIndicator();
+    return;
+  }
+  // PTT включён: пока клавиша не зажата — гейт закрыт.
+  const open = _pttHeld;
+  if (voiceMgr.isActive()) voiceMgr.setPttGate(open);
+  if (callMgr.isActive()) callMgr.setPttGate(open);
   updatePttIndicator();
+}
+
+// PTT keydown: открываем гейт (звук пошёл). Общая функция для window- и
+// global-хендлеров — раньше код дублировался дважды.
+function pttDown(): void {
+  if (_pttReleaseTimer) {
+    clearTimeout(_pttReleaseTimer);
+    _pttReleaseTimer = null;
+  }
+  _pttHeld = true;
+  if (_deafened) return; // deafen перебивает PTT — глухой не говорит
+  if (voiceMgr.isActive()) voiceMgr.setPttGate(true);
+  if (callMgr.isActive()) callMgr.setPttGate(true);
+  updatePttIndicator();
+}
+
+// PTT keyup: закрываем гейт (с опциональным release-delay, чтобы хвост фразы
+// не обрезался). Видимый mute не трогаем.
+function pttUp(): void {
+  const delay = Math.max(0, getVoiceSettings().pttReleaseDelay | 0);
+  const finish = (): void => {
+    _pttHeld = false;
+    _pttReleaseTimer = null;
+    if (voiceMgr.isActive()) voiceMgr.setPttGate(false);
+    if (callMgr.isActive()) callMgr.setPttGate(false);
+    updatePttIndicator();
+  };
+  if (delay > 0) {
+    _pttReleaseTimer = setTimeout(finish, delay);
+  } else {
+    finish();
+  }
 }
 
 function installGlobalKeyboardShortcuts(): void {
@@ -1661,32 +1701,8 @@ function registerHotkeyActions(): void {
     if (voiceMgr.isActive()) await voiceMgr.leave();
   });
   registerHotkey("push-to-talk", {
-    down: () => {
-      if (_pttReleaseTimer) {
-        clearTimeout(_pttReleaseTimer);
-        _pttReleaseTimer = null;
-      }
-      _pttHeld = true;
-      if (_deafened) return; // deafen перебивает PTT — глухой не говорит
-      if (voiceMgr.isActive()) voiceMgr.setMute(false);
-      if (callMgr.isActive()) callMgr.setMute(false);
-      updatePttIndicator();
-    },
-    up: () => {
-      const delay = Math.max(0, getVoiceSettings().pttReleaseDelay | 0);
-      const finish = (): void => {
-        _pttHeld = false;
-        _pttReleaseTimer = null;
-        if (voiceMgr.isActive()) voiceMgr.setMute(true);
-        if (callMgr.isActive()) callMgr.setMute(true);
-        updatePttIndicator();
-      };
-      if (delay > 0) {
-        _pttReleaseTimer = setTimeout(finish, delay);
-      } else {
-        finish();
-      }
-    }
+    down: () => pttDown(),
+    up: () => pttUp()
   });
   registerHotkey("quick-switcher", () => {
     if (!state.selectedWorkspaceId) return;
@@ -1734,32 +1750,8 @@ function registerHotkeyActions(): void {
     if (voiceMgr.isActive()) await voiceMgr.leave();
   }});
   setGlobalHandlers("push-to-talk", {
-    down: () => {
-      if (_pttReleaseTimer) {
-        clearTimeout(_pttReleaseTimer);
-        _pttReleaseTimer = null;
-      }
-      _pttHeld = true;
-      if (_deafened) return;
-      if (voiceMgr.isActive()) voiceMgr.setMute(false);
-      if (callMgr.isActive()) callMgr.setMute(false);
-      updatePttIndicator();
-    },
-    up: () => {
-      const delay = Math.max(0, getVoiceSettings().pttReleaseDelay | 0);
-      const finish = (): void => {
-        _pttHeld = false;
-        _pttReleaseTimer = null;
-        if (voiceMgr.isActive()) voiceMgr.setMute(true);
-        if (callMgr.isActive()) callMgr.setMute(true);
-        updatePttIndicator();
-      };
-      if (delay > 0) {
-        _pttReleaseTimer = setTimeout(finish, delay);
-      } else {
-        finish();
-      }
-    }
+    down: () => pttDown(),
+    up: () => pttUp()
   });
 
   // Первичная синхронизация + подписка на rebind-события.
@@ -2656,8 +2648,8 @@ function renderShell(): void {
                  <span>${escapeHtml(selectedWorkspace.name)}</span>
                  <span class="ch-panel-menu-glyph">${state.workspaceMenuOpen ? "▴" : "▾"}</span>
                </button>`}
+          ${state.workspaceMenuOpen && !dmMode && selectedWorkspace ? renderWorkspaceHeaderMenu(selectedWorkspace, canModerate) : ""}
         </header>
-        ${state.workspaceMenuOpen && !dmMode && selectedWorkspace ? renderWorkspaceHeaderMenu(selectedWorkspace, canModerate) : ""}
         <div class="ch-panel-body">
           ${
             dmMode
@@ -3495,6 +3487,7 @@ function renderDMChannelView(dm: DMItem): string {
         </div>
       </div>
       <div class="channel-header-actions">
+        <button id="dm-call" class="ghost" data-user-id="${escapeHtml(dm.peer.userId)}" title="Позвонить" aria-label="Позвонить">${icon("phone")}</button>
         <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="Закреплённые сообщения" aria-label="Закреплённые">${icon("pin")}</button>
       </div>
       ${state.pinsPopupOpen && state.channelPinsChannelId === dm.channelId ? renderPinsPopup() : ""}
@@ -4363,6 +4356,12 @@ const INLINE_CODE_RE = /`([^`\n]+)`/g;
 const URL_RE = /\bhttps?:\/\/[^\s<>`]+/g;
 const BOLD_RE = /\*\*([^*\n]+?)\*\*/g;
 const ITALIC_RE = /(^|[^A-Za-z0-9_])_([^_\n]+?)_(?=[^A-Za-z0-9_]|$)/g;
+// Asterisk-italic: одиночные `*` (после того как BOLD_RE уже съел `**…**`).
+// Запрещаем пробел сразу после открывающей/перед закрывающей `*`, чтобы
+// «2 * 3 = 6» не превращалось в курсив. Discord ведёт себя так же.
+const ITALIC_STAR_RE = /\*(?!\s)([^*\n]+?)(?<!\s)\*/g;
+// Strikethrough `~~текст~~` (Discord/GitHub-стиль).
+const STRIKE_RE = /~~([^~\n]+?)~~/g;
 const SPOILER_RE = /\|\|([^|\n]+?)\|\|/g;
 
 // renderBody — C.3 markdown + C.2 mentions + autolinks. Безопасно:
@@ -4419,7 +4418,10 @@ function renderBody(body: string): string {
   // 6) Bold / italic поверх уже escape'нутого текста. `*` и `_` в
   //    escapeHtml не входят, поэтому регулярки видят их как есть.
   text = text.replace(BOLD_RE, "<strong>$1</strong>");
+  text = text.replace(STRIKE_RE, "<del>$1</del>");
   text = text.replace(ITALIC_RE, "$1<em>$2</em>");
+  // Asterisk-italic после bold (иначе `**x**` распался бы на `*` + `*x*`).
+  text = text.replace(ITALIC_STAR_RE, "<em>$1</em>");
   text = text.replace(SPOILER_RE, '<span class="spoiler" data-spoiler>$1</span>');
 
   // 7) Возврат плейсхолдеров.
@@ -7285,7 +7287,8 @@ function attachSettingsVoiceHandlers(): void {
   rootEl.querySelector<HTMLInputElement>("#vs-ptt-enable")?.addEventListener("change", (e) => {
     const enabled = (e.currentTarget as HTMLInputElement).checked;
     updateVoiceSettings({ pushToTalk: enabled });
-    if (enabled) applyPttModeToActiveSessions();
+    // applyPttModeToActiveSessions сам открывает/закрывает гейт по флагу.
+    applyPttModeToActiveSessions();
     updatePttIndicator();
     render(); // toggle меняет disabled-state слайдера задержки
   });
@@ -8208,6 +8211,23 @@ function attachShellHandlers(): void {
     const ch = state.selectedChannelId;
     if (!ch) return;
     togglePinsPopup(ch);
+  });
+
+  // #4a: кнопка звонка в DM-хедере. Тот же placeCall, что из профиля/member-list.
+  rootEl.querySelector<HTMLButtonElement>("#dm-call")?.addEventListener("click", async (ev) => {
+    const userId = (ev.currentTarget as HTMLButtonElement).dataset.userId;
+    if (!userId) return;
+    if (callMgr.isActive() || voiceMgr.isActive()) {
+      setTransientStatus("Уже в звонке");
+      return;
+    }
+    try {
+      await callMgr.placeCall(userId);
+      applyPttModeToActiveSessions();
+    } catch (err) {
+      state.status = describeError(err);
+      render();
+    }
   });
 
   rootEl.querySelectorAll<HTMLDivElement>(".pin-row[data-pin-jump]").forEach((row) => {

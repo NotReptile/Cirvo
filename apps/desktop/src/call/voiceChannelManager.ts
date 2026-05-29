@@ -129,6 +129,10 @@ export class VoiceChannelManager {
   private screenTrack: MediaStreamTrack | null = null;
   // K.5(c): системный аудио-track screen-share'а. Отдельный sender от mic'а.
   private screenAudioTrack: MediaStreamTrack | null = null;
+  // PTT-гейт: false = звук временно перекрыт (клавиша push-to-talk не зажата).
+  // Отделён от snapshot.muted — в PTT-режиме микрофон визуально «включён»
+  // (Discord-стиль), а передача гейтится этим флагом.
+  private pttGateOpen = true;
   private iceServers: RTCIceServer[] | null = null;
   private peers = new Map<string, PeerEntry>(); // key = peer sessionId
   private unsubscribe: (() => void) | null = null;
@@ -234,22 +238,37 @@ export class VoiceChannelManager {
     return this.setMute(!this.snapshot.muted);
   }
 
-  // I.4: явное выставление mute-состояния — нужно для push-to-talk
-  // (на keydown → false, на keyup → true). idempotent: если значение
-  // совпадает с текущим, ничего не делаем.
+  // Явный mute пользователя. idempotent. Реальное состояние трека —
+  // комбинация mute и PTT-гейта (см. applyAudioEnabled).
   setMute(muted: boolean): boolean {
     if (this.snapshot.muted === muted) return muted;
-    if (this.localStream) {
-      for (const t of this.localStream.getAudioTracks()) {
-        t.enabled = !muted;
-      }
-    }
     this.update({ muted });
+    this.applyAudioEnabled();
     return muted;
   }
 
   isMuted(): boolean {
     return this.snapshot.muted;
+  }
+
+  // PTT-гейт. НЕ трогает snapshot.muted — микрофон визуально остаётся
+  // «включённым». На keydown PTT → open=true, на keyup → open=false.
+  setPttGate(open: boolean): void {
+    if (this.pttGateOpen === open) return;
+    this.pttGateOpen = open;
+    this.applyAudioEnabled();
+  }
+
+  // Микрофонный трек активен только если пользователь не замьютил И PTT-гейт
+  // открыт. Системный звук (screenAudioTrack) не гейтим — он не должен
+  // пропадать при mute/PTT микрофона.
+  private applyAudioEnabled(): void {
+    if (!this.localStream) return;
+    const enabled = !this.snapshot.muted && this.pttGateOpen;
+    for (const t of this.localStream.getAudioTracks()) {
+      if (t === this.screenAudioTrack) continue;
+      t.enabled = enabled;
+    }
   }
 
   isActive(): boolean {
