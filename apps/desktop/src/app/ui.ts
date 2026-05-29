@@ -34,6 +34,7 @@ import {
   syncGlobalShortcuts
 } from "./tauriHotkeys";
 import { installTooltips } from "./tooltips";
+import { polishListboxes } from "./listbox";
 import {
   applyOutputDevice,
   buildAudioConstraints,
@@ -2590,6 +2591,7 @@ function renderShell(): void {
   attachShellHandlers();
   attachVoiceVideoStreams();
   updatePttIndicator();
+  polishListboxes(rootEl);
 }
 
 function renderVoiceVolumeMenu(): string {
@@ -5351,7 +5353,7 @@ function renderWelcomeChannelModal(): string {
         <p class="modal-hint">Сюда будет приходить плашка «X присоединился к серверу», когда новый участник принимает инвайт.</p>
         <label class="welcome-channel-field">
           <span>Канал</span>
-          <select id="welcome-channel-select">
+          <select id="welcome-channel-select" class="listbox">
             <option value=""${current === "" ? " selected" : ""}>— не присылать —</option>
             ${opts}
           </select>
@@ -5900,11 +5902,11 @@ function renderAuditFilter(): string {
   const hasAnyFilter = !!(f.action || f.actor || f.from || f.to || f.targetType);
   return `
     <div class="audit-filter">
-      <select id="audit-filter-action">
+      <select id="audit-filter-action" class="listbox">
         <option value=""${!f.action ? " selected" : ""}>Все события</option>
         ${opts}
       </select>
-      <select id="audit-filter-target">
+      <select id="audit-filter-target" class="listbox">
         <option value=""${!f.targetType ? " selected" : ""}>Все типы объектов</option>
         ${targetOpts}
       </select>
@@ -5912,7 +5914,8 @@ function renderAuditFilter(): string {
       <input id="audit-filter-from" type="date" title="С" value="${escapeHtml(f.from)}" />
       <input id="audit-filter-to" type="date" title="По" value="${escapeHtml(f.to)}" />
       ${hasAnyFilter ? `<button id="audit-filter-clear" class="ghost" title="Сбросить">✕</button>` : ""}
-      <button id="audit-export-csv" class="primary" title="Скачать отфильтрованные события в CSV">Экспорт CSV</button>
+      <button id="audit-export-csv" class="primary" title="Скачать видимые записи (CSV, ru-метки)">Экспорт CSV</button>
+      <button id="audit-export-full" class="ghost" title="Полный экспорт с сервера: все записи под фильтр (раздел/период/тип/код), коды действий без перевода">Полный экспорт</button>
     </div>
   `;
 }
@@ -5976,6 +5979,42 @@ function exportAuditCsv(): void {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
   setTransientStatus(`Скачано: ${rows.length} событий`);
+}
+
+// I.12(a): полный экспорт через server-side endpoint. В отличие от
+// exportAuditCsv (рендерит то что лежит в state.auditEntries, ≤200 записей,
+// с ru-labels), это идёт за всеми записями под фильтр (период/код/тип) —
+// сервер стримит CSV напрямую с UTF-8 BOM. На выходе action-коды без
+// перевода — стабильный формат для архива/импорта в BI.
+async function exportAuditCsvFromServer(): Promise<void> {
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  if (!ws) return;
+  const f = state.auditFilter;
+  const params = new URLSearchParams();
+  if (f.from) params.set("from", f.from);
+  if (f.to) params.set("to", f.to);
+  if (f.action) params.set("action", f.action);
+  if (f.targetType) params.set("targetType", f.targetType);
+  const qs = params.toString();
+  const path = `/api/v1/workspaces/${ws.id}/audit/export${qs ? `?${qs}` : ""}`;
+  setTransientStatus("Запрос полного экспорта…");
+  try {
+    const blob = await httpClient.getBlob(path);
+    const url = URL.createObjectURL(blob);
+    const today = new Date().toISOString().slice(0, 10);
+    const slug = (ws.slug || ws.name || "workspace").replace(/[^a-z0-9_-]+/gi, "-");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `audit-${slug}-${today}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setTransientStatus("Полный экспорт скачан");
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+  }
 }
 
 // G.10: профиль-модалка в Discord-стиле — карточка с акцентным баннером
@@ -7908,6 +7947,9 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#audit-filter-clear")?.addEventListener("click", () => {
     state.auditFilter = { action: "", actor: "", from: "", to: "", targetType: "" };
     render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#audit-export-full")?.addEventListener("click", () => {
+    void exportAuditCsvFromServer();
   });
   rootEl.querySelector<HTMLButtonElement>("#audit-export-csv")?.addEventListener("click", () => {
     exportAuditCsv();
