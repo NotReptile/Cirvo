@@ -326,7 +326,7 @@ input[type="color"] {
   align-items: center;
   gap: 6px;
   padding: 8px 10px;
-  background: #16181d;
+  background: var(--bg);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -834,7 +834,7 @@ input[type="color"] {
 .md-code-block code { background: none; border: none; padding: 0; }
 
 .spoiler {
-  background: #202225;
+  background: var(--text-mute);
   color: transparent;
   border-radius: 3px;
   padding: 0 2px;
@@ -842,9 +842,9 @@ input[type="color"] {
   transition: background 120ms, color 120ms;
   user-select: none;
 }
-.spoiler:hover { background: #2c2f33; }
+.spoiler:hover { background: var(--text-channel); }
 .spoiler.revealed {
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--text-mute) 18%, transparent);
   color: inherit;
   cursor: text;
   user-select: text;
@@ -855,8 +855,8 @@ input[type="color"] {
 .mention-popup {
   position: relative;
   margin: 0 20px;
-  background: #2b2d31;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
   max-height: 220px;
@@ -2959,7 +2959,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border: 2px solid transparent;
   background-clip: padding-box;
 }
-*::-webkit-scrollbar-thumb:hover { background: #3b4250; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--text-mute); background-clip: padding-box; }
 *::-webkit-scrollbar-corner { background: transparent; }
 
 /* G.10 — Discord-style профиль-модалка. Карточка с акцентным баннером,
@@ -3059,7 +3059,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: #36373d;
+  background: var(--bg-elev-2);
   color: var(--text-mute);
   border: 3px solid var(--bg-elev);
   display: inline-flex;
@@ -3704,6 +3704,23 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   display: block;
   width: 100%;
 }
+/* #5c: предупреждение про глобальные хоткеи в hotkeys-табе. */
+.settings-hint-warn {
+  font-size: 12px;
+  color: var(--danger, #f23f43);
+  background: color-mix(in srgb, var(--danger, #f23f43) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #f23f43) 35%, transparent);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+/* #5c: бейдж «глобально» рядом с label хоткея. */
+.hotkeys-global {
+  font-size: 11px;
+  margin-left: 4px;
+  cursor: help;
+}
+.hotkeys-global.fail { opacity: 0.8; }
 .settings-radio-group {
   display: inline-flex;
   gap: 12px;

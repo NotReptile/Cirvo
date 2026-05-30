@@ -31,7 +31,11 @@ import {
 } from "./hotkeys";
 import {
   setHandlers as setGlobalHandlers,
-  syncGlobalShortcuts
+  syncGlobalShortcuts,
+  getGlobalStatus,
+  isGlobalSupported,
+  setStatusChangeListener,
+  type GlobalStatus
 } from "./tauriHotkeys";
 import { installTooltips } from "./tooltips";
 import { polishListboxes } from "./listbox";
@@ -1758,6 +1762,11 @@ function registerHotkeyActions(): void {
   void syncGlobalShortcuts(getHotkeyBinding);
   onBindingChange(() => {
     void syncGlobalShortcuts(getHotkeyBinding);
+  });
+  // #5c: после async-регистрации перерисовываем hotkeys-таб, чтобы индикатор
+  // «глобально» показал актуальный статус (registered/failed/unsupported).
+  setStatusChangeListener(() => {
+    if (state.modal === "settings" && state.settings.tab === "hotkeys") render();
   });
 }
 
@@ -6392,13 +6401,40 @@ function renderSettingsHotkeysTab(): string {
       `;
     })
     .join("");
+  // #5c: статус глобальных хоткеев. Если плагин не загрузился (web) или
+  // часть биндингов не зарегистрировалась — показываем баннер, чтобы было
+  // видно, почему хоткеи не работают в свёрнутом окне.
+  const globalBanner = (() => {
+    if (!isGlobalSupported()) {
+      return `<div class="settings-hint settings-hint-warn">Глобальные хоткеи недоступны в этой среде — работают только когда окно RuCord в фокусе.</div>`;
+    }
+    const failed = getHotkeyActions().filter((a) => getGlobalStatus(a.id) === "failed");
+    if (failed.length > 0) {
+      return `<div class="settings-hint settings-hint-warn">Не удалось зарегистрировать глобально (работают только в фокусе): ${escapeHtml(failed.map((a) => a.label).join(", "))}. Обычно причина — одиночная клавиша без модификатора или конфликт с другой программой. Попробуй комбинацию с Ctrl/Shift/Alt.</div>`;
+    }
+    return "";
+  })();
   return `
     <div class="settings-hint" style="margin-bottom: 16px;">
       Кликни на клавишу, чтобы переназначить. Esc отменяет ввод, Delete/Backspace очищает привязку.
       Тумблер слева — включить/выключить. Push-to-talk работает даже когда фокус в инпуте.
+      Значок 🌐 — хоткей зарегистрирован глобально (срабатывает даже когда окно свёрнуто).
     </div>
+    ${globalBanner}
     ${sections}
   `;
+}
+
+// #5c: бейдж статуса глобальной регистрации для voice-action'ов.
+function globalStatusBadge(id: ActionId): string {
+  const st: GlobalStatus = getGlobalStatus(id);
+  if (st === "registered") {
+    return `<span class="hotkeys-global ok" title="Работает глобально (даже когда окно свёрнуто)">🌐</span>`;
+  }
+  if (st === "failed") {
+    return `<span class="hotkeys-global fail" title="Не зарегистрировано глобально — работает только когда окно в фокусе">🌐✕</span>`;
+  }
+  return "";
 }
 
 function renderHotkeyRow(def: ActionDef, conflicts: Map<string, ActionDef[]>): string {
@@ -6419,7 +6455,7 @@ function renderHotkeyRow(def: ActionDef, conflicts: Map<string, ActionDef[]>): s
         <span class="hotkeys-toggle-track"></span>
       </label>
       <div class="hotkeys-info">
-        <div class="hotkeys-label">${escapeHtml(def.label)} ${conflictBadge}</div>
+        <div class="hotkeys-label">${escapeHtml(def.label)} ${conflictBadge} ${globalStatusBadge(def.id)}</div>
         ${def.description ? `<div class="hotkeys-desc">${escapeHtml(def.description)}</div>` : ""}
       </div>
       <button class="hotkeys-chord ${isCapturing ? "capturing" : ""}" data-hotkey-capture="${def.id}">

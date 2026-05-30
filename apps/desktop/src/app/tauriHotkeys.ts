@@ -107,6 +107,25 @@ const handlers = new Map<ActionId, ActionHandlers>();
 // смене chord'а корректно unregister'нуть старую.
 const registered = new Map<ActionId, string>();
 
+// Статус глобальной регистрации per action — для индикатора в settings.
+// "registered" — OS приняла accelerator (работает в фоне);
+// "failed" — register бросил (конфликт/голая клавиша/нет разрешения);
+// "unsupported" — не Tauri-десктоп (web) или плагин не загрузился;
+// "off" — биндинг выключен или не global-eligible.
+export type GlobalStatus = "registered" | "failed" | "unsupported" | "off";
+const statusMap = new Map<ActionId, GlobalStatus>();
+let pluginLoaded: boolean | null = null; // null = ещё не проверяли
+
+export function getGlobalStatus(id: ActionId): GlobalStatus {
+  if (!GLOBAL_ACTION_IDS.has(id)) return "off";
+  if (pluginLoaded === false) return "unsupported";
+  return statusMap.get(id) ?? "off";
+}
+
+export function isGlobalSupported(): boolean {
+  return pluginLoaded === true;
+}
+
 export function setHandlers(id: ActionId, h: ActionHandlers): void {
   handlers.set(id, h);
 }
@@ -119,13 +138,24 @@ export async function syncGlobalShortcuts(
   getBinding: (id: ActionId) => { chord: KeyChord | null; enabled: boolean }
 ): Promise<void> {
   const plugin = await loadPlugin();
-  if (!plugin) return;
+  pluginLoaded = !!plugin;
+  if (!plugin) {
+    // web / non-Tauri: помечаем все eligible как unsupported.
+    for (const id of GLOBAL_ACTION_IDS) statusMap.set(id, "unsupported");
+    onStatusChange?.();
+    return;
+  }
 
   for (const id of GLOBAL_ACTION_IDS) {
     const b = getBinding(id);
     const prev = registered.get(id);
     const next = b.enabled && b.chord ? chordToAccelerator(b.chord) : null;
-    if (prev === next) continue;
+    if (prev === next) {
+      // Статус мог быть не выставлен на старте (prev===next===зарегистрировано).
+      if (next && !statusMap.has(id)) statusMap.set(id, "registered");
+      if (!next) statusMap.set(id, "off");
+      continue;
+    }
 
     if (prev) {
       try {
@@ -135,7 +165,10 @@ export async function syncGlobalShortcuts(
       }
       registered.delete(id);
     }
-    if (!next) continue;
+    if (!next) {
+      statusMap.set(id, "off");
+      continue;
+    }
 
     try {
       await plugin.register(next, (event) => {
@@ -152,15 +185,23 @@ export async function syncGlobalShortcuts(
         else if (h.down) h.down();
       });
       registered.set(id, next);
+      statusMap.set(id, "registered");
       console.info(`[global-shortcut] registered ${id} → ${next}`);
     } catch (err) {
       // Конфликт с системным хоткеем, голая клавиша без модификатора,
       // которую OS не отдаёт глобально, или Tauri не дал разрешение —
-      // фоллбэк на window-listener (работает только в фокусе). Логируем,
-      // чтобы причину было видно в DevTools-сборке.
+      // фоллбэк на window-listener (работает только в фокусе).
+      statusMap.set(id, "failed");
       console.warn(`[global-shortcut] FAILED to register ${id} → ${next}:`, err);
     }
   }
+  onStatusChange?.();
+}
+
+// Колбэк для перерисовки settings-индикатора после async-регистрации.
+let onStatusChange: (() => void) | null = null;
+export function setStatusChangeListener(fn: () => void): void {
+  onStatusChange = fn;
 }
 
 export async function unregisterAllGlobalShortcuts(): Promise<void> {
