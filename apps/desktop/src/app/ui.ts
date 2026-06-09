@@ -3059,11 +3059,45 @@ function renderWorkspaceMenu(): string {
   `;
 }
 
+// Wave 0: avatarMediaId собеседника для call-bar/call-card. members и dms —
+// синхронные источники; если юзера нет ни там, ни там (например, звонок
+// пришёл, пока state.members ещё не загружен) — лениво тянем /users/{id},
+// кешируем и перерисовываемся по приезду. null в кеше = «fetch уже в полёте
+// или упал» (защита от повторных запросов на каждый render).
+const peerProfileCache = new Map<string, UserProfileData | null>();
+
+function resolvePeerAvatarMediaId(userId: string | null): string | undefined {
+  if (!userId) return undefined;
+  if (state.me && userId === state.me.id) return state.me.avatarMediaId;
+  const member = state.members.find((m) => m.userId === userId);
+  if (member) return member.avatarMediaId;
+  const dm = state.dms.find((d) => d.peer.userId === userId);
+  if (dm) return dm.peer.avatarMediaId;
+  if (!peerProfileCache.has(userId)) {
+    peerProfileCache.set(userId, null);
+    void httpClient
+      .get<UserProfileData>(`/api/v1/users/${userId}`)
+      .then((p) => {
+        peerProfileCache.set(userId, p);
+        render();
+      })
+      .catch(() => {
+        /* останется letter-placeholder */
+      });
+  }
+  return peerProfileCache.get(userId)?.avatarMediaId;
+}
+
 function renderCallOverlay(): string {
   const snap = state.callSnapshot;
   if (!snap) return "";
   const peerName = describePeer(snap.peerUserId);
-  const avatar = peerName.slice(0, 1).toUpperCase();
+  const avatarHtml = renderAvatar({
+    avatarMediaId: resolvePeerAvatarMediaId(snap.peerUserId),
+    fallbackText: peerName,
+    sizePx: 36,
+    className: "call-bar-avatar-pic"
+  });
   const duration = snap.startedAt ? formatDuration(Date.now() - snap.startedAt) : "";
 
   // Incoming/outgoing/connecting/ended — компактная карточка справа снизу.
@@ -3082,10 +3116,13 @@ function renderCallOverlay(): string {
       </div>
       <div class="call-bar" role="region" aria-label="активный звонок">
         <div class="call-bar-info">
-          <div class="call-bar-avatar">${escapeHtml(avatar)}</div>
+          ${avatarHtml}
           <div class="call-bar-name">
             <div class="call-bar-title">${escapeHtml(peerName)}</div>
-            <div class="call-bar-timer" id="call-timer">${escapeHtml(duration)}</div>
+            <div class="call-bar-meta">
+              <span class="call-bar-timer" id="call-timer">${escapeHtml(duration)}</span>
+              ${snap.via ? `<span class="call-via ${snap.via}" title="${snap.via === "relay" ? "Медиа идёт через TURN-релей (оба участника за NAT) — возможна чуть большая задержка" : "Прямое p2p-соединение"}">${snap.via === "relay" ? "через релей" : "напрямую"}</span>` : ""}
+            </div>
           </div>
         </div>
         <div class="call-bar-actions">
@@ -3131,7 +3168,7 @@ function renderCallOverlay(): string {
     <div class="call-overlay" role="dialog">
       <div class="call-card">
         <div class="call-card-body">
-          <div class="call-bar-avatar">${escapeHtml(avatar)}</div>
+          ${avatarHtml}
           <div>
             <div class="call-status">${escapeHtml(title)}</div>
             <div class="call-card-extra">${extra}</div>

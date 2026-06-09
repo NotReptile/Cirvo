@@ -22,6 +22,9 @@ export interface CallSnapshot {
   screenSharing: boolean;
   startedAt: number | null;
   endedReason: string | null;
+  // Wave 0: путь медиа после ICE-коннекта. "relay" = трафик через TURN
+  // (оба за NAT), "direct" = p2p (host/srflx). null = ещё не определён.
+  via: "relay" | "direct" | null;
 }
 
 interface IceServersResponse {
@@ -64,7 +67,8 @@ const IDLE_SNAPSHOT: CallSnapshot = {
   cameraOn: false,
   screenSharing: false,
   startedAt: null,
-  endedReason: null
+  endedReason: null,
+  via: null
 };
 
 export class CallManager {
@@ -453,6 +457,8 @@ export class CallManager {
             startedAt: this.snapshot.startedAt ?? Date.now()
           });
         }
+        // После коннекта (и после ICE-restart'ов) — определяем путь медиа.
+        void this.detectConnectionVia();
       } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
         this.teardown(`peer_${pc.connectionState}`);
       }
@@ -460,6 +466,43 @@ export class CallManager {
 
     this.pc = pc;
     this.attachLocalTracks();
+  }
+
+  // Wave 0: смотрим выбранную ICE-кандидат-пару в getStats() — если хоть одна
+  // сторона relay, медиа идёт через TURN. Показывается в call-bar: помогает
+  // понять «слышно, но лагает» (relay = лишний hop через сервер) и подтвердить,
+  // что TURN вообще задействован у пары за NAT.
+  private async detectConnectionVia(): Promise<void> {
+    const pc = this.pc;
+    if (!pc) return;
+    try {
+      const stats = await pc.getStats();
+      let selectedPairId: string | null = null;
+      const pairs: RTCIceCandidatePairStats[] = [];
+      stats.forEach((s) => {
+        if (s.type === "transport") {
+          const t = s as RTCTransportStats;
+          if (t.selectedCandidatePairId) selectedPairId = t.selectedCandidatePairId;
+        } else if (s.type === "candidate-pair") {
+          pairs.push(s as RTCIceCandidatePairStats);
+        }
+      });
+      // Chromium даёт selectedCandidatePairId на transport; Firefox — флаг
+      // selected на самой паре; fallback — nominated+succeeded.
+      const pair =
+        (selectedPairId ? pairs.find((p) => p.id === selectedPairId) : undefined) ??
+        pairs.find((p) => (p as unknown as { selected?: boolean }).selected && p.state === "succeeded") ??
+        pairs.find((p) => p.nominated && p.state === "succeeded");
+      if (!pair?.localCandidateId) return;
+      const local = stats.get(pair.localCandidateId) as { candidateType?: string } | undefined;
+      const remote = pair.remoteCandidateId
+        ? (stats.get(pair.remoteCandidateId) as { candidateType?: string } | undefined)
+        : undefined;
+      const via = local?.candidateType === "relay" || remote?.candidateType === "relay" ? "relay" : "direct";
+      if (this.snapshot.via !== via) this.update({ via });
+    } catch {
+      /* stats недоступны — индикатор просто не покажется */
+    }
   }
 
   private attachLocalTracks(): void {

@@ -1340,6 +1340,18 @@ input[type="color"] {
 .call-bar-name { display: flex; flex-direction: column; min-width: 0; }
 .call-bar-title { font-size: 14px; font-weight: 600; color: var(--text); }
 .call-bar-timer { font-size: 12px; color: var(--text-mute); font-variant-numeric: tabular-nums; }
+.call-bar-meta { display: flex; align-items: center; gap: 8px; }
+/* Wave 0: индикатор пути медиа (relay = через TURN, direct = p2p) */
+.call-via {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.call-via.relay { background: rgba(250, 166, 26, 0.18); color: #faa61a; }
+.call-via.direct { background: rgba(59, 165, 92, 0.18); color: #3ba55c; }
+.call-bar-avatar-pic { flex-shrink: 0; }
 .call-bar-actions { display: flex; gap: 6px; align-items: center; }
 
 .call-icon-btn {
