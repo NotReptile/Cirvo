@@ -8,6 +8,7 @@ import (
 	"github.com/NotReptile/RuCord/services/realtime/internal/modules/presence"
 	"github.com/NotReptile/RuCord/services/realtime/internal/modules/signaling"
 	"github.com/NotReptile/RuCord/services/realtime/internal/modules/transport"
+	"github.com/NotReptile/RuCord/services/realtime/internal/modules/typing"
 )
 
 type Module interface {
@@ -32,10 +33,12 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 
 	mux.Handle("/healthz", sharedhttp.HealthHandler(serviceName, version))
 	signalingModule := signaling.NewModule(container.Logger, container.DB, container.Hub)
+	typingModule := typing.NewModule(container.Logger, container.DB, container.Hub)
 	server.registerModules(
-		transport.NewModule(container.Logger, container.DB, container.JWT, container.Hub, signalingModule),
+		transport.NewModule(container.Logger, container.DB, container.JWT, container.Hub, signalingModule, typingModule),
 		presence.NewModule(container.Hub),
 		signalingModule,
+		typingModule,
 	)
 	return server
 }

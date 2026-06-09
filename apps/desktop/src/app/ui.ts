@@ -6,6 +6,7 @@ import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
 import { runIceCheck, type IceCheckResult } from "../call/iceCheck";
 import { checkForUpdate, relaunchApp, type UpdateHandle } from "./tauriUpdater";
+import { openLightbox } from "./lightbox";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import {
   applyAppearance,
@@ -2202,7 +2203,103 @@ async function loadMembers(): Promise<void> {
   }
 }
 
+// Wave 2: typing-индикатор «X печатает…». Полностью transient: отправка с
+// клиентским throttle 3с (сервер дополнительно троттлит 2с), приём — TTL 8с
+// в module-map. Строка под композером обновляется прямым DOM-mutate, без
+// render() — иначе каждое чужое нажатие дёргало бы фокус и message-list.
+const TYPING_SEND_INTERVAL_MS = 3000;
+const TYPING_TTL_MS = 8000;
+let typingLastSentAt = 0;
+const typingByChannel = new Map<string, Map<string, number>>(); // channelId → userId → expiresAt
+let typingPruneTimer: ReturnType<typeof setInterval> | null = null;
+
+function maybeSendTyping(): void {
+  const chId = state.selectedChannelId;
+  if (!chId) return;
+  const ch = state.channels.find((c) => c.id === chId);
+  if (ch && ch.kind !== "text") return; // DM-каналов нет в state.channels — для них ch=undefined, шлём
+  const now = Date.now();
+  if (now - typingLastSentAt < TYPING_SEND_INTERVAL_MS) return;
+  typingLastSentAt = now;
+  realtimeClient.send("typing.start", { channel_id: chId });
+}
+
+function noteTyping(channelId: string, userId: string): void {
+  if (state.me && userId === state.me.id) return;
+  let perUser = typingByChannel.get(channelId);
+  if (!perUser) {
+    perUser = new Map();
+    typingByChannel.set(channelId, perUser);
+  }
+  perUser.set(userId, Date.now() + TYPING_TTL_MS);
+  ensureTypingPrune();
+  if (channelId === state.selectedChannelId) updateTypingLine();
+}
+
+function clearTyping(channelId: string | undefined, userId: string): void {
+  if (!channelId) return;
+  const perUser = typingByChannel.get(channelId);
+  if (!perUser) return;
+  perUser.delete(userId);
+  if (perUser.size === 0) typingByChannel.delete(channelId);
+  if (channelId === state.selectedChannelId) updateTypingLine();
+}
+
+function ensureTypingPrune(): void {
+  if (typingPruneTimer) return;
+  typingPruneTimer = setInterval(() => {
+    const now = Date.now();
+    let activeDirty = false;
+    for (const [chId, perUser] of typingByChannel) {
+      for (const [uid, exp] of perUser) {
+        if (exp <= now) {
+          perUser.delete(uid);
+          if (chId === state.selectedChannelId) activeDirty = true;
+        }
+      }
+      if (perUser.size === 0) typingByChannel.delete(chId);
+    }
+    if (typingByChannel.size === 0 && typingPruneTimer) {
+      clearInterval(typingPruneTimer);
+      typingPruneTimer = null;
+    }
+    if (activeDirty) updateTypingLine();
+  }, 2000);
+}
+
+function updateTypingLine(): void {
+  const el = rootEl.querySelector<HTMLElement>("#typing-line");
+  if (!el) return;
+  const perUser = state.selectedChannelId ? typingByChannel.get(state.selectedChannelId) : undefined;
+  const now = Date.now();
+  const names: string[] = [];
+  if (perUser) {
+    for (const [uid, exp] of perUser) {
+      if (exp > now) names.push(describePeer(uid));
+    }
+  }
+  if (names.length === 0) {
+    el.textContent = "";
+    el.classList.remove("active");
+    return;
+  }
+  el.classList.add("active");
+  el.textContent =
+    names.length === 1
+      ? `${names[0]} печатает…`
+      : names.length === 2
+        ? `${names[0]} и ${names[1]} печатают…`
+        : "Несколько человек печатают…";
+}
+
 function handleRealtimeEvent(event: RealtimeEvent): void {
+  // Wave 2: typing-индикатор. Transient, не зависит от селекции — копим
+  // в module-map с TTL, строка обновляется прямым DOM-mutate.
+  if (event.event === "typing.start") {
+    const p = event.payload as { channelId: string; userId: string };
+    if (p?.channelId && p?.userId) noteTyping(p.channelId, p.userId);
+    return;
+  }
   // C.8: уведомления приходят с UserID-routing (workspaceId/channelId не
   // обязательны), обрабатываем до проверки channelId ниже.
   if (event.event === "notification.created") {
@@ -2436,6 +2533,8 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
   switch (event.event) {
     case "message.created": {
       const msg = event.payload as Message;
+      // Сообщение пришло — его автор очевидно допечатал.
+      clearTyping(event.channelId!, msg.authorId);
       if (state.messages.some((m) => m.id === msg.id)) return;
       state.messages = [...state.messages, { ...msg, reactions: msg.reactions ?? {} }];
       // Активный канал + юзер у низа → отмечаем прочитанным (своё сообщение
@@ -2652,6 +2751,8 @@ function render(): void {
   renderShell();
   restoreImageSlots(imageSnap);
   restorePreservedInputs(inputSnap);
+  // Wave 2: #typing-line пересоздан пустым — восстанавливаем из map.
+  updateTypingLine();
 }
 
 function renderAuth(): void {
@@ -3707,6 +3808,7 @@ function renderDMChannelView(dm: DMItem): string {
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     ${renderReplyBar()}
     <div id="mention-popup" class="mention-popup" hidden></div>
+    <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
       <label class="attach-btn" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
         ${icon("paperclip")}
@@ -3896,6 +3998,7 @@ function renderChannelView(channel: Channel): string {
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     ${renderReplyBar()}
     <div id="mention-popup" class="mention-popup" hidden></div>
+    <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
       <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
         ${icon("paperclip")}
@@ -4377,9 +4480,30 @@ function renderPendingUploads(): string {
   `;
 }
 
+// Wave 2: лайтбокс по клику на превью. Thumb уже в mediaBlobCache (его
+// загрузил attach-image loop); оригинал тянем лениво через httpClient
+// (media-endpoint требует Authorization) и кешируем в тот же LRU.
+function openImageLightbox(slot: HTMLDivElement): void {
+  const thumbKey = slot.dataset.mediaUrl;
+  const fullUrl = slot.dataset.fullUrl;
+  if (!fullUrl) return;
+  openLightbox({
+    thumbUrl: thumbKey ? mediaBlobCache.get(thumbKey) ?? null : null,
+    filename: slot.dataset.filename || "image",
+    loadFull: async () => {
+      const cached = mediaBlobCache.get(fullUrl);
+      if (cached) return cached;
+      const blob = await httpClient.getBlob(fullUrl);
+      const blobUrl = URL.createObjectURL(blob);
+      mediaBlobCache.set(fullUrl, blobUrl);
+      return blobUrl;
+    }
+  });
+}
+
 function renderAttachment(a: Attachment): string {
   if (isImage(a.contentType)) {
-    return `<div class="attach-image" data-media-url="${escapeHtml(a.url + "/thumb")}" data-full-url="${escapeHtml(a.url)}">
+    return `<div class="attach-image" data-media-url="${escapeHtml(a.url + "/thumb")}" data-full-url="${escapeHtml(a.url)}" data-filename="${escapeHtml(a.filename || "image")}">
               <div class="attach-image-loader">Загрузка изображения…</div>
             </div>`;
   }
@@ -9621,6 +9745,13 @@ function attachShellHandlers(): void {
   rootEl.querySelectorAll<HTMLDivElement>(".attach-image").forEach((slot) => {
     const url = slot.dataset.mediaUrl;
     if (!url) return;
+    // Wave 2: lightbox по клику. Слоты пересоздаются каждым render()
+    // (кроме restored через snapshot) — dataset-флаг защищает restored
+    // от двойного binding'а.
+    if (!slot.dataset.lbBound) {
+      slot.dataset.lbBound = "1";
+      slot.addEventListener("click", () => openImageLightbox(slot));
+    }
     // Если restoreImageSlots уже вернул сюда готовый <img> — не пересоздаём,
     // иначе browser декодирует картинку заново и она мигает.
     if (slot.querySelector("img")) return;
@@ -9777,6 +9908,7 @@ function attachShellHandlers(): void {
   if (composerInput && mentionPopup) {
     composerInput.addEventListener("input", () => {
       saveDraft(state.selectedChannelId, composerInput.value);
+      if (composerInput.value) maybeSendTyping();
       updateMentionPopup(composerInput, mentionPopup);
     });
     composerInput.addEventListener("click", () => updateMentionPopup(composerInput, mentionPopup));

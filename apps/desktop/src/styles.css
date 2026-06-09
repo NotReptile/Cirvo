@@ -2009,6 +2009,121 @@ input[type="color"] {
   to { transform: rotate(360deg); }
 }
 
+/* Wave 2 — typing-индикатор. Фиксированная высота — layout не прыгает,
+   когда строка появляется/исчезает. */
+.typing-line {
+  height: 18px;
+  line-height: 18px;
+  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+.typing-line.active::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3ba55c;
+  margin-right: 6px;
+  vertical-align: 1px;
+  animation: typing-pulse 1.2s ease-in-out infinite;
+}
+@keyframes typing-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+/* Wave 2 — lightbox для изображений */
+#rucord-lightbox .lb-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: lb-fade-in 0.12s ease-out;
+}
+@keyframes lb-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+#rucord-lightbox .lb-figure {
+  margin: 0;
+  max-width: 92vw;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#rucord-lightbox .lb-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 240px;
+  min-height: 160px;
+}
+#rucord-lightbox .lb-img {
+  max-width: 92vw;
+  max-height: 84vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+  user-select: none;
+}
+#rucord-lightbox .lb-img.loading { filter: brightness(0.85); }
+#rucord-lightbox .lb-caption {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+  color: #d8dadf;
+  font-size: 13px;
+}
+#rucord-lightbox .lb-filename {
+  max-width: 50vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#rucord-lightbox .lb-download {
+  border: none;
+  border-radius: 4px;
+  padding: 4px 14px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+#rucord-lightbox .lb-download:hover:not([disabled]) { background: rgba(255, 255, 255, 0.2); }
+#rucord-lightbox .lb-download[disabled] { opacity: 0.45; cursor: default; }
+#rucord-lightbox .lb-close {
+  border: none;
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+#rucord-lightbox .lb-close:hover { background: rgba(255, 255, 255, 0.2); }
+#rucord-lightbox .lb-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  animation: conn-banner-spin 0.8s linear infinite;
+}
+#rucord-lightbox .lb-error { color: #ed4245; font-size: 14px; }
+.attach-image { cursor: zoom-in; }
+
 /* F.8 — баннер auto-update (зелёный pill, верх-право; conn-banner — центр) */
 .update-banner {
   position: fixed;
