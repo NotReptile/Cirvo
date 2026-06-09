@@ -2009,6 +2009,44 @@ input[type="color"] {
   to { transform: rotate(360deg); }
 }
 
+/* F.8 — баннер auto-update (зелёный pill, верх-право; conn-banner — центр) */
+.update-banner {
+  position: fixed;
+  top: 10px;
+  right: 16px;
+  z-index: 149;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #3ba55c;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  animation: update-banner-in 0.18s ease-out;
+}
+@keyframes update-banner-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.update-banner button {
+  border: none;
+  border-radius: 999px;
+  padding: 3px 12px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1f7a3d;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.update-banner button:hover { background: #fff; }
+.update-banner-spinner {
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+}
+
 /* Wave 0 — ICE/TURN self-check в админ-метриках */
 .ice-check-panel {
   margin-top: 8px;

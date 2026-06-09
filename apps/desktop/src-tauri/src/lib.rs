@@ -40,6 +40,13 @@ pub fn run() {
             screen_audio::screen_audio_stop
         ]);
 
+    // F.8: auto-update + relaunch. Только desktop — updater на mobile
+    // не существует (там обновления через сторы).
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
     builder
         .run(tauri::generate_context!())
         .expect("failed to run RuCord application");

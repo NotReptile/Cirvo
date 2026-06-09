@@ -32,6 +32,11 @@ base64 = "0.22"
 # в loopback-режиме. Mac/Linux пока не покрываем (ScreenCaptureKit и
 # PipeWire — отдельные интеграции).
 cpal = "0.15"
+# F.8: auto-update. Клиент проверяет подписанный latest.json из GitHub
+# Releases и ставит обновление без переустановки; process — для relaunch
+# после установки. Только desktop (на mobile — сторы).
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [features]
 default = ["custom-protocol"]

@@ -1,0 +1,93 @@
+# F.7: cross-platform release-сборка desktop-клиента на тег v*.
+# Собирает .msi/.exe (Windows), .dmg/.app.tar.gz (macOS universal),
+# .AppImage/.deb (Linux) и публикует draft-релиз в GitHub Releases.
+# tauri-action дополнительно генерирует подписанный latest.json для
+# auto-update (F.8) — он попадает в тот же релиз.
+#
+# Требуемые Secrets (см. docs/runbooks/desktop-release.md):
+#   TAURI_SIGNING_PRIVATE_KEY          — приватный ключ updater-подписи
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — его пароль (пустая строка, если без)
+#
+# Code-signing бинарей (Authenticode / macOS notarization) — отдельный
+# подпункт F.7, не настроен: артефакты будут «неподписанными» для SmartScreen
+# и Gatekeeper, но updater-подпись latest.json от этого не зависит.
+
+name: desktop-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            # Universal: один .dmg для Intel и Apple Silicon.
+            args: "--target universal-apple-darwin"
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # npm workspace: lock-файл и node_modules живут в корне репозитория.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # macOS: оба таргета нужны для universal-сборки.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      # Linux: webkit2gtk для Tauri, alsa для cpal, xcb/pipewire для xcap
+      # (screen-capture pipeline K.5).
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libasound2-dev \
+            libxcb1-dev \
+            libxrandr-dev \
+            libdbus-1-dev \
+            libpipewire-0.3-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "RuCord ${{ github.ref_name }}"
+          releaseBody: "Изменения — см. описание тега. Артефакты собраны CI."
+          # Draft: проверяешь артефакты руками и публикуешь сам. Auto-update
+          # клиентов сработает только после publish (latest.json недоступен
+          # из draft-релиза).
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

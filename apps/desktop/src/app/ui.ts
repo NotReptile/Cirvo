@@ -5,6 +5,7 @@ import type { RealtimeClient, RealtimeEvent, ConnectionState } from "../realtime
 import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
 import { runIceCheck, type IceCheckResult } from "../call/iceCheck";
+import { checkForUpdate, relaunchApp, type UpdateHandle } from "./tauriUpdater";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import {
   applyAppearance,
@@ -977,6 +978,11 @@ let voiceMgr: VoiceChannelManager;
 let callTimerInterval: ReturnType<typeof setInterval> | null = null;
 // Wave 0: текущее состояние WS-соединения (для баннера «Переподключение…»).
 let connState: ConnectionState = "offline";
+// F.8: auto-update. handle живёт вне state — это не сессионные данные.
+let updateHandle: UpdateHandle | null = null;
+let updatePhase: "idle" | "available" | "downloading" | "ready" = "idle";
+let updatePct: number | null = null;
+let updateCheckStarted = false;
 
 export function renderApp(
   container: HTMLElement,
@@ -1068,6 +1074,7 @@ async function bootstrapSession(): Promise<void> {
     void loadDMs();
     if (getNotificationSettings().desktopEnabled) void requestBrowserNotificationPermission();
     startIdleAutoDetect();
+    void initUpdateCheck();
     state.status = "";
     render();
   } catch (err) {
@@ -1224,6 +1231,89 @@ async function loadUnread(workspaceId: string): Promise<void> {
   } catch (err) {
     state.status = describeError(err);
   }
+}
+
+// F.8: проверка обновлений на старте сессии + раз в 6 часов. На web/mobile
+// checkForUpdate() отдаёт null — баннер не появляется. Сначала показываем
+// «Что нового», если прошлый запуск завершился установкой обновления.
+async function initUpdateCheck(): Promise<void> {
+  if (updateCheckStarted) return; // re-login не должен плодить интервалы
+  updateCheckStarted = true;
+  try {
+    const raw = localStorage.getItem("rucord:pending-changelog");
+    if (raw) {
+      localStorage.removeItem("rucord:pending-changelog");
+      const data = JSON.parse(raw) as { version: string; notes?: string };
+      void confirmDialog({
+        title: `RuCord обновлён до v${data.version}`,
+        body: data.notes?.trim() || "Обновление установлено.",
+        confirmLabel: "Ок"
+      });
+    }
+  } catch {
+    /* битый JSON в localStorage — просто пропускаем */
+  }
+  const recheck = async () => {
+    if (updatePhase !== "idle") return; // уже нашли/качаем
+    const upd = await checkForUpdate();
+    if (!upd || updatePhase !== "idle") return;
+    updateHandle = upd;
+    updatePhase = "available";
+    render();
+  };
+  void recheck();
+  window.setInterval(() => void recheck(), 6 * 3600 * 1000);
+}
+
+async function startUpdateInstall(): Promise<void> {
+  if (!updateHandle || updatePhase === "downloading" || updatePhase === "ready") return;
+  updatePhase = "downloading";
+  updatePct = null;
+  render();
+  try {
+    await updateHandle.install((pct) => {
+      // Прогресс — прямой DOM-mutate: render() на каждый chunk дёргал бы
+      // фокус и пересоздавал message-list.
+      updatePct = pct;
+      const el = rootEl.querySelector<HTMLElement>("#update-banner-text");
+      if (el) el.textContent = pct === null ? "Скачиваю обновление…" : `Скачиваю обновление… ${pct}%`;
+    });
+    // «Что нового» покажем после перезапуска уже новой версией.
+    localStorage.setItem(
+      "rucord:pending-changelog",
+      JSON.stringify({ version: updateHandle.version, notes: updateHandle.notes ?? "" })
+    );
+    updatePhase = "ready";
+    render();
+    await relaunchApp();
+  } catch (err) {
+    updatePhase = "available";
+    state.status = describeError(err);
+    render();
+  }
+}
+
+function renderUpdateBanner(): string {
+  if (updatePhase === "available" && updateHandle) {
+    return `
+      <div class="update-banner" role="status">
+        <span id="update-banner-text">Доступно обновление v${escapeHtml(updateHandle.version)}</span>
+        <button id="update-install">Установить</button>
+      </div>
+    `;
+  }
+  if (updatePhase === "downloading") {
+    return `
+      <div class="update-banner" role="status">
+        <span class="conn-banner-spinner update-banner-spinner"></span>
+        <span id="update-banner-text">Скачиваю обновление…${updatePct !== null ? ` ${updatePct}%` : ""}</span>
+      </div>
+    `;
+  }
+  if (updatePhase === "ready") {
+    return `<div class="update-banner" role="status"><span>Обновление установлено — перезапуск…</span></div>`;
+  }
+  return "";
 }
 
 // Wave 0: догон после восстановления WS. Всё fire-and-forget и идемпотентно —
@@ -2695,6 +2785,7 @@ function renderShell(): void {
         Соединение потеряно — переподключаюсь…
       </div>
     ` : ""}
+    ${me ? renderUpdateBanner() : ""}
     <div class="shell${showMembers ? " with-members" : ""}">
       <aside class="ws-rail">
         <button id="ws-rail-dm" class="ws-rail-icon ws-rail-home${dmMode ? " active" : ""}" title="Личные сообщения" aria-label="Личные сообщения">
@@ -9124,6 +9215,10 @@ function attachShellHandlers(): void {
         return;
       }
     });
+  });
+
+  rootEl.querySelector<HTMLButtonElement>("#update-install")?.addEventListener("click", () => {
+    void startUpdateInstall();
   });
 
   rootEl.querySelector<HTMLButtonElement>("#ws-rail-create")?.addEventListener("click", async () => {
