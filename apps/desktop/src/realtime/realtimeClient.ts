@@ -7,6 +7,14 @@ export interface RealtimeEvent {
 
 type Listener = (event: RealtimeEvent) => void;
 
+// Wave 0: состояние WS-соединения для индикатора в UI и resync-логики.
+// "offline" — нет токена / manual disconnect; "connecting" — первое
+// подключение; "reconnecting" — соединение упало, ждём/пробуем повторно;
+// "connected" — сокет открыт.
+export type ConnectionState = "offline" | "connecting" | "reconnecting" | "connected";
+
+type StateListener = (state: ConnectionState) => void;
+
 export class RealtimeClient {
   private socket: WebSocket | null = null;
   private listeners = new Set<Listener>();
@@ -14,8 +22,25 @@ export class RealtimeClient {
   private reconnectAttempts = 0;
   private manualClose = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connState: ConnectionState = "offline";
+  private stateListeners = new Set<StateListener>();
 
   constructor(readonly endpoint: string) {}
+
+  getConnectionState(): ConnectionState {
+    return this.connState;
+  }
+
+  onConnectionStateChange(listener: StateListener): () => void {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
+  }
+
+  private setConnState(next: ConnectionState): void {
+    if (this.connState === next) return;
+    this.connState = next;
+    for (const l of this.stateListeners) l(next);
+  }
 
   setAccessToken(token: string | null): void {
     this.accessToken = token;
@@ -49,11 +74,13 @@ export class RealtimeClient {
       return;
     }
     this.manualClose = false;
+    this.setConnState(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
     const url = `${this.endpoint}?access_token=${encodeURIComponent(this.accessToken)}`;
     const socket = new WebSocket(url);
     this.socket = socket;
     socket.onopen = () => {
       this.reconnectAttempts = 0;
+      this.setConnState("connected");
     };
     socket.onmessage = (event) => {
       let parsed: RealtimeEvent | null = null;
@@ -69,7 +96,11 @@ export class RealtimeClient {
     };
     socket.onclose = () => {
       this.socket = null;
-      if (this.manualClose || !this.accessToken) return;
+      if (this.manualClose || !this.accessToken) {
+        this.setConnState("offline");
+        return;
+      }
+      this.setConnState("reconnecting");
       const delay = Math.min(30_000, 500 * 2 ** this.reconnectAttempts);
       this.reconnectAttempts += 1;
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
@@ -109,5 +140,6 @@ export class RealtimeClient {
       this.socket.close();
       this.socket = null;
     }
+    this.setConnState("offline");
   }
 }

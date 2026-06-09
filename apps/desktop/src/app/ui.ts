@@ -1,9 +1,10 @@
 import type { CallManager, CallSnapshot } from "../call/callManager";
 import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelManager";
 import type { ApiError, HttpClient } from "../network/httpClient";
-import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
+import type { RealtimeClient, RealtimeEvent, ConnectionState } from "../realtime/realtimeClient";
 import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
+import { runIceCheck, type IceCheckResult } from "../call/iceCheck";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import {
   applyAppearance,
@@ -525,6 +526,8 @@ interface AdminState {
   error: string | null;
   retentionRunning: boolean;
   retentionLast: RetentionStats | null;
+  iceCheckRunning: boolean;
+  iceCheckResult: IceCheckResult | null;
 }
 
 // C.8: in-app уведомления.
@@ -815,7 +818,9 @@ const state: AppState = {
     metricsLoading: false,
     error: null,
     retentionRunning: false,
-    retentionLast: null
+    retentionLast: null,
+    iceCheckRunning: false,
+    iceCheckResult: null
   },
   channelSettings: {
     channelId: null,
@@ -970,6 +975,8 @@ let realtimeClient: RealtimeClient;
 let callMgr: CallManager;
 let voiceMgr: VoiceChannelManager;
 let callTimerInterval: ReturnType<typeof setInterval> | null = null;
+// Wave 0: текущее состояние WS-соединения (для баннера «Переподключение…»).
+let connState: ConnectionState = "offline";
 
 export function renderApp(
   container: HTMLElement,
@@ -993,6 +1000,17 @@ export function renderApp(
   installGlobalKeyboardShortcuts();
   installTooltips();
   realtime.subscribe(handleRealtimeEvent);
+  // Wave 0: индикатор соединения + resync после восстановления WS.
+  // Пока сокет лежал, message.created/notification.* не доезжали — после
+  // reconnect'а перетягиваем то, что realtime доносил бы инкрементально.
+  realtime.onConnectionStateChange((s) => {
+    const wasDown = connState === "reconnecting";
+    connState = s;
+    if (s === "connected" && wasDown && state.me) {
+      void resyncAfterReconnect();
+    }
+    render();
+  });
   callManager.subscribe((snap) => {
     state.callSnapshot = snap.state === "idle" ? null : snap;
     render();
@@ -1205,6 +1223,50 @@ async function loadUnread(workspaceId: string): Promise<void> {
     render();
   } catch (err) {
     state.status = describeError(err);
+  }
+}
+
+// Wave 0: догон после восстановления WS. Всё fire-and-forget и идемпотентно —
+// повторный resync (если соединение снова мигнёт) ничего не сломает.
+async function resyncAfterReconnect(): Promise<void> {
+  void loadNotifications();
+  void loadDMs();
+  if (state.selectedWorkspaceId) void loadUnread(state.selectedWorkspaceId);
+  void backfillSelectedChannel();
+}
+
+// Догружает сообщения активного канала, пришедшие пока сокет лежал.
+// Если разрыв был коротким — дописываем хвост (по id-дедупу), скролл не
+// дёргается. Если за время разрыва пришло >50 сообщений (нет пересечения
+// с локальным списком) — заменяем окно целиком, как при входе в канал.
+async function backfillSelectedChannel(): Promise<void> {
+  const id = state.selectedChannelId;
+  if (!id) return;
+  const ch = state.channels.find((c) => c.id === id);
+  if (ch?.kind === "voice") return;
+  try {
+    const data = await httpClient.get<{ items: Message[]; nextCursor?: string }>(
+      `/api/v1/channels/${id}/messages?limit=50`
+    );
+    if (state.selectedChannelId !== id) return; // канал сменили пока грузили
+    const fresh = (data.items ?? []).slice().reverse();
+    if (fresh.length === 0) return;
+    const known = new Set(state.messages.map((m) => m.id));
+    const overlap = fresh.some((m) => known.has(m.id));
+    if (!overlap && state.messages.length > 0) {
+      state.messages = fresh;
+      state.messagesCursor = data.nextCursor || null;
+      state.messagesHasMore = !!data.nextCursor;
+      state.stickToBottom = true;
+    } else {
+      const lastTs = state.messages.length > 0 ? state.messages[state.messages.length - 1].createdAt : "";
+      const appended = fresh.filter((m) => !known.has(m.id) && m.createdAt > lastTs);
+      if (appended.length === 0) return;
+      state.messages = [...state.messages, ...appended];
+    }
+    render();
+  } catch {
+    /* тихо — следующий reconnect повторит */
   }
 }
 
@@ -2627,6 +2689,12 @@ function renderShell(): void {
     : "";
 
   rootEl.innerHTML = `
+    ${connState === "reconnecting" && me ? `
+      <div class="conn-banner" role="status">
+        <span class="conn-banner-spinner"></span>
+        Соединение потеряно — переподключаюсь…
+      </div>
+    ` : ""}
     <div class="shell${showMembers ? " with-members" : ""}">
       <aside class="ws-rail">
         <button id="ws-rail-dm" class="ws-rail-icon ws-rail-home${dmMode ? " active" : ""}" title="Личные сообщения" aria-label="Личные сообщения">
@@ -6409,10 +6477,15 @@ function renderSettingsHotkeysTab(): string {
       return `<div class="settings-hint settings-hint-warn">Глобальные хоткеи недоступны в этой среде — работают только когда окно RuCord в фокусе.</div>`;
     }
     const failed = getHotkeyActions().filter((a) => getGlobalStatus(a.id) === "failed");
-    if (failed.length > 0) {
-      return `<div class="settings-hint settings-hint-warn">Не удалось зарегистрировать глобально (работают только в фокусе): ${escapeHtml(failed.map((a) => a.label).join(", "))}. Обычно причина — одиночная клавиша без модификатора или конфликт с другой программой. Попробуй комбинацию с Ctrl/Shift/Alt.</div>`;
+    const bare = getHotkeyActions().filter((a) => getGlobalStatus(a.id) === "bare");
+    const parts: string[] = [];
+    if (bare.length > 0) {
+      parts.push(`<div class="settings-hint settings-hint-warn">Одиночная клавиша без модификатора не работает глобально (только когда окно в фокусе): ${escapeHtml(bare.map((a) => a.label).join(", "))}. Добавь Ctrl/Shift/Alt или используй F-клавишу (F1–F24).</div>`);
     }
-    return "";
+    if (failed.length > 0) {
+      parts.push(`<div class="settings-hint settings-hint-warn">Не удалось зарегистрировать глобально (работают только в фокусе): ${escapeHtml(failed.map((a) => a.label).join(", "))}. Обычно причина — конфликт с другой программой. Попробуй другую комбинацию.</div>`);
+    }
+    return parts.join("");
   })();
   return `
     <div class="settings-hint" style="margin-bottom: 16px;">
@@ -6433,6 +6506,9 @@ function globalStatusBadge(id: ActionId): string {
   }
   if (st === "failed") {
     return `<span class="hotkeys-global fail" title="Не зарегистрировано глобально — работает только когда окно в фокусе">🌐✕</span>`;
+  }
+  if (st === "bare") {
+    return `<span class="hotkeys-global fail" title="Одиночная клавиша не работает глобально — добавь Ctrl/Shift/Alt или F-клавишу">🌐✕</span>`;
   }
   return "";
 }
@@ -10189,6 +10265,9 @@ function renderAdminMetrics(): string {
       <button id="admin-retention-run" class="ghost" ${a.retentionRunning ? "disabled" : ""}>
         ${a.retentionRunning ? "Чищу…" : "Запустить очистку"}
       </button>
+      <button id="admin-ice-check" class="ghost" ${a.iceCheckRunning ? "disabled" : ""}>
+        ${a.iceCheckRunning ? "Проверяю…" : "Проверить STUN/TURN"}
+      </button>
     </div>
     ${a.retentionLast ? `
       <div class="admin-meta admin-retention-result">
@@ -10196,6 +10275,37 @@ function renderAdminMetrics(): string {
         (${formatBytesLarge(a.retentionLast.bytesFreed)})
       </div>
     ` : ""}
+    ${renderIceCheckResult(a.iceCheckResult)}
+  `;
+}
+
+// Wave 0: панель результата ICE/TURN-диагностики под метриками.
+function renderIceCheckResult(r: IceCheckResult | null): string {
+  if (!r) return "";
+  const row = (ok: boolean, label: string, detail?: string) => `
+    <div class="ice-check-row ${ok ? "ok" : "fail"}">
+      <span class="ice-check-dot"></span>
+      <span>${escapeHtml(label)}</span>
+      ${detail ? `<span class="ice-check-detail">${escapeHtml(detail)}</span>` : ""}
+    </div>
+  `;
+  if (r.error && r.serverUrls.length === 0) {
+    return `<div class="ice-check-panel">${row(false, r.error)}</div>`;
+  }
+  const turnRow = !r.turnConfigured
+    ? row(false, "TURN не сконфигурирован", "в /ice-servers нет turn:-URL — звонки между NAT не соединятся")
+    : r.relayOk
+      ? row(true, "TURN-релей работает", r.relayAddress ? `relay ${r.relayAddress}` : undefined)
+      : row(false, "TURN не отвечает", "аллокация не прошла — проверь coturn, проброс портов (3478 + UDP relay-диапазон) и credentials");
+  return `
+    <div class="ice-check-panel">
+      ${row(r.stunOk, r.stunOk ? "STUN работает (внешний адрес получен)" : "STUN не отвечает")}
+      ${turnRow}
+      ${r.error ? row(false, r.error) : ""}
+      <div class="ice-check-meta">
+        Серверы: ${escapeHtml(r.serverUrls.join(", ") || "—")} · ${(r.elapsedMs / 1000).toFixed(1)}с
+      </div>
+    </div>
   `;
 }
 
@@ -10351,6 +10461,23 @@ function attachAdminHandlers(): void {
     if (!ok) return;
     void runRetentionSweep();
   });
+
+  rootEl.querySelector<HTMLButtonElement>("#admin-ice-check")?.addEventListener("click", () => {
+    void runAdminIceCheck();
+  });
+}
+
+async function runAdminIceCheck(): Promise<void> {
+  if (state.admin.iceCheckRunning) return;
+  state.admin.iceCheckRunning = true;
+  state.admin.iceCheckResult = null;
+  render();
+  try {
+    state.admin.iceCheckResult = await runIceCheck(httpClient);
+  } finally {
+    state.admin.iceCheckRunning = false;
+    render();
+  }
 }
 
 async function runRetentionSweep(): Promise<void> {

@@ -102,6 +102,19 @@ interface ActionHandlers {
   up?: () => void;
 }
 
+// #5c root cause: одиночная клавиша без модификатора (например `` ` `` для
+// PTT). На Windows RegisterHotKey с голой клавишей либо отклоняется ОС, либо
+// «съедает» её системно — каждый backtick в ЛЮБОМ приложении уходил бы нам и
+// не печатался у пользователя. Дискорд решает это низкоуровневым keyboard-
+// hook'ом, которого у плагина нет. Поэтому голые клавиши глобально не
+// регистрируем вовсе — честный статус "bare" + подсказка в UI добавить
+// модификатор. F-клавиши — исключение: они конвенционально глобальные и не
+// конфликтуют с набором текста.
+function isBareChord(chord: KeyChord): boolean {
+  if (chord.ctrl || chord.alt || chord.shift || chord.meta) return false;
+  return !/^F[1-9][0-9]?$/.test(chord.code);
+}
+
 const handlers = new Map<ActionId, ActionHandlers>();
 // Текущая зарегистрированная accelerator-строка per action — чтобы при
 // смене chord'а корректно unregister'нуть старую.
@@ -109,10 +122,12 @@ const registered = new Map<ActionId, string>();
 
 // Статус глобальной регистрации per action — для индикатора в settings.
 // "registered" — OS приняла accelerator (работает в фоне);
-// "failed" — register бросил (конфликт/голая клавиша/нет разрешения);
+// "failed" — register бросил (конфликт/нет разрешения);
+// "bare" — одиночная клавиша без модификатора: глобально не регистрируем
+//          (см. isBareChord ниже), работает только в фокусе;
 // "unsupported" — не Tauri-десктоп (web) или плагин не загрузился;
 // "off" — биндинг выключен или не global-eligible.
-export type GlobalStatus = "registered" | "failed" | "unsupported" | "off";
+export type GlobalStatus = "registered" | "failed" | "bare" | "unsupported" | "off";
 const statusMap = new Map<ActionId, GlobalStatus>();
 let pluginLoaded: boolean | null = null; // null = ещё не проверяли
 
@@ -149,6 +164,23 @@ export async function syncGlobalShortcuts(
   for (const id of GLOBAL_ACTION_IDS) {
     const b = getBinding(id);
     const prev = registered.get(id);
+
+    // Голая клавиша: снимаем старую регистрацию (если была) и помечаем
+    // статусом "bare" — UI подскажет добавить модификатор.
+    if (b.enabled && b.chord && isBareChord(b.chord)) {
+      if (prev) {
+        try {
+          await plugin.unregister(prev);
+        } catch {
+          /* ignore */
+        }
+        registered.delete(id);
+      }
+      statusMap.set(id, "bare");
+      console.info(`[global-shortcut] ${id}: одиночная клавиша без модификатора — глобально не регистрируем`);
+      continue;
+    }
+
     const next = b.enabled && b.chord ? chordToAccelerator(b.chord) : null;
     if (prev === next) {
       // Статус мог быть не выставлен на старте (prev===next===зарегистрировано).
