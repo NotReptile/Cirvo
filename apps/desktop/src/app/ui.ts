@@ -7,6 +7,7 @@ import type { ScreenShareQuality } from "../call/voiceChannelManager";
 import { runIceCheck, type IceCheckResult } from "../call/iceCheck";
 import { checkForUpdate, relaunchApp, type UpdateHandle } from "./tauriUpdater";
 import { openLightbox } from "./lightbox";
+import { openEmojiPicker } from "./emojiPicker";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import {
   applyAppearance,
@@ -3820,6 +3821,7 @@ function renderDMChannelView(dm: DMItem): string {
         placeholder="Сообщение для ${escapeHtml(name)}"
         value="${escapeHtml(loadDraft(dm.channelId))}"
       />
+      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="Эмодзи">${icon("smile")}</button>
       <button type="submit">${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
@@ -4015,6 +4017,7 @@ function renderChannelView(channel: Channel): string {
         ${canSend ? "" : "disabled"}
         value="${escapeHtml(canSend ? loadDraft(channel.id) : "")}"
       />
+      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="Эмодзи" ${canSend ? "" : "disabled"}>${icon("smile")}</button>
       <button type="submit" ${canSend && slowModeRemainingSec(channel.id) === 0 ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
@@ -4875,7 +4878,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
                 (e) =>
                   `<button class="ghost picker-emoji" data-react-toggle="${m.id}" data-emoji="${escapeHtml(e)}">${e}</button>`
               ).join("")}
-              <input class="picker-custom" data-msg-id="${m.id}" placeholder="свой… ⏎" maxlength="16" />
+              <button class="ghost picker-emoji picker-more" data-react-more="${m.id}" title="Все эмодзи">➕</button>
             </div>`
           : ""
       }
@@ -9665,15 +9668,18 @@ function attachShellHandlers(): void {
     });
   });
 
-  rootEl.querySelectorAll<HTMLInputElement>(".picker-custom").forEach((input) => {
-    input.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
-      e.preventDefault();
-      const messageId = input.dataset.msgId;
-      const emoji = input.value.trim();
-      if (!messageId || !emoji) return;
-      state.pickerForMessageId = null;
-      void toggleReaction(messageId, emoji);
+  // Wave 2: «➕» в quick-picker'е реакций → полный emoji-picker.
+  rootEl.querySelectorAll<HTMLButtonElement>(".picker-more").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const messageId = btn.dataset.reactMore;
+      if (!messageId) return;
+      openEmojiPicker({
+        anchor: btn,
+        onPick: (emoji) => {
+          state.pickerForMessageId = null;
+          void toggleReaction(messageId, emoji);
+        }
+      });
     });
   });
 
@@ -9910,6 +9916,23 @@ function attachShellHandlers(): void {
       saveDraft(state.selectedChannelId, composerInput.value);
       if (composerInput.value) maybeSendTyping();
       updateMentionPopup(composerInput, mentionPopup);
+    });
+    // Wave 2: кнопка-смайл рядом с send. Вставка по каретке + dispatch
+    // input — чтобы draft сохранился и mention-popup пересчитался.
+    rootEl.querySelector<HTMLButtonElement>("#composer-emoji")?.addEventListener("click", (ev) => {
+      const anchor = ev.currentTarget as HTMLElement;
+      openEmojiPicker({
+        anchor,
+        onPick: (emoji) => {
+          const start = composerInput.selectionStart ?? composerInput.value.length;
+          const end = composerInput.selectionEnd ?? start;
+          composerInput.value = composerInput.value.slice(0, start) + emoji + composerInput.value.slice(end);
+          const caret = start + emoji.length;
+          composerInput.focus({ preventScroll: true });
+          composerInput.setSelectionRange(caret, caret);
+          composerInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
     });
     composerInput.addEventListener("click", () => updateMentionPopup(composerInput, mentionPopup));
     composerInput.addEventListener("keyup", (ev) => {
