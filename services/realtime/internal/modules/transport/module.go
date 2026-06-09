@@ -24,6 +24,9 @@ const (
 	writeDeadline   = 10 * time.Second
 	maxReadBytes    = 1 << 16
 	closeReasonAuth = "unauthorized"
+	// G.6.b: минимальный интервал между subscription.refresh per-connection —
+	// каждый refresh ходит в БД, спам с клиента не должен её дёргать.
+	refreshThrottle = 2 * time.Second
 )
 
 // Dispatcher routes a single inbound client→server frame. Implementations must
@@ -116,6 +119,7 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 func (m *Module) readLoop(ctx context.Context, cancel context.CancelFunc, wsConn *websocket.Conn, conn *hub.Connection) {
 	defer cancel()
+	var lastRefresh time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -142,6 +146,17 @@ func (m *Module) readLoop(ctx context.Context, cancel context.CancelFunc, wsConn
 			continue
 		}
 		if env.Event == "" {
+			continue
+		}
+		// G.6.b: клиент просит перечитать workspace-membership без разрыва WS
+		// (вступил в воркспейс / создал новый). Список берём из БД — клиенту
+		// нельзя доверять перечень workspace-id напрямую.
+		if env.Event == "subscription.refresh" {
+			if time.Since(lastRefresh) < refreshThrottle {
+				continue
+			}
+			lastRefresh = time.Now()
+			m.refreshSubscriptions(ctx, conn)
 			continue
 		}
 		for _, d := range m.dispatchers {
@@ -180,6 +195,26 @@ func (m *Module) writeLoop(ctx context.Context, wsConn *websocket.Conn, conn *hu
 				return
 			}
 			m.touchSession(ctx, sessionID)
+		}
+	}
+}
+
+// refreshSubscriptions перечитывает membership юзера и перекладывает
+// соединение по hub-bucket'ам. Подтверждение клиенту — свежий
+// presence.snapshot (тот же event, что и при коннекте).
+func (m *Module) refreshSubscriptions(ctx context.Context, conn *hub.Connection) {
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	workspaces, err := loadUserWorkspaces(queryCtx, m.db, conn.UserID)
+	cancel()
+	if err != nil {
+		m.logger.Warn("subscription refresh failed", "userId", conn.UserID.String(), "error", err)
+		return
+	}
+	m.hub.UpdateWorkspaces(conn, workspaces)
+	if encoded, err := json.Marshal(buildPresenceSnapshot(workspaces)); err == nil {
+		select {
+		case conn.Send <- encoded:
+		default:
 		}
 	}
 }

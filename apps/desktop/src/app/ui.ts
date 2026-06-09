@@ -9106,7 +9106,7 @@ function attachShellHandlers(): void {
     try {
       const ws = await httpClient.post<Workspace>("/api/v1/workspaces", { name, slug });
       state.workspaces = [...state.workspaces, ws];
-      realtimeClient.reconnect();
+      realtimeClient.refreshSubscriptions();
       await selectWorkspace(ws.id);
     } catch (err) {
       state.status = describeError(err);
@@ -9127,7 +9127,7 @@ function attachShellHandlers(): void {
         `/api/v1/invites/${encodeURIComponent(code)}/accept`
       );
       await loadWorkspaces();
-      realtimeClient.reconnect();
+      realtimeClient.refreshSubscriptions();
       await selectWorkspace(res.workspaceId);
       // J.3(a): если инвайт был channel-scoped — открываем сразу нужный канал.
       if (res.channelId) {

@@ -108,6 +108,37 @@ func (h *Hub) removeLocked(conn *Connection) {
 	}
 }
 
+// UpdateWorkspaces перекладывает живое соединение по workspace-bucket'ам без
+// разрыва WS (G.6.b subscription.refresh): юзер вступил в воркспейс / создал
+// новый / покинул — membership перечитан из БД, фан-аут должен пойти по
+// актуальному списку. conn.WorkspaceIDs читается/пишется только под h.mu.
+func (h *Hub) UpdateWorkspaces(conn *Connection, next []uuid.UUID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Соединение могло быть уже снято (или вытеснено повторным логином той же
+	// сессии) — не воскрешаем bucket'ы мёртвого conn'а.
+	if current, ok := h.bySession[conn.SessionID]; !ok || current != conn {
+		return
+	}
+	for _, ws := range conn.WorkspaceIDs {
+		if bucket, ok := h.workspaceMembers[ws]; ok {
+			delete(bucket, conn.SessionID)
+			if len(bucket) == 0 {
+				delete(h.workspaceMembers, ws)
+			}
+		}
+	}
+	conn.WorkspaceIDs = next
+	for _, ws := range next {
+		bucket, ok := h.workspaceMembers[ws]
+		if !ok {
+			bucket = make(map[uuid.UUID]*Connection)
+			h.workspaceMembers[ws] = bucket
+		}
+		bucket[conn.SessionID] = conn
+	}
+}
+
 func (h *Hub) BroadcastWorkspace(workspaceID uuid.UUID, payload []byte) {
 	h.mu.RLock()
 	bucket := h.workspaceMembers[workspaceID]

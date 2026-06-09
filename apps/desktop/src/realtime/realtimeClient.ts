@@ -110,24 +110,12 @@ export class RealtimeClient {
     };
   }
 
-  reconnect(): void {
-    if (!this.accessToken) return;
-    this.manualClose = false;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.socket) {
-      const sock = this.socket;
-      this.socket = null;
-      try {
-        sock.close();
-      } catch {
-        /* ignore */
-      }
-    }
-    this.reconnectAttempts = 0;
-    this.connect();
+  // G.6.b: попросить сервер перечитать workspace-membership без разрыва
+  // соединения (вступили в воркспейс / создали новый). Сервер подтверждает
+  // свежим presence.snapshot. Если сокет не открыт — no-op: ближайший
+  // connect() и так загрузит актуальный membership из БД.
+  refreshSubscriptions(): void {
+    this.send("subscription.refresh", {});
   }
 
   disconnect(): void {
