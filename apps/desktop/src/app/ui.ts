@@ -665,16 +665,18 @@ interface AppState {
   // D.4: channel permission overrides
   channelSettings: ChannelSettingsState;
   workspaceRoles: WorkspaceRolesState;
-  // H.7: цвета ролей текущего воркспейса. Загружается параллельно с
-  // members при selectWorkspace и после save в roles-модалке. Ключ —
-  // role.code, значение — color (null если не задан). Если ничего не
-  // загружено / роль не найдена — fallback к хардкод-палитре в
-  // getRoleColor() (для отображения до окончания загрузки).
-  roleColors: Record<string, string | null>;
+  // H.7 → Wave 5: полный список ролей текущего воркспейса (позиции,
+  // цвета, hoisted, составы). Загружается параллельно с members при
+  // selectWorkspace и после save в roles-модалке. Источник для
+  // union-резолвера цвета (getUserColor) и hoisted-секций member-sidebar.
+  // Пустой массив = не загружено → fallback к хардкод-палитре.
+  wsRoles: WorkspaceRole[];
   // Контекстное меню канала: ПКМ на элементе списка → плавающее меню
   // (Переименовать / Удалить / Скопировать ID). null = меню закрыто.
   channelMenu: { channelId: string; x: number; y: number } | null;
   workspaceMenu: { workspaceId: string; x: number; y: number } | null;
+  // Wave 5: ПКМ по участнику в member-sidebar — профиль + назначение ролей.
+  memberMenu: { userId: string; x: number; y: number } | null;
   // Volume per-remote: ключ — sessionId участника voice-канала либо
   // спец-ключ "call-remote" для 1-к-1 собеседника. Значение 0..1, при
   // отсутствии ключа применяем 1 (default). Хранится в памяти, на
@@ -891,9 +893,10 @@ const state: AppState = {
     selectedRoleId: null,
     draft: null
   },
-  roleColors: {},
+  wsRoles: [],
   channelMenu: null,
   workspaceMenu: null,
+  memberMenu: null,
   voiceVolumes: {},
   voiceVolumeMenu: null,
   statusMenu: null,
@@ -1167,7 +1170,8 @@ async function selectWorkspace(id: string): Promise<void> {
   state.invites = [];
   state.members = [];
   state.unread = {};
-  state.roleColors = {};
+  state.wsRoles = [];
+  userColorCache = null;
   state.voicePeekAll = {};
   render();
   // J.5: каналы и категории тянем параллельно — оба нужны для рендера sidebar.
@@ -1180,7 +1184,7 @@ async function selectWorkspace(id: string): Promise<void> {
   // Резолвинг authorId → имя в сообщениях. Не блокируем загрузку каналов.
   void loadMembers();
   void loadUnread(id);
-  void loadRoleColors(id);
+  void loadWsRoles(id);
   void loadAllVoicePeeks(id);
   if (state.channels.length > 0) {
     await selectChannel(state.channels[0].id);
@@ -3244,6 +3248,7 @@ function renderShell(): void {
       ${renderCallOverlay()}
       ${renderChannelMenu()}
       ${renderWorkspaceMenu()}
+      ${renderMemberMenu()}
       ${renderVoiceVolumeMenu()}
       ${renderStatusMenu()}
     </div>
@@ -3356,8 +3361,8 @@ function renderStatusMenu(): string {
   `;
 }
 
-// H.7: цвета ролей. По умолчанию подтягиваем из workspace_roles.color
-// (loadRoleColors при выборе ws); хардкод-палитра ниже — fallback пока
+// H.7: цвета ролей. По умолчанию подтягиваем из workspace_roles
+// (loadWsRoles при выборе ws); хардкод-палитра ниже — fallback пока
 // данные не загружены либо для роли не задан color в БД (member-роль
 // в seed'е — null). member-роль без цвета остаётся дефолтным --text.
 const ROLE_COLORS_FALLBACK: Record<string, string> = {
@@ -3368,23 +3373,45 @@ const ROLE_COLORS_FALLBACK: Record<string, string> = {
 
 function getRoleColor(roleCode: string | undefined | null): string | undefined {
   if (!roleCode) return undefined;
-  const live = state.roleColors[roleCode];
-  if (live !== undefined) {
-    return live ?? undefined; // null → нет цвета, undefined → не загружено
+  if (state.wsRoles.length > 0) {
+    const role = state.wsRoles.find((r) => r.code === roleCode);
+    if (role) return role.color ?? undefined;
   }
   return ROLE_COLORS_FALLBACK[roleCode];
 }
 
-async function loadRoleColors(workspaceId: string): Promise<void> {
+// Wave 5: union-резолвер «высшей роли» (H.7 ограничение снято). Цвет юзера =
+// цвет самой высокой (по position) роли с цветом среди ВСЕХ его ролей
+// (workspace_role_members через wsRoles[].memberUserIds + primary role_code).
+// Кеш сбрасывается при смене wsRoles/воркспейса (userColorCache = null).
+let userColorCache: Map<string, string | undefined> | null = null;
+
+function getUserColor(userId: string, primaryRole: string | undefined | null): string | undefined {
+  if (state.wsRoles.length === 0) {
+    return getRoleColor(primaryRole); // данные не загружены — fallback
+  }
+  if (!userColorCache) userColorCache = new Map();
+  if (userColorCache.has(userId)) return userColorCache.get(userId);
+  let color: string | undefined;
+  // wsRoles приходит с бэка отсортированным по position desc.
+  for (const r of state.wsRoles) {
+    if (!r.color) continue;
+    if (r.memberUserIds.includes(userId) || (primaryRole && r.code === primaryRole)) {
+      color = r.color;
+      break;
+    }
+  }
+  userColorCache.set(userId, color);
+  return color;
+}
+
+async function loadWsRoles(workspaceId: string): Promise<void> {
   try {
     const data = await httpClient.get<{ items: WorkspaceRole[] }>(`/api/v1/workspaces/${workspaceId}/roles`);
     // Race-guard: ответ устарел если юзер успел переключить воркспейс.
     if (state.selectedWorkspaceId !== workspaceId) return;
-    const colors: Record<string, string | null> = {};
-    for (const r of data.items ?? []) {
-      colors[r.code] = r.color ?? null;
-    }
-    state.roleColors = colors;
+    state.wsRoles = data.items ?? [];
+    userColorCache = null;
     render();
   } catch {
     // Не критично — fallback к хардкоду в getRoleColor.
@@ -3428,7 +3455,7 @@ function renderMemberSidebar(): string {
   });
   const renderItem = (m: Member) => {
     const name = m.displayName || m.username;
-    const color = getRoleColor(m.role);
+    const color = getUserColor(m.userId, m.role);
     const style = color ? ` style="color:${color};"` : "";
     const effMode = m.presenceMode ?? (m.online ? "online" : "offline");
     const subline = m.customStatus
@@ -3456,25 +3483,44 @@ function renderMemberSidebar(): string {
       ? ""
       : `<div class="member-sidebar-group">${escapeHtml(label)} — ${items.length}</div>
          <ul class="member-sidebar-list">${items.map(renderItem).join("")}</ul>`;
-  // H.3: жёсткая схема «Owner — Admin — Moderator — В сети — Не в сети» до
-  // ввода кастомных ролей (H.5). Hoisted-роли в онлайне идут своими секциями
-  // по приоритету; member online — общая «В сети»; все офлайн — одной кучей
-  // в «Не в сети» (когда H.5 закроется, hoisted=true роль будет давать
-  // отдельную секцию и в офлайне тоже).
+  // H.3 → Wave 5: секции строятся из hoisted-ролей воркспейса (включая
+  // кастомные) по position desc. Онлайн-юзер попадает в секцию своей
+  // высшей hoisted-роли (union: workspace_role_members + primary role);
+  // остальные онлайн — «В сети», все офлайн — «Не в сети». Пока wsRoles
+  // не загружен — fallback к жёсткой схеме owner/admin/moderator.
   const online = sorted.filter((m) => m.online);
   const offline = sorted.filter((m) => !m.online);
-  const owners = online.filter((m) => m.role === "owner");
-  const admins = online.filter((m) => m.role === "admin");
-  const moderators = online.filter((m) => m.role === "moderator");
-  const onlineMembers = online.filter(
-    (m) => m.role !== "owner" && m.role !== "admin" && m.role !== "moderator"
-  );
+  let groupsHtml: string;
+  if (state.wsRoles.length > 0) {
+    const hoisted = state.wsRoles.filter((r) => r.hoisted); // уже position desc
+    const used = new Set<string>();
+    const sections: string[] = [];
+    for (const role of hoisted) {
+      const members = online.filter(
+        (m) => !used.has(m.userId) && (role.memberUserIds.includes(m.userId) || m.role === role.code)
+      );
+      members.forEach((m) => used.add(m.userId));
+      sections.push(renderGroup(role.name, members));
+    }
+    const rest = online.filter((m) => !used.has(m.userId));
+    sections.push(renderGroup("В сети", rest));
+    groupsHtml = sections.join("");
+  } else {
+    const owners = online.filter((m) => m.role === "owner");
+    const admins = online.filter((m) => m.role === "admin");
+    const moderators = online.filter((m) => m.role === "moderator");
+    const onlineMembers = online.filter(
+      (m) => m.role !== "owner" && m.role !== "admin" && m.role !== "moderator"
+    );
+    groupsHtml =
+      renderGroup("Владелец", owners) +
+      renderGroup("Администраторы", admins) +
+      renderGroup("Модераторы", moderators) +
+      renderGroup("В сети", onlineMembers);
+  }
   return `
     <aside class="member-sidebar">
-      ${renderGroup("Владелец", owners)}
-      ${renderGroup("Администраторы", admins)}
-      ${renderGroup("Модераторы", moderators)}
-      ${renderGroup("В сети", onlineMembers)}
+      ${groupsHtml}
       ${renderGroup("Не в сети", offline)}
       ${state.members.length === 0 ? `<div class="member-sidebar-empty">Никого нет</div>` : ""}
     </aside>
@@ -3546,6 +3592,46 @@ function renderWorkspaceMenu(): string {
       })()}
       <div class="channel-menu-separator"></div>
       <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">Скопировать ID</button>
+    </div>
+  `;
+}
+
+// Wave 5: ПКМ-меню участника (member-sidebar). Быстрые действия + чек-лист
+// ролей (POST/DELETE /roles/{id}/members/{userId}) без захода в roles-модалку.
+// Меню остаётся открытым после toggle'а роли — удобно навешивать несколько.
+function renderMemberMenu(): string {
+  const menu = state.memberMenu;
+  if (!menu) return "";
+  const m = state.members.find((x) => x.userId === menu.userId);
+  if (!m) return "";
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  const isSelf = m.userId === state.me?.id;
+  const name = m.displayName || m.username;
+  const rolesSection = (() => {
+    if (!canManage || state.wsRoles.length === 0) return "";
+    const items = state.wsRoles
+      .filter((r) => r.code !== "owner") // owner не назначается (бэк вернёт 403)
+      .map((r) => {
+        const has = r.memberUserIds.includes(m.userId) || m.role === r.code;
+        const isPrimary = m.role === r.code; // primary снимается только сменой роли
+        const dot = r.color ? `<span class="role-color-dot" style="background:${r.color};"></span>` : "";
+        return `<button class="channel-menu-item notif-level${has ? " checked" : ""}" data-member-action="toggle-role" data-id="${m.userId}" data-role-id="${r.id}" ${isPrimary && has ? "disabled title=\"Основная роль — меняется в списке участников\"" : ""}>${has ? "✓" : "·"} ${dot}${escapeHtml(r.name)}</button>`;
+      })
+      .join("");
+    return `<div class="channel-menu-separator"></div>
+      <div class="channel-menu-subheader">Роли</div>
+      ${items}`;
+  })();
+  return `
+    <div class="channel-menu-backdrop" data-member-menu-close></div>
+    <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
+      <div class="channel-menu-header">${escapeHtml(name)}</div>
+      <button class="channel-menu-item" data-member-action="profile" data-id="${m.userId}">Профиль</button>
+      ${isSelf ? "" : `<button class="channel-menu-item" data-member-action="dm" data-id="${m.userId}">Написать сообщение</button>`}
+      ${isSelf ? "" : `<button class="channel-menu-item" data-member-action="call" data-id="${m.userId}">Позвонить</button>`}
+      <button class="channel-menu-item" data-member-action="copy-id" data-id="${m.userId}">Скопировать ID</button>
+      ${rolesSection}
     </div>
   `;
 }
@@ -3753,14 +3839,14 @@ function describeAuditEntry(e: AuditEntry): AuditDescription {
 }
 
 // Возвращает inline-style="color:..." если у участника есть role-цвет
-// (workspace_roles.color через getRoleColor, см. H.7). Иначе пустая
-// строка — наследует дефолтный --text.
+// (union-резолвер по всем ролям юзера, см. getUserColor / Wave 5).
+// Иначе пустая строка — наследует дефолтный --text.
 function authorColorStyle(userId: string): string {
   // I.5: цвета ролей можно выключить в Settings → Внешний вид.
   if (!getAppearance().roleColors) return "";
   const m = state.members.find((x) => x.userId === userId);
   if (!m) return "";
-  const color = getRoleColor(m.role);
+  const color = getUserColor(userId, m.role);
   return color ? ` style="color:${color};"` : "";
 }
 
@@ -4975,7 +5061,7 @@ function renderReplySnippet(reply: ReplySnippet | undefined): string {
     sizePx: 16,
     className: "reply-avatar"
   });
-  const color = member ? getRoleColor(member.role) : undefined;
+  const color = member ? getUserColor(member.userId, member.role) : undefined;
   const authorStyle = color ? ` style="color:${color};"` : "";
   return `<div class="reply-snippet" data-jump-id="${escapeHtml(reply.messageId)}" title="Перейти к исходному">
     <span class="reply-arrow">${icon("reply", { size: 14 })}</span>
@@ -6358,7 +6444,7 @@ function renderWorkspaceRolesModal(): string {
       </div>
       <ul>
         ${rs.roles.map((r) => `
-          <li class="roles-list-item ${r.id === rs.selectedRoleId ? "active" : ""}" data-select-role="${r.id}">
+          <li class="roles-list-item ${r.id === rs.selectedRoleId ? "active" : ""}" data-select-role="${r.id}" draggable="true" title="Перетащи, чтобы изменить позицию">
             <span class="role-color-dot" style="background:${r.color ?? "var(--text-mute)"};"></span>
             <span class="role-name">${escapeHtml(r.name)}</span>
             ${r.system ? `<span class="role-badge">sys</span>` : ""}
@@ -6471,6 +6557,11 @@ async function reloadWorkspaceRoles(): Promise<void> {
   try {
     const data = await httpClient.get<{ items: WorkspaceRole[] }>(`/api/v1/workspaces/${wsId}/roles`);
     state.workspaceRoles.roles = data.items ?? [];
+    // Wave 5: модалка и сайдбар смотрят на один и тот же набор ролей.
+    if (state.selectedWorkspaceId === wsId) {
+      state.wsRoles = state.workspaceRoles.roles;
+      userColorCache = null;
+    }
     if (!state.workspaceRoles.selectedRoleId && state.workspaceRoles.roles.length > 0) {
       state.workspaceRoles.selectedRoleId = state.workspaceRoles.roles[0].id;
     }
@@ -6500,6 +6591,55 @@ function syncWorkspaceRoleDraft(): void {
   };
 }
 
+// Wave 5: drag-reorder ролей. Перемещаем роль в списке (отсортирован по
+// position desc) и пересчитываем позиции всем сверху вниз с шагом 10 —
+// PATCH'им только те, у кого позиция реально изменилась.
+let _roleDragId: string | null = null;
+
+async function reorderRole(dragId: string, targetId: string, after: boolean): Promise<void> {
+  const rs = state.workspaceRoles;
+  const wsId = rs.workspaceId;
+  if (!wsId) return;
+  const ordered = [...rs.roles];
+  const fromIdx = ordered.findIndex((r) => r.id === dragId);
+  if (fromIdx === -1) return;
+  const [moved] = ordered.splice(fromIdx, 1);
+  let toIdx = ordered.findIndex((r) => r.id === targetId);
+  if (toIdx === -1) return;
+  if (after) toIdx += 1;
+  ordered.splice(toIdx, 0, moved);
+
+  const updates: Array<{ id: string; position: number }> = [];
+  ordered.forEach((r, i) => {
+    const pos = (ordered.length - i) * 10;
+    if (r.position !== pos) {
+      r.position = pos;
+      updates.push({ id: r.id, position: pos });
+    }
+  });
+  // Оптимистично применяем порядок; при ошибке перезагрузим с сервера.
+  rs.roles = ordered;
+  if (state.selectedWorkspaceId === wsId) {
+    state.wsRoles = state.wsRoles
+      .map((r) => {
+        const upd = ordered.find((x) => x.id === r.id);
+        return upd ? { ...r, position: upd.position } : r;
+      })
+      .sort((a, b) => b.position - a.position);
+    userColorCache = null;
+  }
+  syncWorkspaceRoleDraft();
+  render();
+  try {
+    for (const u of updates) {
+      await httpClient.patch(`/api/v1/workspaces/${wsId}/roles/${u.id}`, { position: u.position });
+    }
+  } catch (err) {
+    rs.error = describeError(err);
+    await reloadWorkspaceRoles();
+  }
+}
+
 function attachWorkspaceRolesHandlers(): void {
   if (state.modal !== "workspaceRoles") return;
   const rs = state.workspaceRoles;
@@ -6512,6 +6652,44 @@ function attachWorkspaceRolesHandlers(): void {
       rs.error = null;
       syncWorkspaceRoleDraft();
       render();
+    });
+    // Wave 5: drag-reorder позиций (H.5(1)) — вместо ручного числа в input.
+    el.addEventListener("dragstart", (e) => {
+      const id = el.dataset.selectRole;
+      if (!id) return;
+      _roleDragId = id;
+      e.dataTransfer?.setData("text/plain", id);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      el.classList.add("drag-source");
+    });
+    el.addEventListener("dragend", () => {
+      _roleDragId = null;
+      el.classList.remove("drag-source");
+      rootEl.querySelectorAll(".roles-list-item.drop-before, .roles-list-item.drop-after")
+        .forEach((x) => x.classList.remove("drop-before", "drop-after"));
+    });
+    el.addEventListener("dragover", (e) => {
+      if (!_roleDragId || _roleDragId === el.dataset.selectRole) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      const rect = el.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      el.classList.toggle("drop-after", after);
+      el.classList.toggle("drop-before", !after);
+    });
+    el.addEventListener("dragleave", () => {
+      el.classList.remove("drop-before", "drop-after");
+    });
+    el.addEventListener("drop", (e) => {
+      if (!_roleDragId) return;
+      e.preventDefault();
+      const targetId = el.dataset.selectRole;
+      const rect = el.getBoundingClientRect();
+      const after = e.clientY > rect.top + rect.height / 2;
+      el.classList.remove("drop-before", "drop-after");
+      if (targetId && targetId !== _roleDragId) {
+        void reorderRole(_roleDragId, targetId, after);
+      }
     });
   });
 
@@ -6600,10 +6778,11 @@ function attachWorkspaceRolesHandlers(): void {
       const updated = await httpClient.patch<WorkspaceRole>(`/api/v1/workspaces/${wsId}/roles/${sel.id}`, body);
       rs.roles = rs.roles.map((r) => (r.id === updated.id ? updated : r));
       syncWorkspaceRoleDraft();
-      // H.7: цвет роли мог поменяться — обновить кеш для member-sidebar
-      // и .author в сообщениях.
+      // H.7/Wave 5: цвет/позиция роли могли поменяться — обновить wsRoles
+      // для member-sidebar и .author в сообщениях.
       if (state.selectedWorkspaceId === wsId) {
-        state.roleColors[updated.code] = updated.color ?? null;
+        state.wsRoles = state.wsRoles.map((r) => (r.id === updated.id ? updated : r));
+        userColorCache = null;
       }
     } catch (err) {
       rs.error = describeError(err);
@@ -6648,6 +6827,11 @@ function attachWorkspaceRolesHandlers(): void {
         } else {
           await httpClient.del(`/api/v1/workspaces/${wsId}/roles/${sel.id}/members/${userId}`);
           sel.memberUserIds = sel.memberUserIds.filter((x) => x !== userId);
+        }
+        // Wave 5: членство влияет на union-цвет и hoisted-секции сайдбара.
+        if (state.selectedWorkspaceId === wsId) {
+          state.wsRoles = state.wsRoles.map((r) => (r.id === sel.id ? { ...r, memberUserIds: sel.memberUserIds } : r));
+          userColorCache = null;
         }
       } catch (err) {
         cb.checked = previousChecked;
@@ -9260,6 +9444,84 @@ function attachShellHandlers(): void {
       const userId = el.getAttribute("data-member-user");
       if (!userId || userId === state.me?.id) return;
       openUserProfile(userId);
+    });
+    // Wave 5: ПКМ по участнику — быстрые действия + назначение ролей.
+    el.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const userId = el.getAttribute("data-member-user");
+      if (!userId) return;
+      const x = Math.min(ev.clientX, window.innerWidth - 240);
+      const y = Math.min(ev.clientY, window.innerHeight - 320);
+      state.memberMenu = { userId, x, y };
+      render();
+    });
+  });
+
+  rootEl.querySelector<HTMLElement>("[data-member-menu-close]")?.addEventListener("click", () => {
+    state.memberMenu = null;
+    render();
+  });
+
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-member-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.dataset.memberAction;
+      const userId = btn.dataset.id;
+      if (!action || !userId) return;
+      if (action === "profile") {
+        state.memberMenu = null;
+        openUserProfile(userId);
+        return;
+      }
+      if (action === "dm") {
+        state.memberMenu = null;
+        void openDMWith({ userId });
+        return;
+      }
+      if (action === "call") {
+        state.memberMenu = null;
+        render();
+        try {
+          await callMgr.placeCall(userId);
+          applyPttModeToActiveSessions();
+        } catch (err) {
+          state.status = describeError(err);
+          render();
+        }
+        return;
+      }
+      if (action === "copy-id") {
+        state.memberMenu = null;
+        try {
+          await navigator.clipboard.writeText(userId);
+          state.status = "ID участника скопирован";
+        } catch {
+          state.status = "Не удалось скопировать";
+        }
+        render();
+        return;
+      }
+      if (action === "toggle-role") {
+        // Меню НЕ закрываем — можно навесить несколько ролей подряд.
+        const roleId = btn.dataset.roleId;
+        const wsId = state.selectedWorkspaceId;
+        const role = state.wsRoles.find((r) => r.id === roleId);
+        if (!roleId || !wsId || !role) return;
+        const has = role.memberUserIds.includes(userId);
+        try {
+          if (has) {
+            await httpClient.del(`/api/v1/workspaces/${wsId}/roles/${roleId}/members/${userId}`);
+            role.memberUserIds = role.memberUserIds.filter((x) => x !== userId);
+          } else {
+            await httpClient.post(`/api/v1/workspaces/${wsId}/roles/${roleId}/members/${userId}`);
+            role.memberUserIds = [...role.memberUserIds, userId];
+          }
+          userColorCache = null;
+        } catch (err) {
+          state.status = describeError(err);
+        }
+        render();
+        return;
+      }
     });
   });
 

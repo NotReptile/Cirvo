@@ -5177,7 +5177,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 /* J.5(a): drag-reorder visuals — drop-указатели сверху/снизу элемента и
    полупрозрачность исходного. Только для канала/категории в моменте drag. */
 .channel-list li.drag-source,
+.roles-list-item.drag-source,
 .ch-category-title.drag-source { opacity: 0.4; }
+/* Wave 5: drag-reorder ролей в модалке */
+.roles-list-item.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
+.roles-list-item.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .channel-list li.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
 .channel-list li.drop-after { box-shadow: inset 0 -2px 0 0 var(--accent); }
 .ch-category-title.drop-before { box-shadow: inset 0 2px 0 0 var(--accent); }
