@@ -36,6 +36,10 @@ const (
 	KindMention      = "mention"
 	KindReply        = "reply"
 	KindCallIncoming = "call_incoming"
+	// KindMentionEveryone — массовый пинг @everyone/@here (Wave 4).
+	// Recipients в payload пуст: worker сам разворачивает список по
+	// участникам канала на момент доставки (актуальнее и не раздувает jsonb).
+	KindMentionEveryone = "mention_everyone"
 )
 
 // JobPayload — структура, которую core-api enqueue'ит и которую парсит
@@ -49,6 +53,12 @@ type JobPayload struct {
 	MessageID   string   `json:"messageId,omitempty"`
 	CallID      string   `json:"callId,omitempty"`
 	Snippet     string   `json:"snippet,omitempty"`
+	// mention_everyone: 'everyone' | 'here' — что именно сработало.
+	MentionKind string `json:"mentionKind,omitempty"`
+	// mention_everyone: кого worker исключает из развёрнутого списка
+	// (автор + персонально упомянутые + автор parent'а reply — они уже
+	// получили свои нотификации, дубль не нужен).
+	Exclude []string `json:"exclude,omitempty"`
 }
 
 // Querier — pgx.Pool либо pgx.Tx. Enqueue работает и снаружи, и
@@ -59,8 +69,9 @@ type Querier interface {
 
 // Enqueue кладёт задачу в notification_jobs. recipients фильтруются от
 // пустых/невалидных uuid; если после фильтра список пуст — no-op.
+// Исключение — KindMentionEveryone: там список разворачивает worker.
 func Enqueue(ctx context.Context, q Querier, kind string, payload JobPayload) error {
-	if len(payload.Recipients) == 0 {
+	if len(payload.Recipients) == 0 && kind != KindMentionEveryone {
 		return nil
 	}
 	raw, err := json.Marshal(payload)

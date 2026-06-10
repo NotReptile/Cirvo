@@ -45,13 +45,30 @@ const (
 // usernames в БД хранятся lowercase.
 var mentionRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})`)
 
+// everyoneRe — массовый пинг @everyone/@here (Wave 4). Та же граница
+// слева, что у mentionRe; \b справа отсекает "@everyones".
+var everyoneRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@(everyone|here)\b`)
+
+// detectEveryoneMention — 'everyone' | 'here' | "". При обоих токенах
+// в теле побеждает everyone (более широкий пинг).
+func detectEveryoneMention(body string) string {
+	kind := ""
+	for _, m := range everyoneRe.FindAllStringSubmatch(body, -1) {
+		if m[1] == "everyone" {
+			return "everyone"
+		}
+		kind = "here"
+	}
+	return kind
+}
+
 // messageSelectColumns — общий список колонок для list/loadOne, чтобы
 // scanMessageWithReactions работал одинаково. $N плейсхолдеры:
 // $1 — viewer userID (для bool_or в reactions). Каждый вызов добавит
 // свои дополнительные параметры в where после этой константы.
 const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body, m.kind,
         coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
-        m.is_pinned, m.pinned_at, m.link_previews,
+        m.is_pinned, m.pinned_at, m.link_previews, coalesce(m.mention_everyone, ''),
         coalesce(
           (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine, 'userIds', user_ids))
            from (
@@ -174,6 +191,9 @@ type messageView struct {
 	// Wave 2: OG-карточки, заполняет worker (link_preview_jobs). Сырой
 	// jsonb-passthrough — структуру знает worker и клиент.
 	LinkPreviews json.RawMessage `json:"linkPreviews,omitempty"`
+	// Wave 4: 'everyone' | 'here', если автор имел право на массовый пинг.
+	// Клиент подсвечивает токен и считает сообщение mention'ом для всех.
+	MentionEveryone string `json:"mentionEveryone,omitempty"`
 }
 
 type createRequest struct {
@@ -433,6 +453,17 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Wave 4: @everyone/@here. Срабатывает только при наличии права —
+	// без него токен остаётся обычным текстом (молча, как deny mention'ов).
+	// В DM массовый пинг бессмыслен (двое участников).
+	mentionEveryone := ""
+	if scope.Kind != "dm" {
+		if kind := detectEveryoneMention(req.Body); kind != "" &&
+			permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageMentionEveryone) {
+			mentionEveryone = kind
+		}
+	}
+
 	tx, err := m.db.Begin(r.Context())
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
@@ -443,9 +474,9 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	messageID := uuid.New()
 	now := time.Now().UTC()
 	_, err = tx.Exec(r.Context(),
-		`insert into messages (id, channel_id, author_user_id, body, client_message_id, created_at, reply_to_message_id)
-		 values ($1, $2, $3, $4, nullif($5, ''), $6, $7)`,
-		messageID, channelID, userID, req.Body, req.ClientMessageID, now, replyToID,
+		`insert into messages (id, channel_id, author_user_id, body, client_message_id, created_at, reply_to_message_id, mention_everyone)
+		 values ($1, $2, $3, $4, nullif($5, ''), $6, $7, nullif($8, ''))`,
+		messageID, channelID, userID, req.Body, req.ClientMessageID, now, replyToID, mentionEveryone,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "SQLSTATE 23505") {
@@ -551,6 +582,29 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 			Snippet:     snippet,
 		}); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not enqueue reply notification")
+			return
+		}
+	}
+
+	// Wave 4: @everyone/@here — recipients развернёт worker по участникам
+	// канала; exclude — те, кто уже получил персональную нотификацию выше.
+	if mentionEveryone != "" {
+		exclude := make([]string, 0, len(mentionRecipients)+2)
+		exclude = append(exclude, userID.String())
+		exclude = append(exclude, mentionRecipients...)
+		if replyAuthorID != nil {
+			exclude = append(exclude, replyAuthorID.String())
+		}
+		if err := notification.Enqueue(r.Context(), tx, notification.KindMentionEveryone, notification.JobPayload{
+			ActorID:     userID.String(),
+			WorkspaceID: scope.WorkspaceID.String(),
+			ChannelID:   channelID.String(),
+			MessageID:   messageID.String(),
+			Snippet:     snippet,
+			MentionKind: mentionEveryone,
+			Exclude:     exclude,
+		}); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not enqueue everyone notification")
 			return
 		}
 	}
@@ -769,6 +823,21 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// Wave 4: пересчёт @everyone/@here. Новые нотификации при edit'е не
+	// шлём (как и для обычных mentions) — только подсветка актуализируется.
+	mentionEveryone := ""
+	if kind := detectEveryoneMention(req.Body); kind != "" &&
+		permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageMentionEveryone) {
+		mentionEveryone = kind
+	}
+	if _, err := tx.Exec(r.Context(),
+		`update messages set mention_everyone = nullif($1, '') where id = $2`,
+		mentionEveryone, messageID,
+	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not refresh everyone mention")
+		return
 	}
 
 	// Wave 2: пересборка link-preview после правки. Есть URL — worker
@@ -1292,6 +1361,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		isPinned         bool
 		pinnedAt         *time.Time
 		linkPreviewsJSON []byte
+		mentionEveryone  string
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
 		replyJSON        []byte
@@ -1299,7 +1369,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		channelName      string
 		highlight        string
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
 		return messageView{}, "", "", err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1337,6 +1407,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		IsPinned:        isPinned,
 		PinnedAt:        pinnedAt,
 		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
+		MentionEveryone: mentionEveryone,
 	}, channelName, highlight, nil
 }
 
@@ -1455,12 +1526,13 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		isPinned          bool
 		pinnedAt          *time.Time
 		linkPreviewsJSON  []byte
+		mentionEveryone   string
 		reactionsJSON     []byte
 		attachmentsJSON   []byte
 		replyJSON         []byte
 		mentionsJSON      []byte
 	)
-	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1498,6 +1570,7 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		IsPinned:        isPinned,
 		PinnedAt:        pinnedAt,
 		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
+		MentionEveryone: mentionEveryone,
 	}, nil
 }
 
@@ -1576,12 +1649,13 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		isPinned         bool
 		pinnedAt         *time.Time
 		linkPreviewsJSON []byte
+		mentionEveryone  string
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
 		replyJSON        []byte
 		mentionsJSON     []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1619,6 +1693,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		IsPinned:        isPinned,
 		PinnedAt:        pinnedAt,
 		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
+		MentionEveryone: mentionEveryone,
 	}, nil
 }
 

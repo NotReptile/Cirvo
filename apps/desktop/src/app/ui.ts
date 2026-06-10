@@ -73,7 +73,6 @@ import {
   getNotificationSettings,
   updateNotificationSettings,
   playNotificationSound,
-  isEveryoneMention,
   SOUND_LABELS,
   type NotificationSoundKind
 } from "./notificationSettings";
@@ -262,6 +261,9 @@ interface Message {
   attachments?: Attachment[];
   replyTo?: ReplySnippet;
   mentions?: string[];
+  // Wave 4: 'everyone' | 'here' — массовый пинг сработал (у автора было
+  // право message.mention_everyone). Без флага токен — обычный текст.
+  mentionEveryone?: "everyone" | "here";
   // Wave 2: OG-карточки, worker заполняет асинхронно (message.previews.updated).
   linkPreviews?: LinkPreview[];
   isPinned?: boolean;
@@ -480,6 +482,7 @@ const ACTION_LABELS_RU: Record<string, string> = {
   "message.react": "Ставить реакции",
   "message.attach": "Прикреплять файлы",
   "message.mention": "Упоминать @username",
+  "message.mention_everyone": "Упоминать @everyone и @here",
   "channel.create": "Создавать каналы",
   "channel.update": "Изменять канал",
   "channel.delete": "Удалять каналы",
@@ -574,11 +577,13 @@ interface NotificationPayload {
   messageId?: string;
   callId?: string;
   snippet?: string;
+  // mention_everyone: 'everyone' | 'here'.
+  mentionKind?: string;
 }
 
 interface NotificationItem {
   id: string;
-  kind: "mention" | "reply" | "call_incoming" | "friend_request" | "friend_accept";
+  kind: "mention" | "mention_everyone" | "reply" | "call_incoming" | "friend_request" | "friend_accept";
   payload: NotificationPayload;
   createdAt: string;
   readAt?: string;
@@ -1768,10 +1773,10 @@ function maybeShowBrowserNotification(item: NotificationItem): void {
   if (chId && isChannelMuted(chId)) return;
   // I.8: глобальные настройки. desktopEnabled = false — не дёргаем popup,
   // но звук всё равно проигрываем (если включён). muteEveryone — глушим
-  // и popup и звук, если payload содержит @everyone/@here.
+  // и popup и звук для массовых пингов.
   const settings = getNotificationSettings();
-  const isEveryone = isEveryoneMention(item.payload.snippet);
-  if (settings.muteEveryone && isEveryone && item.kind !== "call_incoming") return;
+  // Wave 4: серверный kind вместо эвристики по snippet'у.
+  if (settings.muteEveryone && item.kind === "mention_everyone") return;
   playNotificationSound();
   if (!settings.desktopEnabled) return;
   const title = notificationTitle(item);
@@ -1793,6 +1798,8 @@ function notificationTitle(item: NotificationItem): string {
   switch (item.kind) {
     case "mention":
       return `${actor} упомянул вас`;
+    case "mention_everyone":
+      return `${actor} упомянул @${item.payload.mentionKind === "here" ? "here" : "everyone"}`;
     case "reply":
       return `${actor} ответил на ваше сообщение`;
     case "call_incoming":
@@ -2337,7 +2344,7 @@ function renderPinsPopup(): string {
     const author = describePeer(m.authorId);
     const when = formatTimeSmart(m.pinnedAt ?? m.createdAt);
     const preview = m.body
-      ? renderBody(m.body.length > 180 ? m.body.slice(0, 180) + "…" : m.body)
+      ? renderBody(m.body.length > 180 ? m.body.slice(0, 180) + "…" : m.body, m.mentionEveryone)
       : (m.attachments && m.attachments.length > 0 ? `<em>Файл (${m.attachments.length})</em>` : "<em>пусто</em>");
     return `
       <div class="pin-row" data-pin-jump="${m.id}">
@@ -5086,6 +5093,9 @@ function dayLabel(iso: string): string {
 // правилу `[a-z0-9_]{3,32}`. Префикс — начало строки или не-словарный
 // символ, чтобы не матчить email'ы (`hi@user`).
 const MENTION_RE_GLOBAL = /(^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})/g;
+// Wave 4: @everyone/@here — подсвечиваются только если бэк подтвердил
+// (message.mentionEveryone), иначе остаются обычным текстом.
+const EVERYONE_RE_GLOBAL = /(^|[^A-Za-z0-9_])@(everyone|here)\b/g;
 // Wave 2: опциональный язык после ``` — только если за ним перевод строки
 // (```код``` в одну строку без языка не должен съедать первое слово).
 const FENCED_RE = /```(?:([A-Za-z0-9+#-]{1,20})\n)?([\s\S]*?)```/g;
@@ -5108,7 +5118,7 @@ const SPOILER_RE = /\|\|([^|\n]+?)\|\|/g;
 // весь пользовательский текст проходит через escapeHtml, разметка
 // добавляется через известный набор тегов; динамический href строится
 // только из URL, прошедших URL_RE (http/https) и тоже escape'ится.
-function renderBody(body: string): string {
+function renderBody(body: string, mentionEveryone?: string): string {
   const placeholders: string[] = [];
   const stash = (html: string): string => {
     const token = `${placeholders.length}`;
@@ -5157,6 +5167,13 @@ function renderBody(body: string): string {
     const isMe = me === slug;
     return prefix + stash(`<span class="mention${isMe ? " mention-self" : ""}">@${escapeHtml(slug)}</span>`);
   });
+
+  // 4.5) @everyone/@here — только если сервер подтвердил пинг (право было).
+  if (mentionEveryone) {
+    text = text.replace(EVERYONE_RE_GLOBAL, (_full: string, prefix: string, token: string) =>
+      prefix + stash(`<span class="mention mention-everyone">@${token}</span>`)
+    );
+  }
 
   // 5) Эскейпим всё оставшееся. Плейсхолдеры (N) состоят
   //    только из управляющего символа и цифр — escapeHtml их не трогает.
@@ -5274,7 +5291,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
       ${m.isPinned ? `<div class="message-pin-badge" title="Закреплённое сообщение">${icon("pin", { size: 12 })}</div>` : ""}
       ${renderReplySnippet(m.replyTo)}
       ${metaBlock}
-      ${m.body ? `<div class="message-body">${renderBody(m.body)}</div>` : ""}
+      ${m.body ? `<div class="message-body">${renderBody(m.body, m.mentionEveryone)}</div>` : ""}
       ${
         m.attachments && m.attachments.length > 0
           ? `<div class="attachments">${m.attachments.map((a) => renderAttachment(a)).join("")}</div>`
@@ -6322,6 +6339,7 @@ const ALL_PERMISSION_ACTIONS = [
   "message.moderate", "invite.manage", "audit.read",
   "member.manage_role", "member.kick",
   "message.write", "message.react", "message.attach", "message.mention",
+  "message.mention_everyone",
   "workspace.update"
 ];
 
@@ -6697,6 +6715,7 @@ function renderNotificationItem(n: NotificationItem): string {
   const kindIcon =
     n.kind === "call_incoming" ? "📞" :
     n.kind === "reply" ? "↩" :
+    n.kind === "mention_everyone" ? "📣" :
     n.kind === "friend_request" || n.kind === "friend_accept" ? "👥" : "@";
   return `
     <li class="notif-item ${unread ? "unread" : ""}" data-notif-id="${n.id}">
@@ -7525,8 +7544,7 @@ function renderSettingsNotificationsTab(): string {
       </label>
       <small class="settings-hint">
         Сами упоминания в чате всё равно подсветятся; глушится только всплывающее
-        уведомление и звук. Эвристика по тексту сообщения — серверный @everyone
-        ещё не реализован.
+        уведомление и звук.
       </small>
     </div>
   `;
@@ -10836,15 +10854,28 @@ function onMessageListScroll(e: Event): void {
 
 const MENTION_TOKEN_RE = /(?:^|[^A-Za-z0-9_])@([a-z0-9_]{0,32})$/;
 
-function filterMentionMatches(query: string): Member[] {
+// MentionOption — элемент попапа: реальный участник либо псевдо-пункт
+// @everyone/@here (Wave 4). Псевдо-пункты не показываем в DM.
+interface MentionOption {
+  username: string;
+  displayName?: string;
+}
+
+function filterMentionMatches(query: string): MentionOption[] {
   const q = query.toLowerCase();
   const meId = state.me?.id;
-  const out: Member[] = [];
+  const out: MentionOption[] = [];
   for (const m of state.members) {
     if (m.userId === meId) continue;
     if (!m.username.startsWith(q)) continue;
     out.push(m);
     if (out.length >= 8) break;
+  }
+  // @everyone/@here — в конце списка, только в workspace-каналах. Сервер
+  // сам молча проигнорит пинг, если права message.mention_everyone нет.
+  if (!state.dmMode) {
+    if ("everyone".startsWith(q)) out.push({ username: "everyone", displayName: "Уведомить всех участников" });
+    if ("here".startsWith(q)) out.push({ username: "here", displayName: "Уведомить участников онлайн" });
   }
   return out;
 }
@@ -10870,7 +10901,7 @@ function updateMentionPopup(input: HTMLInputElement, popup: HTMLDivElement): voi
   popup.hidden = false;
 }
 
-function renderMentionPopupContent(popup: HTMLDivElement, matches: Member[], selectIndex: number): void {
+function renderMentionPopupContent(popup: HTMLDivElement, matches: MentionOption[], selectIndex: number): void {
   popup.innerHTML = matches
     .map(
       (m, i) => `<div class="mention-item${i === selectIndex ? " selected" : ""}" data-mention-username="${escapeHtml(m.username)}">

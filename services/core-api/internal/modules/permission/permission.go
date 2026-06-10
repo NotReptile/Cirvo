@@ -50,6 +50,10 @@ const (
 	MessageReact   Action = "message.react"
 	MessageAttach  Action = "message.attach"
 	MessageMention Action = "message.mention"
+	// MessageMentionEveryone — массовый пинг @everyone/@here. Отдельное от
+	// MessageMention право: шумное, по умолчанию только owner/admin/moderator
+	// (backfill — миграция 32). Без права токен остаётся обычным текстом.
+	MessageMentionEveryone Action = "message.mention_everyone"
 
 	WorkspaceUpdate Action = "workspace.update"
 	// WorkspaceDelete — удаление воркспейса целиком (cascade). По
@@ -81,6 +85,7 @@ var AllActions = []Action{
 	MessageReact,
 	MessageAttach,
 	MessageMention,
+	MessageMentionEveryone,
 	WorkspaceUpdate,
 	WorkspaceDelete,
 	ChannelView,
@@ -93,6 +98,7 @@ var ChannelActions = []Action{
 	MessageReact,
 	MessageAttach,
 	MessageMention,
+	MessageMentionEveryone,
 	ChannelManageMembers,
 	ChannelUpdate,
 }
@@ -107,14 +113,14 @@ var baseHardcoded = map[string]map[Action]struct{}{
 	roleAdmin: setOf(
 		ChannelCreate, ChannelUpdate, ChannelDelete, ChannelManageMembers,
 		MessageModerate, InviteManage, AuditRead, MemberManageRole, MemberKick,
-		MessageWrite, MessageReact, MessageAttach, MessageMention,
+		MessageWrite, MessageReact, MessageAttach, MessageMention, MessageMentionEveryone,
 		WorkspaceUpdate,
 		ChannelView,
 	),
 	roleModerator: setOf(
 		ChannelCreate, ChannelUpdate, ChannelDelete, ChannelManageMembers,
 		MessageModerate, InviteManage, AuditRead, MemberKick,
-		MessageWrite, MessageReact, MessageAttach, MessageMention,
+		MessageWrite, MessageReact, MessageAttach, MessageMention, MessageMentionEveryone,
 		ChannelView,
 	),
 	roleMember: setOf(

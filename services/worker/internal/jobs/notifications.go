@@ -46,6 +46,10 @@ type notificationPayload struct {
 	MessageID   string   `json:"messageId,omitempty"`
 	CallID      string   `json:"callId,omitempty"`
 	Snippet     string   `json:"snippet,omitempty"`
+	// mention_everyone (Wave 4): kind пинга ('everyone'|'here') и кого
+	// исключить из развёрнутого списка (уже получили персональные нотификации).
+	MentionKind string   `json:"mentionKind,omitempty"`
+	Exclude     []string `json:"exclude,omitempty"`
 }
 
 type NotificationRunner struct {
@@ -143,22 +147,32 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 	if err := json.Unmarshal(job.Payload, &p); err != nil {
 		return fmt.Errorf("decode payload: %w", err)
 	}
-	if len(p.Recipients) == 0 {
+	recipients := p.Recipients
+	// Wave 4: mention_everyone приходит без recipients — разворачиваем по
+	// участникам канала на момент доставки.
+	if job.Kind == "mention_everyone" {
+		expanded, err := r.expandChannelRecipients(ctx, p.ChannelID, p.Exclude)
+		if err != nil {
+			return fmt.Errorf("expand everyone recipients: %w", err)
+		}
+		recipients = expanded
+	}
+	if len(recipients) == 0 {
 		// Пустой список — задача невалидна, но раскладывать нечего;
 		// помечаем done чтобы не ретраить.
 		return nil
 	}
 
-	for _, raw := range p.Recipients {
+	for _, raw := range recipients {
 		uid, err := uuid.Parse(raw)
 		if err != nil {
 			r.logger.Warn("notification: invalid recipient uuid", "value", raw)
 			continue
 		}
 		// Wave 4: эффективный уровень получателя (канал ← воркспейс ← 'all').
-		// 'none' глушит mention/reply; call_incoming и friend_* не канало-
-		// привязаны (ChannelID пуст) и проходят всегда.
-		if (job.Kind == "mention" || job.Kind == "reply") && p.ChannelID != "" {
+		// 'none' глушит mention/reply/mention_everyone; call_incoming и
+		// friend_* не канало-привязаны (ChannelID пуст) и проходят всегда.
+		if (job.Kind == "mention" || job.Kind == "reply" || job.Kind == "mention_everyone") && p.ChannelID != "" {
 			if r.effectiveLevel(ctx, uid, p.ChannelID, p.WorkspaceID) == "none" {
 				continue
 			}
@@ -173,6 +187,9 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 			"messageId":   p.MessageID,
 			"callId":      p.CallID,
 			"snippet":     p.Snippet,
+		}
+		if p.MentionKind != "" {
+			row["mentionKind"] = p.MentionKind
 		}
 		rowJSON, _ := json.Marshal(row)
 		now := time.Now().UTC()
@@ -200,6 +217,49 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 		}
 	}
 	return nil
+}
+
+// expandChannelRecipients — список user_id для @everyone/@here: участники
+// воркспейса канала; для приватного канала — только записанные в
+// channel_members (та же видимость, что в core-api handleListUnread).
+// exclude — автор и уже-уведомлённые персонально. @here пока доставляется
+// как @everyone: presence живёт в памяти realtime-хаба и worker'у недоступен.
+func (r *NotificationRunner) expandChannelRecipients(ctx context.Context, channelID string, exclude []string) ([]string, error) {
+	chID, err := uuid.Parse(channelID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid channel id %q", channelID)
+	}
+	rows, err := r.db.Query(ctx, `
+		select wm.user_id
+		from channels c
+		join workspace_members wm on wm.workspace_id = c.workspace_id
+		where c.id = $1
+		  and (c.is_private = false
+		       or exists (select 1 from channel_members cm
+		                   where cm.channel_id = c.id and cm.user_id = wm.user_id))`,
+		chID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	skip := make(map[string]struct{}, len(exclude))
+	for _, e := range exclude {
+		skip[e] = struct{}{}
+	}
+	out := make([]string, 0, 32)
+	for rows.Next() {
+		var uid uuid.UUID
+		if err := rows.Scan(&uid); err != nil {
+			continue
+		}
+		if _, ok := skip[uid.String()]; ok {
+			continue
+		}
+		out = append(out, uid.String())
+	}
+	return out, rows.Err()
 }
 
 // effectiveLevel — явный канальный уровень, иначе workspace-уровень, иначе

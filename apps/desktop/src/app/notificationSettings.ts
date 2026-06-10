@@ -1,8 +1,8 @@
 // I.8: глобальные настройки уведомлений. Frontend-only, персистится в
 // localStorage. Влияет на (а) показывать ли desktop-notification через
 // Web Notifications API, (b) проигрывать ли звук при входящем event'е,
-// (c) подавлять ли @everyone/@here-уведомления (feature ещё не
-// реализована серверно, флаг — задел на будущее).
+// (c) подавлять ли @everyone/@here-уведомления (Wave 4: сервер шлёт
+// kind="mention_everyone", флаг глушит их popup+звук).
 
 // Wave 4: выбор звука. Все варианты синтезируются WebAudio — без ассетов.
 export type NotificationSoundKind = "beep" | "ding" | "pop" | "chime";
@@ -120,9 +120,3 @@ export function playNotificationSound(preview?: NotificationSoundKind): void {
   }
 }
 
-// Сейчас @everyone серверно ещё не реализован — пока эвристика по тексту
-// сообщения. Когда серверный mention.kind="everyone" появится — заменим.
-export function isEveryoneMention(body: string | undefined): boolean {
-  if (!body) return false;
-  return /(?:^|\s)@(everyone|here)\b/i.test(body);
-}

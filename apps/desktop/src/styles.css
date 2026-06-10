@@ -802,6 +802,12 @@ input[type="color"] {
   background: rgba(250, 166, 26, 0.22);
   color: #ffd980;
 }
+/* Wave 4: подтверждённый сервером @everyone/@here — как mention-self
+   (пинг адресован и тебе тоже). */
+.mention.mention-everyone {
+  background: rgba(250, 166, 26, 0.22);
+  color: #ffd980;
+}
 
 /* C.3: inline markdown */
 .message-body a {

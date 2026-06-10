@@ -101,7 +101,7 @@ var defaultRoles = []defaultRole{
 		Actions: []string{
 			"channel.create", "channel.update", "channel.delete", "channel.manage_members",
 			"message.moderate", "invite.manage", "audit.read", "member.manage_role", "member.kick",
-			"message.write", "message.react", "message.attach", "message.mention",
+			"message.write", "message.react", "message.attach", "message.mention", "message.mention_everyone",
 			"workspace.update", "workspace.delete",
 			"channel.view",
 		},
@@ -115,7 +115,7 @@ var defaultRoles = []defaultRole{
 		Actions: []string{
 			"channel.create", "channel.update", "channel.delete", "channel.manage_members",
 			"message.moderate", "invite.manage", "audit.read", "member.manage_role", "member.kick",
-			"message.write", "message.react", "message.attach", "message.mention",
+			"message.write", "message.react", "message.attach", "message.mention", "message.mention_everyone",
 			"workspace.update",
 			"channel.view",
 		},
@@ -129,7 +129,7 @@ var defaultRoles = []defaultRole{
 		Actions: []string{
 			"channel.create", "channel.update", "channel.delete", "channel.manage_members",
 			"message.moderate", "invite.manage", "audit.read", "member.kick",
-			"message.write", "message.react", "message.attach", "message.mention",
+			"message.write", "message.react", "message.attach", "message.mention", "message.mention_everyone",
 			"channel.view",
 		},
 	},
