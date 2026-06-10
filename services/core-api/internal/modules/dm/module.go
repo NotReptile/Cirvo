@@ -25,6 +25,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/friend"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
@@ -175,6 +176,11 @@ func (m *Module) handleOpen(w http.ResponseWriter, r *http.Request) {
 	}
 	if peerID == userID {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "cannot open DM with yourself")
+		return
+	}
+	// Wave 3: блокировка (в любую сторону) закрывает открытие DM.
+	if friend.IsBlocked(r.Context(), m.db, userID, peerID) {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "direct messages are not available with this user")
 		return
 	}
 

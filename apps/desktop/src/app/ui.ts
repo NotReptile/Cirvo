@@ -333,6 +333,25 @@ interface DMItem {
   unreadCount: number;
 }
 
+// Wave 3: друзья. status относительный к текущему юзеру:
+// pending_in — ждёт моего ответа, pending_out — я отправил,
+// blocked — я заблокировал (чужой блок против меня сервер не отдаёт).
+type FriendStatus = "accepted" | "pending_in" | "pending_out" | "blocked";
+
+interface FriendItem {
+  userId: string;
+  username: string;
+  displayName?: string;
+  avatarMediaId?: string;
+  presenceMode?: PresenceMode;
+  customStatus?: string;
+  online: boolean;
+  status: FriendStatus;
+  since: string;
+}
+
+type FriendsTab = "all" | "online" | "pending" | "blocked";
+
 type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | "invites" | null;
 
 // I.1: полноэкранная settings-модалка по Discord-pattern. Левый sidebar
@@ -557,7 +576,7 @@ interface NotificationPayload {
 
 interface NotificationItem {
   id: string;
-  kind: "mention" | "reply" | "call_incoming";
+  kind: "mention" | "reply" | "call_incoming" | "friend_request" | "friend_accept";
   payload: NotificationPayload;
   createdAt: string;
   readAt?: string;
@@ -686,6 +705,15 @@ interface AppState {
   dms: DMItem[];
   dmsLoading: boolean;
   dmFindQuery: string;
+  // Wave 3: друзья + блокировки.
+  friends: FriendItem[];
+  friendsLoading: boolean;
+  friendsTab: FriendsTab;
+  friendAddError: string | null;
+  friendAddOk: string | null;
+  blockedIds: Set<string>;
+  // Раскрытые «Сообщение заблокированного пользователя» (per-message, transient).
+  revealedBlocked: Set<string>;
   dmFindError: string | null;
   dmOpening: boolean;
   dmUnreadTotal: number;
@@ -876,6 +904,13 @@ const state: AppState = {
   dmFindError: null,
   dmOpening: false,
   dmUnreadTotal: 0,
+  friends: [],
+  friendsLoading: false,
+  friendsTab: "all",
+  friendAddError: null,
+  friendAddOk: null,
+  blockedIds: new Set<string>(),
+  revealedBlocked: new Set<string>(),
   createChannel: {
     workspaceId: null,
     kind: "text",
@@ -1065,7 +1100,10 @@ export function renderApp(
         dms: [],
         dmUnreadTotal: 0,
         dmFindQuery: "",
-        dmFindError: null
+        dmFindError: null,
+        friends: [],
+        blockedIds: new Set<string>(),
+        revealedBlocked: new Set<string>()
       });
       render();
     }
@@ -1086,6 +1124,7 @@ async function bootstrapSession(): Promise<void> {
     await loadWorkspaces();
     void loadNotifications();
     void loadDMs();
+    void loadFriends();
     if (getNotificationSettings().desktopEnabled) void requestBrowserNotificationPermission();
     startIdleAutoDetect();
     void initUpdateCheck();
@@ -1438,12 +1477,62 @@ function enterDMMode(): void {
   }
   render();
   void loadDMs();
+  void loadFriends();
 }
 
 function exitDMMode(workspaceId: string): void {
   state.dmMode = false;
   state.dmFindError = null;
   void selectWorkspace(workspaceId);
+}
+
+// ---- Wave 3: друзья ---------------------------------------------------------
+
+async function loadFriends(): Promise<void> {
+  state.friendsLoading = true;
+  try {
+    const data = await httpClient.get<{ items: FriendItem[] }>("/api/v1/friends");
+    state.friends = data.items ?? [];
+    state.blockedIds = new Set(state.friends.filter((f) => f.status === "blocked").map((f) => f.userId));
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    state.friendsLoading = false;
+    render();
+  }
+}
+
+async function sendFriendRequest(username: string): Promise<void> {
+  state.friendAddError = null;
+  state.friendAddOk = null;
+  try {
+    const res = await httpClient.post<{ status: string }>("/api/v1/friends/requests", { username });
+    state.friendAddOk = res.status === "accepted"
+      ? `Вы теперь друзья с @${username}`
+      : `Заявка отправлена @${username}`;
+    await loadFriends();
+  } catch (err) {
+    state.friendAddError = describeError(err);
+    render();
+  }
+}
+
+async function friendAction(userId: string, action: "accept" | "remove" | "block" | "unblock"): Promise<void> {
+  try {
+    if (action === "accept") {
+      await httpClient.post(`/api/v1/friends/${userId}/accept`, {});
+    } else if (action === "remove") {
+      await httpClient.del(`/api/v1/friends/${userId}`);
+    } else if (action === "block") {
+      await httpClient.put(`/api/v1/friends/${userId}/block`, {});
+    } else {
+      await httpClient.del(`/api/v1/friends/${userId}/block`);
+    }
+    await loadFriends();
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+  }
 }
 
 async function markChannelRead(channelId: string, messageId: string): Promise<void> {
@@ -1646,11 +1735,17 @@ function notificationTitle(item: NotificationItem): string {
       return `${actor} ответил на ваше сообщение`;
     case "call_incoming":
       return `Входящий звонок от ${actor}`;
+    case "friend_request":
+      return `${actor} хочет добавить вас в друзья`;
+    case "friend_accept":
+      return `${actor} принял вашу заявку в друзья`;
   }
 }
 
 function notificationBody(item: NotificationItem): string {
   if (item.kind === "call_incoming") return "Нажмите, чтобы открыть RuCord";
+  if (item.kind === "friend_request") return "Откройте вкладку «Друзья», чтобы ответить";
+  if (item.kind === "friend_accept") return "";
   return item.payload.snippet ?? "";
 }
 
@@ -2043,6 +2138,16 @@ async function openNotification(item: NotificationItem): Promise<void> {
       /* idempotent */
     });
   }
+  // Wave 3: заявки в друзья ведут на экран «Друзья» (DM-home, таб pending).
+  if (item.kind === "friend_request" || item.kind === "friend_accept") {
+    state.friendsTab = item.kind === "friend_request" ? "pending" : "all";
+    state.dmMode = true;
+    state.selectedChannelId = null;
+    state.messages = [];
+    render();
+    void loadFriends();
+    return;
+  }
   const targetChannel = item.payload.channelId;
   const targetWorkspace = item.payload.workspaceId;
   // DM-канал — workspaceId payload пустой, channelId есть. Выходим из
@@ -2385,6 +2490,12 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
   if (event.event === "typing.start") {
     const p = event.payload as { channelId: string; userId: string };
     if (p?.channelId && p?.userId) noteTyping(p.channelId, p.userId);
+    return;
+  }
+  // Wave 3: изменения дружбы — перетягиваем список (события редкие,
+  // полный reload дешевле инкрементального state-менеджмента).
+  if (event.event === "friend.request" || event.event === "friend.accepted" || event.event === "friend.removed") {
+    void loadFriends();
     return;
   }
   // C.8: уведомления приходят с UserID-routing (workspaceId/channelId не
@@ -2739,7 +2850,9 @@ const PRESERVED_INPUT_SELECTORS = [
   "#search-input",
   "#admin-user-search",
   "#dm-find-input",
-  "#audit-filter-actor"
+  "#audit-filter-actor",
+  "#friend-add-input",
+  "#user-note-input"
 ];
 
 interface InputSnapshot {
@@ -3353,6 +3466,8 @@ function renderWorkspaceMenu(): string {
 // кешируем и перерисовываемся по приезду. null в кеше = «fetch уже в полёте
 // или упал» (защита от повторных запросов на каждый render).
 const peerProfileCache = new Map<string, UserProfileData | null>();
+// Wave 3: кеш приватных заметок (userId → note) — анти-рефетч при re-render'ах попапа.
+const userNoteCache = new Map<string, string>();
 
 function resolvePeerAvatarMediaId(userId: string | null): string | undefined {
   if (!userId) return undefined;
@@ -3572,6 +3687,9 @@ function describePeer(userId: string | null): string {
   // DM-peer'ы лежат в state.dms — отдельный источник от workspace-членов.
   const dm = state.dms.find((d) => d.peer.userId === userId);
   if (dm) return dm.peer.displayName || dm.peer.username;
+  // Wave 3: друзья — третий источник (friend-экран вне workspace-контекста).
+  const fr = state.friends.find((f) => f.userId === userId);
+  if (fr) return fr.displayName || fr.username;
   return userId.slice(0, 8);
 }
 
@@ -3818,6 +3936,81 @@ function renderDMSidebarList(): string {
 
 // G.8: home-экран DM (когда в dm-mode, но никакой DM не выбран).
 // Поле поиска по username + список DM в виде крупных карточек.
+// Wave 3: секция «Друзья» в DM-home. Табы Все/В сети/Ожидание/Заблокированные,
+// форма добавления по username, действия per-row.
+function renderFriendsSection(): string {
+  const tab = state.friendsTab;
+  const accepted = state.friends.filter((f) => f.status === "accepted");
+  const pending = state.friends.filter((f) => f.status === "pending_in" || f.status === "pending_out");
+  const pendingIn = state.friends.filter((f) => f.status === "pending_in");
+  const blocked = state.friends.filter((f) => f.status === "blocked");
+  const list =
+    tab === "all" ? accepted :
+    tab === "online" ? accepted.filter((f) => f.online) :
+    tab === "pending" ? pending : blocked;
+
+  const tabBtn = (id: FriendsTab, label: string, count?: number) => `
+    <button class="friends-tab${tab === id ? " active" : ""}" data-friends-tab="${id}">
+      ${label}${count ? ` <span class="friends-tab-badge">${count}</span>` : ""}
+    </button>`;
+
+  const rows = list.length === 0
+    ? `<div class="friends-empty">${
+        tab === "pending" ? "Нет заявок" :
+        tab === "blocked" ? "Никто не заблокирован" :
+        tab === "online" ? "Никого нет в сети" :
+        "Пока нет друзей — добавь по username выше"}</div>`
+    : `<ul class="friends-list">${list.map((f) => {
+        const name = f.displayName || f.username;
+        const effMode = f.presenceMode ?? (f.online ? "online" : "offline");
+        const sub =
+          f.status === "pending_in" ? "Входящая заявка" :
+          f.status === "pending_out" ? "Исходящая заявка" :
+          f.status === "blocked" ? "Заблокирован" :
+          f.customStatus || "@" + f.username;
+        const actions =
+          f.status === "pending_in"
+            ? `<button class="friends-act ok" data-friend-accept="${f.userId}" title="Принять">✓</button>
+               <button class="friends-act danger" data-friend-remove="${f.userId}" title="Отклонить">✕</button>`
+            : f.status === "pending_out"
+              ? `<button class="friends-act danger" data-friend-remove="${f.userId}" title="Отменить заявку">✕</button>`
+              : f.status === "blocked"
+                ? `<button class="friends-act" data-friend-unblock="${f.userId}">Разблокировать</button>`
+                : `<button class="friends-act" data-friend-msg="${f.userId}" title="Написать">${icon("reply", { size: 16 })}</button>
+                   <button class="friends-act danger" data-friend-remove-confirm="${f.userId}" title="Удалить из друзей">✕</button>`;
+        return `
+          <li class="friends-row" data-friend-profile="${f.userId}">
+            <span class="dm-home-avatar">
+              ${renderAvatar({ avatarMediaId: f.avatarMediaId, fallbackText: name, sizePx: 36 })}
+              ${f.status === "blocked" ? "" : `<span class="presence-dot ${presenceDotClass(effMode)}"></span>`}
+            </span>
+            <span class="friends-row-body">
+              <span class="friends-row-name">${escapeHtml(name)}</span>
+              <span class="friends-row-sub">${escapeHtml(sub)}</span>
+            </span>
+            <span class="friends-row-actions">${actions}</span>
+          </li>`;
+      }).join("")}</ul>`;
+
+  return `
+    <section class="friends-section">
+      <form id="friend-add-form" class="dm-home-find">
+        <input id="friend-add-input" name="username" placeholder="Добавить друга по username" autocomplete="off" maxlength="64" />
+        <button type="submit">Отправить заявку</button>
+      </form>
+      ${state.friendAddError ? `<div class="dm-home-error">${escapeHtml(state.friendAddError)}</div>` : ""}
+      ${state.friendAddOk ? `<div class="friends-ok">${escapeHtml(state.friendAddOk)}</div>` : ""}
+      <div class="friends-tabs">
+        ${tabBtn("all", "Все")}
+        ${tabBtn("online", "В сети")}
+        ${tabBtn("pending", "Ожидание", pendingIn.length)}
+        ${tabBtn("blocked", "Заблокированные")}
+      </div>
+      ${state.friendsLoading && state.friends.length === 0 ? `<div class="friends-empty">Загрузка…</div>` : rows}
+    </section>
+  `;
+}
+
 function renderDMHome(): string {
   const errBlock = state.dmFindError
     ? `<div class="dm-home-error">${escapeHtml(state.dmFindError)}</div>`
@@ -3863,6 +4056,8 @@ function renderDMHome(): string {
         </form>
         ${errBlock}
       </header>
+      ${renderFriendsSection()}
+      <h3 class="dm-home-subtitle">Беседы</h3>
       ${cards}
     </div>
   `;
@@ -4904,6 +5099,16 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   if (m.kind && m.kind !== "user") {
     return renderSystemMessage(m);
   }
+  // Wave 3: сообщения заблокированных свёрнуты (Discord-pattern). Клик
+  // раскрывает конкретное сообщение до следующего полного relog'а.
+  if (state.blockedIds.has(m.authorId) && !state.revealedBlocked.has(m.id)) {
+    return `
+      <div class="message message-blocked" data-reveal-blocked="${m.id}" title="Нажми, чтобы показать">
+        <span>Сообщение заблокированного пользователя</span>
+        <button class="ghost">Показать</button>
+      </div>
+    `;
+  }
   const isMine = state.me?.id === m.authorId;
   const selectedWorkspace = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
   const canModerate = !!selectedWorkspace && ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
@@ -5121,12 +5326,38 @@ function renderUserProfilePopup(): string {
               : `<div class="user-profile-actions">
                   <button class="primary user-profile-dm" data-user-id="${escapeHtml(userId)}">${icon("reply")} Сообщение</button>
                   ${!inCall ? `<button class="ghost user-profile-call" data-user-id="${escapeHtml(userId)}">${icon("phone")} Позвонить</button>` : ""}
+                </div>
+                ${renderProfileFriendActions(userId)}
+                <div class="user-profile-note">
+                  <label for="user-note-input">Заметка (видна только вам)</label>
+                  <textarea id="user-note-input" data-note-user="${escapeHtml(userId)}" maxlength="2000" rows="2" placeholder="Например: познакомились на сервере X"></textarea>
                 </div>`
           }
         </div>
       </div>
     </div>
   `;
+}
+
+// Wave 3: кнопки дружбы/блока в profile-popup, по текущему статусу пары.
+function renderProfileFriendActions(userId: string): string {
+  const rel = state.friends.find((f) => f.userId === userId);
+  const status = rel?.status;
+  const friendBtn =
+    status === "accepted"
+      ? `<button class="ghost" data-friend-remove-confirm="${userId}">✓ В друзьях</button>`
+      : status === "pending_out"
+        ? `<button class="ghost" data-friend-remove="${userId}">Заявка отправлена ✕</button>`
+        : status === "pending_in"
+          ? `<button class="primary" data-friend-accept="${userId}">Принять заявку</button>`
+          : status === "blocked"
+            ? ""
+            : `<button class="ghost" data-friend-add="${userId}">Добавить в друзья</button>`;
+  const blockBtn =
+    status === "blocked"
+      ? `<button class="ghost" data-friend-unblock="${userId}">Разблокировать</button>`
+      : `<button class="ghost danger" data-friend-block="${userId}">Заблокировать</button>`;
+  return `<div class="user-profile-actions user-profile-friend-actions">${friendBtn}${blockBtn}</div>`;
 }
 
 function openUserProfile(userId: string): void {
@@ -6382,7 +6613,8 @@ function renderNotificationItem(n: NotificationItem): string {
   const body = notificationBody(n);
   const kindIcon =
     n.kind === "call_incoming" ? "📞" :
-    n.kind === "reply" ? "↩" : "@";
+    n.kind === "reply" ? "↩" :
+    n.kind === "friend_request" || n.kind === "friend_accept" ? "👥" : "@";
   return `
     <li class="notif-item ${unread ? "unread" : ""}" data-notif-id="${n.id}">
       <span class="notif-kind">${kindIcon}</span>
@@ -9213,6 +9445,134 @@ function attachShellHandlers(): void {
         return;
       }
       void openDMWith({ username: raw });
+    });
+  }
+
+  // Wave 3: друзья — форма добавления, табы, действия per-row.
+  rootEl.querySelector<HTMLFormElement>("#friend-add-form")?.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const input = rootEl.querySelector<HTMLInputElement>("#friend-add-input");
+    const username = input?.value.trim().toLowerCase().replace(/^@/, "") ?? "";
+    if (!username) return;
+    if (input) input.value = "";
+    void sendFriendRequest(username);
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friends-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.friendsTab = btn.dataset.friendsTab as FriendsTab;
+      state.friendAddError = null;
+      state.friendAddOk = null;
+      render();
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friend-accept]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void friendAction(btn.dataset.friendAccept!, "accept");
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friend-remove]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void friendAction(btn.dataset.friendRemove!, "remove");
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friend-remove-confirm]").forEach((btn) => {
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const userId = btn.dataset.friendRemoveConfirm!;
+      const ok = await confirmDialog({
+        title: "Удалить из друзей",
+        body: `Убрать ${describePeer(userId)} из друзей?`,
+        confirmLabel: "Удалить",
+        danger: true
+      });
+      if (ok) void friendAction(userId, "remove");
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friend-unblock]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void friendAction(btn.dataset.friendUnblock!, "unblock");
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friend-msg]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void openDMWith({ userId: btn.dataset.friendMsg! });
+    });
+  });
+  rootEl.querySelectorAll<HTMLElement>("[data-friend-profile]").forEach((row) => {
+    row.addEventListener("click", () => {
+      openUserProfile(row.dataset.friendProfile!);
+    });
+  });
+  // Collapse-плашка сообщения заблокированного — клик раскрывает.
+  rootEl.querySelectorAll<HTMLElement>("[data-reveal-blocked]").forEach((el) => {
+    el.addEventListener("click", () => {
+      state.revealedBlocked.add(el.dataset.revealBlocked!);
+      render();
+    });
+  });
+  // Profile-popup: добавить в друзья / заблокировать.
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friend-add]").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void (async () => {
+        try {
+          await httpClient.post("/api/v1/friends/requests", { userId: btn.dataset.friendAdd });
+          setTransientStatus("Заявка в друзья отправлена");
+          await loadFriends();
+        } catch (err) {
+          state.status = describeError(err);
+          render();
+        }
+      })();
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-friend-block]").forEach((btn) => {
+    btn.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const userId = btn.dataset.friendBlock!;
+      const ok = await confirmDialog({
+        title: "Заблокировать пользователя",
+        body: `${describePeer(userId)} не сможет писать вам в ЛС и звонить, а его сообщения в общих каналах будут свёрнуты. Он об этом не узнает.`,
+        confirmLabel: "Заблокировать",
+        danger: true
+      });
+      if (ok) void friendAction(userId, "block");
+    });
+  });
+  // Wave 3: приватная заметка в profile-popup. Кеш — чтобы re-render'ы
+  // попапа не дёргали GET повторно; PUT на change (blur).
+  const noteEl = rootEl.querySelector<HTMLTextAreaElement>("#user-note-input");
+  if (noteEl) {
+    const noteUserId = noteEl.dataset.noteUser!;
+    if (userNoteCache.has(noteUserId)) {
+      if (!noteEl.value) noteEl.value = userNoteCache.get(noteUserId)!;
+    } else {
+      userNoteCache.set(noteUserId, "");
+      void httpClient
+        .get<{ note: string }>(`/api/v1/users/${noteUserId}/note`)
+        .then((res) => {
+          userNoteCache.set(noteUserId, res.note ?? "");
+          const fresh = rootEl.querySelector<HTMLTextAreaElement>(`#user-note-input[data-note-user="${CSS.escape(noteUserId)}"]`);
+          if (fresh && !fresh.value) fresh.value = res.note ?? "";
+        })
+        .catch(() => {
+          /* нет заметки/сети — оставляем пустую */
+        });
+    }
+    noteEl.addEventListener("change", () => {
+      const text = noteEl.value.trim();
+      userNoteCache.set(noteUserId, text);
+      void httpClient
+        .put(`/api/v1/users/${noteUserId}/note`, { note: text })
+        .then(() => setTransientStatus("Заметка сохранена"))
+        .catch((err) => {
+          state.status = describeError(err);
+          render();
+        });
     });
   }
 

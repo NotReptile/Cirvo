@@ -22,6 +22,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/friend"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
@@ -172,14 +173,14 @@ type messageView struct {
 	PinnedAt        *time.Time             `json:"pinnedAt,omitempty"`
 	// Wave 2: OG-карточки, заполняет worker (link_preview_jobs). Сырой
 	// jsonb-passthrough — структуру знает worker и клиент.
-	LinkPreviews    json.RawMessage        `json:"linkPreviews,omitempty"`
+	LinkPreviews json.RawMessage `json:"linkPreviews,omitempty"`
 }
 
 type createRequest struct {
-	Body              string   `json:"body"`
-	ClientMessageID   string   `json:"clientMessageId"`
-	AttachmentIDs     []string `json:"attachmentIds"`
-	ReplyToMessageID  string   `json:"replyToMessageId,omitempty"`
+	Body             string   `json:"body"`
+	ClientMessageID  string   `json:"clientMessageId"`
+	AttachmentIDs    []string `json:"attachmentIds"`
+	ReplyToMessageID string   `json:"replyToMessageId,omitempty"`
 }
 
 type editRequest struct {
@@ -297,6 +298,23 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "writing is disabled in this channel")
 		return
 	}
+	// Wave 3: блокировка закрывает DM в обе стороны. Текст ошибки нарочно
+	// не говорит, кто кого заблокировал.
+	if scope.Kind == "dm" {
+		var ua, ub uuid.UUID
+		if err := m.db.QueryRow(r.Context(),
+			`select user_a, user_b from dm_channels where channel_id = $1`, channelID,
+		).Scan(&ua, &ub); err == nil {
+			peer := ua
+			if ua == userID {
+				peer = ub
+			}
+			if friend.IsBlocked(r.Context(), m.db, userID, peer) {
+				sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "direct messages are not available with this user")
+				return
+			}
+		}
+	}
 
 	var req createRequest
 	if err := sharedhttp.ReadJSON(w, r, &req); err != nil {
@@ -360,8 +378,8 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// Иначе reply теряет смысл (или это попытка процитировать сообщение
 	// из приватного канала, к которому юзер не имеет доступа).
 	var (
-		replyToID       *uuid.UUID
-		replyAuthorID   *uuid.UUID
+		replyToID     *uuid.UUID
+		replyAuthorID *uuid.UUID
 	)
 	if req.ReplyToMessageID != "" {
 		pid, err := uuid.Parse(req.ReplyToMessageID)

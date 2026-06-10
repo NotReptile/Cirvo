@@ -2038,6 +2038,107 @@ input[type="color"] {
   50% { opacity: 1; }
 }
 
+/* Wave 3 — друзья (DM-home), блокировки, заметки */
+.friends-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+.friends-tabs { display: flex; gap: 6px; }
+.friends-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-mute);
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.friends-tab:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
+.friends-tab.active { background: var(--bg-elev-2); color: var(--text); font-weight: 600; }
+.friends-tab-badge {
+  background: #ed4245;
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.friends-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.friends-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.friends-row:hover { background: rgba(255, 255, 255, 0.04); }
+.friends-row-body { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.friends-row-name { font-size: 14px; font-weight: 600; }
+.friends-row-sub {
+  font-size: 12px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.friends-row-actions { display: flex; gap: 6px; }
+.friends-act {
+  border: none;
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.friends-act:hover { background: rgba(255, 255, 255, 0.1); }
+.friends-act.ok { color: #3ba55c; }
+.friends-act.danger { color: #ed4245; }
+.friends-empty { color: var(--text-mute); font-size: 13px; padding: 14px 4px; }
+.friends-ok { color: #3ba55c; font-size: 13px; }
+.dm-home-subtitle {
+  margin: 4px 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+}
+.message.message-blocked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-mute);
+  font-size: 13px;
+  font-style: italic;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.message.message-blocked:hover { opacity: 1; }
+.message.message-blocked button { font-size: 12px; }
+.user-profile-friend-actions { margin-top: 8px; }
+.user-profile-friend-actions button.danger { color: #ed4245; }
+.user-profile-note { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.user-profile-note label { font-size: 11px; text-transform: uppercase; color: var(--text-mute); font-weight: 700; }
+.user-profile-note textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 8px;
+  resize: vertical;
+  min-height: 36px;
+}
+
 /* Wave 2 — link-preview карточки (OG-мета из worker'а) */
 .link-previews {
   display: flex;

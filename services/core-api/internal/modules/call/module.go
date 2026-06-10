@@ -22,6 +22,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/channel"
+	"github.com/NotReptile/RuCord/services/core-api/internal/modules/friend"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/message"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
@@ -123,6 +124,11 @@ func (m *Module) handleStart(w http.ResponseWriter, r *http.Request) {
 		}
 		if !shareWorkspace(r.Context(), m.db, userID, pid) {
 			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "peer not in shared workspace")
+			return
+		}
+		// Wave 3: блокировка закрывает звонки в обе стороны.
+		if friend.IsBlocked(r.Context(), m.db, userID, pid) {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "call is not available with this user")
 			return
 		}
 		peerID = &pid
