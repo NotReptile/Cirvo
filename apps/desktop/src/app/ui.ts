@@ -73,7 +73,9 @@ import {
   getNotificationSettings,
   updateNotificationSettings,
   playNotificationSound,
-  isEveryoneMention
+  isEveryoneMention,
+  SOUND_LABELS,
+  type NotificationSoundKind
 } from "./notificationSettings";
 import { confirmDialog, promptDialog } from "./dialogs";
 
@@ -689,10 +691,10 @@ interface AppState {
   userProfileTarget: string | null;
   // I.6: лениво загруженные расширенные поля профиля для user-profile-popup.
   userProfileData: UserProfileData | null;
-  // Клиентский mute каналов: Set channelId. Подавляет browser-notification
-  // и unread-индикатор для канала. Не персистится на бэке (MVP) —
-  // на refresh сбрасывается, как в Discord-default-state до сохранения.
-  mutedChannels: Set<string>;
+  // Wave 4: персистентные уровни уведомлений (G.9.e). Явные значения с
+  // бэка; эффективный уровень канала = канал ← воркспейс ← 'all'.
+  // 'none' = бывший клиентский mute, теперь переживает refresh и девайсы.
+  notifPrefs: { channels: Record<string, string>; workspaces: Record<string, string> };
   // Пресет качества демонстрации экрана. Применяется при следующем
   // toggleScreenShare; меняется через `<select>` рядом с кнопкой
   // «Поделиться экраном». Персистится в localStorage.
@@ -895,7 +897,7 @@ const state: AppState = {
   memberSidebarOpen: true,
   userProfileTarget: null,
   userProfileData: null,
-  mutedChannels: new Set(),
+  notifPrefs: { channels: {}, workspaces: {} },
   screenShareQuality: loadScreenShareQuality(),
   dmMode: false,
   dms: [],
@@ -1125,6 +1127,7 @@ async function bootstrapSession(): Promise<void> {
     void loadNotifications();
     void loadDMs();
     void loadFriends();
+    void loadNotifPrefs();
     if (getNotificationSettings().desktopEnabled) void requestBrowserNotificationPermission();
     startIdleAutoDetect();
     void initUpdateCheck();
@@ -1486,6 +1489,65 @@ function exitDMMode(workspaceId: string): void {
   void selectWorkspace(workspaceId);
 }
 
+// ---- Wave 4: уровни уведомлений ---------------------------------------------
+
+type NotifLevel = "all" | "mentions" | "none";
+
+function isNotifLevel(v: string | undefined): v is NotifLevel {
+  return v === "all" || v === "mentions" || v === "none";
+}
+
+// Эффективный уровень: явный канальный ← workspace ← 'all'. DM-каналы
+// workspace'а не имеют — для них работает только канальный уровень.
+function channelNotifLevel(channelId: string): NotifLevel {
+  const explicit = state.notifPrefs.channels[channelId];
+  if (isNotifLevel(explicit)) return explicit;
+  const ch = state.channels.find((c) => c.id === channelId);
+  const wsLevel = ch ? state.notifPrefs.workspaces[ch.workspaceId] : undefined;
+  if (isNotifLevel(wsLevel)) return wsLevel;
+  return "all";
+}
+
+function isChannelMuted(channelId: string): boolean {
+  return channelNotifLevel(channelId) === "none";
+}
+
+async function loadNotifPrefs(): Promise<void> {
+  try {
+    const data = await httpClient.get<{ channels: Record<string, string>; workspaces: Record<string, string> }>(
+      "/api/v1/users/me/notification-prefs"
+    );
+    state.notifPrefs = { channels: data.channels ?? {}, workspaces: data.workspaces ?? {} };
+    render();
+  } catch {
+    /* prefs не критичны — остаёмся на 'all' */
+  }
+}
+
+async function setChannelNotifLevel(channelId: string, level: NotifLevel | ""): Promise<void> {
+  try {
+    await httpClient.put(`/api/v1/channels/${channelId}/notification-pref`, { level });
+    if (level === "") delete state.notifPrefs.channels[channelId];
+    else state.notifPrefs.channels[channelId] = level;
+    render();
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+  }
+}
+
+async function setWorkspaceNotifLevel(workspaceId: string, level: NotifLevel | ""): Promise<void> {
+  try {
+    await httpClient.put(`/api/v1/workspaces/${workspaceId}/notification-pref`, { level });
+    if (level === "") delete state.notifPrefs.workspaces[workspaceId];
+    else state.notifPrefs.workspaces[workspaceId] = level;
+    render();
+  } catch (err) {
+    state.status = describeError(err);
+    render();
+  }
+}
+
 // ---- Wave 3: друзья ---------------------------------------------------------
 
 async function loadFriends(): Promise<void> {
@@ -1703,7 +1765,7 @@ function maybeShowBrowserNotification(item: NotificationItem): void {
   // Замьюченный канал — не дёргаем системное уведомление даже на mention.
   // Звонки (call_incoming) приходят без channelId, их не глушим.
   const chId = item.payload.channelId;
-  if (chId && state.mutedChannels.has(chId)) return;
+  if (chId && isChannelMuted(chId)) return;
   // I.8: глобальные настройки. desktopEnabled = false — не дёргаем popup,
   // но звук всё равно проигрываем (если включён). muteEveryone — глушим
   // и popup и звук, если payload содержит @everyone/@here.
@@ -2683,7 +2745,7 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
       // Замьюченный канал — не инкрементим unread (Discord-like: канал
       // в списке остаётся серым, без badge'а). Mentions всё равно приходят
       // через notification.created, обрабатываются выше.
-      if (msg.authorId !== state.me?.id && !state.mutedChannels.has(event.channelId)) {
+      if (msg.authorId !== state.me?.id && !isChannelMuted(event.channelId)) {
         state.unread[event.channelId] = (state.unread[event.channelId] ?? 0) + 1;
         // G.8: если канал — DM, синхронно обновим DMItem (unread + lastMessageAt)
         // и перечитаем суммарный counter для badge на DM-rail-иконке.
@@ -3420,15 +3482,27 @@ function renderChannelMenu(): string {
   const ws = state.workspaces.find((w) => w.id === ch.workspaceId);
   const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
   const canModerate = !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
-  const muted = state.mutedChannels.has(ch.id);
   const hasUnread = (state.unread[ch.id] ?? 0) > 0;
+  // Wave 4: уровень уведомлений. Явный канальный выбор; пусто = наследовать
+  // от воркспейса (показываем что унаследуется).
+  const explicitLevel = state.notifPrefs.channels[ch.id] ?? "";
+  const inheritedLevel = isNotifLevel(state.notifPrefs.workspaces[ch.workspaceId])
+    ? state.notifPrefs.workspaces[ch.workspaceId]
+    : "all";
+  const notifItem = (lvl: string, label: string) =>
+    `<button class="channel-menu-item notif-level${explicitLevel === lvl ? " checked" : ""}" data-channel-action="notif" data-id="${ch.id}" data-level="${lvl}">${explicitLevel === lvl ? "✓" : "·"} ${label}</button>`;
   return `
     <div class="channel-menu-backdrop" data-channel-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
       <div class="channel-menu-header">${channelPrefix(ch)} ${escapeHtml(ch.name)}</div>
       ${hasUnread ? `<button class="channel-menu-item" data-channel-action="mark-read" data-id="${ch.id}">Пометить как прочитанное</button>` : ""}
       ${canModerate ? `<button class="channel-menu-item" data-channel-action="invite" data-id="${ch.id}">Пригласить</button>` : ""}
-      <button class="channel-menu-item" data-channel-action="mute" data-id="${ch.id}">${muted ? "Снять заглушение" : "Заглушить канал"}</button>
+      <div class="channel-menu-separator"></div>
+      <div class="channel-menu-subheader">Уведомления</div>
+      ${notifItem("", `Как на сервере (${inheritedLevel === "all" ? "все" : inheritedLevel === "mentions" ? "@упоминания" : "ничего"})`)}
+      ${notifItem("all", "Все сообщения")}
+      ${notifItem("mentions", "Только @упоминания")}
+      ${notifItem("none", "Ничего (mute)")}
       <div class="channel-menu-separator"></div>
       ${canManage ? `<button class="channel-menu-item" data-channel-action="rename" data-id="${ch.id}">Переименовать</button>` : ""}
       ${canManage ? `<button class="channel-menu-item" data-channel-action="clone" data-id="${ch.id}">Клонировать канал</button>` : ""}
@@ -3455,6 +3529,15 @@ function renderWorkspaceMenu(): string {
       ${canManage && ws.avatarMediaId ? `<button class="channel-menu-item" data-workspace-action="remove-icon" data-id="${ws.id}">Удалить иконку</button>` : ""}
       ${canManage ? `<button class="channel-menu-item" data-workspace-action="manage-roles" data-id="${ws.id}">Настроить роли…</button>` : ""}
       ${canManage ? `<button class="channel-menu-item" data-workspace-action="welcome-channel" data-id="${ws.id}">Канал приветствия…</button>` : ""}
+      <div class="channel-menu-separator"></div>
+      <div class="channel-menu-subheader">Уведомления сервера</div>
+      ${(() => {
+        const cur = state.notifPrefs.workspaces[ws.id] ?? "";
+        const item = (lvl: string, label: string) =>
+          `<button class="channel-menu-item notif-level${cur === lvl ? " checked" : ""}" data-workspace-action="notif" data-id="${ws.id}" data-level="${lvl}">${cur === lvl ? "✓" : "·"} ${label}</button>`;
+        return item("", "Все сообщения") + item("mentions", "Только @упоминания") + item("none", "Ничего (mute)");
+      })()}
+      <div class="channel-menu-separator"></div>
       <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">Скопировать ID</button>
     </div>
   `;
@@ -3795,7 +3878,7 @@ function renderChannelCategory(
   const items = visibleChannels
     .map((ch) => {
       const unread = state.unread[ch.id] ?? 0;
-      const muted = state.mutedChannels.has(ch.id);
+      const muted = isChannelMuted(ch.id);
       const cls = [
         ch.id === state.selectedChannelId ? "active" : "",
         unread > 0 ? "has-unread" : "",
@@ -3897,7 +3980,7 @@ function renderDMSidebarList(): string {
     .map((d) => {
       const active = d.channelId === state.selectedChannelId ? " active" : "";
       const unread = d.unreadCount > 0 ? ` has-unread` : "";
-      const muted = state.mutedChannels.has(d.channelId) ? " muted" : "";
+      const muted = isChannelMuted(d.channelId) ? " muted" : "";
       const name = d.peer.displayName || d.peer.username;
       const badge = d.unreadCount > 0
         ? `<span class="unread-badge">${d.unreadCount > 99 ? "99+" : d.unreadCount}</span>`
@@ -7421,11 +7504,16 @@ function renderSettingsNotificationsTab(): string {
         <input type="checkbox" id="notif-sound" ${s.soundEnabled ? "checked" : ""} />
         <span>Проигрывать звук при упоминании, ответе и входящем звонке</span>
       </label>
-      <div class="settings-row" style="margin-top: 8px;">
+      <div class="settings-row" style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
+        <select id="notif-sound-kind" class="settings-select">
+          ${(Object.keys(SOUND_LABELS) as NotificationSoundKind[])
+            .map((k) => `<option value="${k}"${s.sound === k ? " selected" : ""}>${SOUND_LABELS[k]}</option>`)
+            .join("")}
+        </select>
         <button id="notif-sound-test" class="primary">Прослушать</button>
       </div>
       <small class="settings-hint">
-        Короткий двухчастотный сигнал. Кастомные звуки появятся позже.
+        Все звуки синтезируются на лету — без аудиофайлов.
       </small>
     </div>
 
@@ -7460,12 +7548,14 @@ function attachSettingsNotificationsHandlers(): void {
   rootEl.querySelector<HTMLInputElement>("#notif-mute-everyone")?.addEventListener("change", (e) => {
     updateNotificationSettings({ muteEveryone: (e.currentTarget as HTMLInputElement).checked });
   });
+  rootEl.querySelector<HTMLSelectElement>("#notif-sound-kind")?.addEventListener("change", (e) => {
+    const kind = (e.currentTarget as HTMLSelectElement).value as NotificationSoundKind;
+    updateNotificationSettings({ sound: kind });
+    playNotificationSound(kind); // сразу даём услышать выбор
+  });
   rootEl.querySelector<HTMLButtonElement>("#notif-sound-test")?.addEventListener("click", () => {
-    // Тест звука — игнорим `soundEnabled` чтобы юзер услышал даже когда выключено.
-    const prev = getNotificationSettings().soundEnabled;
-    if (!prev) updateNotificationSettings({ soundEnabled: true });
-    playNotificationSound();
-    if (!prev) updateNotificationSettings({ soundEnabled: false });
+    // preview-аргумент игнорирует soundEnabled — юзер услышит даже при выключенном.
+    playNotificationSound(getNotificationSettings().sound);
   });
   rootEl.querySelector<HTMLButtonElement>("#notif-request-permission")?.addEventListener("click", async () => {
     await requestBrowserNotificationPermission();
@@ -9611,6 +9701,11 @@ function attachShellHandlers(): void {
         render();
         return;
       }
+      if (action === "notif") {
+        const level = (btn.dataset.level ?? "") as NotifLevel | "";
+        void setWorkspaceNotifLevel(id, level);
+        return;
+      }
       if (action === "remove-icon") {
         const ok = await confirmDialog({
           title: "Удалить иконку",
@@ -9757,13 +9852,9 @@ function attachShellHandlers(): void {
         render();
         return;
       }
-      if (action === "mute") {
-        if (state.mutedChannels.has(id)) {
-          state.mutedChannels.delete(id);
-        } else {
-          state.mutedChannels.add(id);
-        }
-        render();
+      if (action === "notif") {
+        const level = (btn.dataset.level ?? "") as NotifLevel | "";
+        void setChannelNotifLevel(id, level);
         return;
       }
       if (action === "clone") {

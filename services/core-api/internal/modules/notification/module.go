@@ -88,6 +88,10 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/notifications/count", m.handleCount)
 	router.Protected("POST /api/v1/notifications/read", m.handleMarkAllRead)
 	router.Protected("POST /api/v1/notifications/{notificationId}/read", m.handleMarkOneRead)
+	// Wave 4 — персистентные уровни уведомлений (см. prefs.go).
+	router.Protected("GET /api/v1/users/me/notification-prefs", m.handleGetPrefs)
+	router.Protected("PUT /api/v1/channels/{channelId}/notification-pref", m.handlePutChannelPref)
+	router.Protected("PUT /api/v1/workspaces/{workspaceId}/notification-pref", m.handlePutWorkspacePref)
 }
 
 type notificationView struct {

@@ -2038,6 +2038,18 @@ input[type="color"] {
   50% { opacity: 1; }
 }
 
+/* Wave 4 — уровни уведомлений в контекст-меню */
+.channel-menu-subheader {
+  padding: 4px 12px 2px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-mute);
+}
+.channel-menu-item.notif-level { font-size: 12px; padding-left: 16px; }
+.channel-menu-item.notif-level.checked { color: var(--accent); font-weight: 600; }
+
 /* Wave 3 — друзья (DM-home), блокировки, заметки */
 .friends-section {
   display: flex;

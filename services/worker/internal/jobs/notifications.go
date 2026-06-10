@@ -155,6 +155,14 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 			r.logger.Warn("notification: invalid recipient uuid", "value", raw)
 			continue
 		}
+		// Wave 4: эффективный уровень получателя (канал ← воркспейс ← 'all').
+		// 'none' глушит mention/reply; call_incoming и friend_* не канало-
+		// привязаны (ChannelID пуст) и проходят всегда.
+		if (job.Kind == "mention" || job.Kind == "reply") && p.ChannelID != "" {
+			if r.effectiveLevel(ctx, uid, p.ChannelID, p.WorkspaceID) == "none" {
+				continue
+			}
+		}
 		notifID := uuid.New()
 		// payload в user_notifications не дублируем recipients (они уже
 		// разложены по user_id-строкам).
@@ -192,6 +200,38 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 		}
 	}
 	return nil
+}
+
+// effectiveLevel — явный канальный уровень, иначе workspace-уровень, иначе
+// 'all'. При ошибке БД — 'all' (fail-open: лучше лишнее уведомление, чем
+// молча потерянное).
+func (r *NotificationRunner) effectiveLevel(ctx context.Context, userID uuid.UUID, channelID, workspaceID string) string {
+	chID, err := uuid.Parse(channelID)
+	if err != nil {
+		return "all"
+	}
+	var level string
+	if wsID, werr := uuid.Parse(workspaceID); werr == nil {
+		if r.db.QueryRow(ctx, `
+			select coalesce(
+			  (select level from user_channel_preferences where user_id = $1 and channel_id = $2),
+			  (select level from user_workspace_preferences where user_id = $1 and workspace_id = $3),
+			  'all')`,
+			userID, chID, wsID,
+		).Scan(&level) == nil {
+			return level
+		}
+		return "all"
+	}
+	if r.db.QueryRow(ctx, `
+		select coalesce(
+		  (select level from user_channel_preferences where user_id = $1 and channel_id = $2),
+		  'all')`,
+		userID, chID,
+	).Scan(&level) == nil {
+		return level
+	}
+	return "all"
 }
 
 func (r *NotificationRunner) markDone(ctx context.Context, job NotificationJob) {
