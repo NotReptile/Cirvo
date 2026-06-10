@@ -356,7 +356,7 @@ interface FriendItem {
 
 type FriendsTab = "all" | "online" | "pending" | "blocked";
 
-type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | "invites" | null;
+type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | "invites" | "categoryPermissions" | null;
 
 // I.1: полноэкранная settings-модалка по Discord-pattern. Левый sidebar
 // с табами + контент справа. Tab «profile» = тело старой profile-card
@@ -459,6 +459,21 @@ interface ChannelPermissionsView {
   overrides: RoleOverride[];
 }
 
+// Wave 5: точечные override'ы конкретных участников канала.
+interface UserOverride {
+  userId: string;
+  granted: string[];
+  denied: string[];
+}
+
+interface ChannelUserPermissionsView {
+  channelId: string;
+  actions: string[];
+  overrides: UserOverride[];
+}
+
+type PermDraft = Record<string, Record<string, "inherit" | "grant" | "deny">>;
+
 type ChannelSettingsTab = "overview" | "permissions" | "invites" | "delete";
 
 interface ChannelSettingsState {
@@ -471,10 +486,24 @@ interface ChannelSettingsState {
   data: ChannelPermissionsView | null;
   // Локальная карта (roleCode → action → "inherit" | "grant" | "deny").
   // Меняем её, при сохранении сворачиваем в overrides[].
-  draft: Record<string, Record<string, "inherit" | "grant" | "deny">>;
+  draft: PermDraft;
+  // Wave 5: то же для участников (userId → action → mode).
+  userData: ChannelUserPermissionsView | null;
+  userDraft: PermDraft;
   // J.3: draft для таба «Обзор» — отдельный от permission'ов draft.
   // J.5: categoryId draft — пустая строка "" = «Без категории» (NULL).
   overviewDraft: { name: string; topic: string; slowMode: number; isNsfw: boolean; categoryId: string };
+}
+
+// Wave 5 (J.5b): права категории — отдельная модалка (ПКМ по заголовку
+// категории → «Права категории…»). Зеркалит permissions-таб канала.
+interface CategoryPermsState {
+  categoryId: string | null;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  data: { categoryId: string; actions: string[]; roles: string[]; overrides: RoleOverride[] } | null;
+  draft: PermDraft;
 }
 
 const ACTION_LABELS_RU: Record<string, string> = {
@@ -677,6 +706,9 @@ interface AppState {
   workspaceMenu: { workspaceId: string; x: number; y: number } | null;
   // Wave 5: ПКМ по участнику в member-sidebar — профиль + назначение ролей.
   memberMenu: { userId: string; x: number; y: number } | null;
+  // Wave 5 (J.5b): ПКМ по заголовку категории + модалка её прав.
+  categoryMenu: { categoryId: string; x: number; y: number } | null;
+  categoryPerms: CategoryPermsState;
   // Volume per-remote: ключ — sessionId участника voice-канала либо
   // спец-ключ "call-remote" для 1-к-1 собеседника. Значение 0..1, при
   // отсутствии ключа применяем 1 (default). Хранится в памяти, на
@@ -882,6 +914,8 @@ const state: AppState = {
     error: null,
     data: null,
     draft: {},
+    userData: null,
+    userDraft: {},
     overviewDraft: { name: "", topic: "", slowMode: 0, isNsfw: false, categoryId: "" }
   },
   workspaceRoles: {
@@ -897,6 +931,8 @@ const state: AppState = {
   channelMenu: null,
   workspaceMenu: null,
   memberMenu: null,
+  categoryMenu: null,
+  categoryPerms: { categoryId: null, loading: false, saving: false, error: null, data: null, draft: {} },
   voiceVolumes: {},
   voiceVolumeMenu: null,
   statusMenu: null,
@@ -3249,6 +3285,7 @@ function renderShell(): void {
       ${renderChannelMenu()}
       ${renderWorkspaceMenu()}
       ${renderMemberMenu()}
+      ${renderCategoryMenu()}
       ${renderVoiceVolumeMenu()}
       ${renderStatusMenu()}
     </div>
@@ -3592,6 +3629,24 @@ function renderWorkspaceMenu(): string {
       })()}
       <div class="channel-menu-separator"></div>
       <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">Скопировать ID</button>
+    </div>
+  `;
+}
+
+// Wave 5 (J.5b): ПКМ-меню категории — права + копирование ID.
+function renderCategoryMenu(): string {
+  const menu = state.categoryMenu;
+  if (!menu) return "";
+  const cat = state.categories.find((c) => c.id === menu.categoryId);
+  if (!cat) return "";
+  const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  return `
+    <div class="channel-menu-backdrop" data-category-menu-close></div>
+    <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
+      <div class="channel-menu-header">${escapeHtml(cat.name)}</div>
+      ${canManage ? `<button class="channel-menu-item" data-category-action="permissions" data-id="${cat.id}">Права категории…</button>` : ""}
+      <button class="channel-menu-item" data-category-action="copy-id" data-id="${cat.id}">Скопировать ID</button>
     </div>
   `;
 }
@@ -5460,7 +5515,93 @@ function renderModal(): string {
   if (state.modal === "workspaceSettings") return renderWorkspaceSettingsModal();
   if (state.modal === "userProfile") return renderUserProfilePopup();
   if (state.modal === "invites") return renderInvitesModal();
+  if (state.modal === "categoryPermissions") return renderCategoryPermissionsModal();
   return "";
+}
+
+// Wave 5 (J.5b): модалка прав категории. Role-overrides, наследуются всеми
+// каналами категории; канальные overrides их перекрывают.
+function renderCategoryPermissionsModal(): string {
+  const cp = state.categoryPerms;
+  const cat = state.categories.find((c) => c.id === cp.categoryId);
+  if (!cat) return "";
+  const body = (() => {
+    if (cp.loading) return `<div class="search-empty">Загрузка…</div>`;
+    if (!cp.data) return `<div class="search-empty">${escapeHtml(cp.error ?? "Не удалось загрузить")}</div>`;
+    return `
+      <div class="perm-help">
+        Правила применяются ко всем каналам категории. Канальные настройки
+        прав имеют приоритет над категорийными. Owner не подчиняется overrides.
+      </div>
+      ${renderPermGrid(cp.data.actions, cp.data.roles.map((r) => ({ key: r, label: roleLabel(r) })), cp.draft, "cat-perm-select")}
+      <div class="admin-actions">
+        <button id="cat-perm-save" class="primary" ${cp.saving ? "disabled" : ""}>
+          ${cp.saving ? "Сохраняю…" : "Сохранить"}
+        </button>
+        ${cp.error ? `<span class="roles-error">${escapeHtml(cp.error)}</span>` : ""}
+      </div>
+    `;
+  })();
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal modal-wide" role="dialog">
+        <div class="modal-header">
+          <h3>Права категории · ${escapeHtml(cat.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body">${body}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function openCategoryPermissions(categoryId: string): Promise<void> {
+  state.modal = "categoryPermissions";
+  state.categoryPerms = { categoryId, loading: true, saving: false, error: null, data: null, draft: {} };
+  render();
+  try {
+    const data = await httpClient.get<CategoryPermsState["data"]>(`/api/v1/categories/${categoryId}/permissions`);
+    state.categoryPerms.data = data;
+    const draft: PermDraft = {};
+    if (data) {
+      for (const role of data.roles) {
+        draft[role] = {};
+        for (const a of data.actions) draft[role][a] = "inherit";
+      }
+      for (const ov of data.overrides) {
+        if (!draft[ov.roleCode]) continue;
+        for (const a of ov.granted) draft[ov.roleCode][a] = "grant";
+        for (const a of ov.denied) draft[ov.roleCode][a] = "deny";
+      }
+    }
+    state.categoryPerms.draft = draft;
+  } catch (err) {
+    state.categoryPerms.error = describeError(err);
+  } finally {
+    state.categoryPerms.loading = false;
+    render();
+  }
+}
+
+async function saveCategoryPermissions(): Promise<void> {
+  const cp = state.categoryPerms;
+  if (!cp.categoryId) return;
+  cp.saving = true;
+  cp.error = null;
+  render();
+  try {
+    const data = await httpClient.put<CategoryPermsState["data"]>(
+      `/api/v1/categories/${cp.categoryId}/permissions`,
+      { overrides: permDraftToList(cp.draft).map(({ key, granted, denied }) => ({ roleCode: key, granted, denied })) }
+    );
+    state.categoryPerms.data = data;
+    setTransientStatus("Права категории сохранены");
+  } catch (err) {
+    cp.error = describeError(err);
+  } finally {
+    cp.saving = false;
+    render();
+  }
 }
 
 // Discord-style user profile popup — компактная карточка для просмотра
@@ -9462,6 +9603,58 @@ function attachShellHandlers(): void {
     render();
   });
 
+  // Wave 5 (J.5b): ПКМ по заголовку категории.
+  rootEl.querySelectorAll<HTMLElement>("[data-cat-drag]").forEach((header) => {
+    header.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const id = header.dataset.catDrag;
+      if (!id) return;
+      const x = Math.min(ev.clientX, window.innerWidth - 220);
+      const y = Math.min(ev.clientY, window.innerHeight - 120);
+      state.categoryMenu = { categoryId: id, x, y };
+      render();
+    });
+  });
+  rootEl.querySelector<HTMLElement>("[data-category-menu-close]")?.addEventListener("click", () => {
+    state.categoryMenu = null;
+    render();
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-category-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.dataset.categoryAction;
+      const id = btn.dataset.id;
+      if (!action || !id) return;
+      state.categoryMenu = null;
+      if (action === "permissions") {
+        void openCategoryPermissions(id);
+        return;
+      }
+      if (action === "copy-id") {
+        try {
+          await navigator.clipboard.writeText(id);
+          state.status = "ID категории скопирован";
+        } catch {
+          state.status = "Не удалось скопировать";
+        }
+        render();
+        return;
+      }
+    });
+  });
+  // Wave 5: селекты в модалке прав категории.
+  rootEl.querySelectorAll<HTMLSelectElement>(".cat-perm-select").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const key = sel.dataset.key;
+      const action = sel.dataset.action;
+      if (!key || !action) return;
+      if (!state.categoryPerms.draft[key]) state.categoryPerms.draft[key] = {};
+      state.categoryPerms.draft[key][action] = sel.value as "inherit" | "grant" | "deny";
+    });
+  });
+  rootEl.querySelector<HTMLButtonElement>("#cat-perm-save")?.addEventListener("click", () => {
+    void saveCategoryPermissions();
+  });
+
   rootEl.querySelectorAll<HTMLButtonElement>("[data-member-action]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const action = btn.dataset.memberAction;
@@ -9747,6 +9940,8 @@ function attachShellHandlers(): void {
         error: null,
         data: null,
         draft: {},
+        userData: null,
+        userDraft: {},
         overviewDraft: {
           name: ch?.name ?? "",
           topic: ch?.topic ?? "",
@@ -11935,22 +12130,30 @@ function renderChannelSettingsDelete(): string {
   `;
 }
 
-function renderChannelPermissionsTable(): string {
-  const cs = state.channelSettings;
-  if (!cs.data) return "";
-  const { actions, roles } = cs.data;
-  const cs2 = cs;
+// Лейбл роли: системные — из словаря, кастомные — имя из wsRoles.
+function roleLabel(code: string): string {
+  return ROLE_LABELS_RU[code] ?? state.wsRoles.find((r) => r.code === code)?.name ?? code;
+}
+
+// Универсальная таблица «действия × колонки» с inherit/grant/deny селектами.
+// selClass различает таблицы (роли канала / юзеры канала / роли категории)
+// в обработчиках; data-key — roleCode либо userId.
+function renderPermGrid(
+  actions: string[],
+  columns: Array<{ key: string; label: string }>,
+  draft: PermDraft,
+  selClass: string
+): string {
   const head = `<tr>
     <th class="perm-action-col">Действие</th>
-    ${roles.map((r) => `<th>${escapeHtml(ROLE_LABELS_RU[r] ?? r)}</th>`).join("")}
+    ${columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join("")}
   </tr>`;
   const body = actions.map((a) => {
-    const label = ACTION_LABELS_RU[a] ?? a;
-    const cells = roles.map((role) => {
-      const value = cs2.draft[role]?.[a] ?? "inherit";
+    const cells = columns.map((c) => {
+      const value = draft[c.key]?.[a] ?? "inherit";
       return `
         <td>
-          <select class="perm-select" data-role="${role}" data-action="${escapeHtml(a)}">
+          <select class="${selClass}" data-key="${escapeHtml(c.key)}" data-action="${escapeHtml(a)}">
             <option value="inherit" ${value === "inherit" ? "selected" : ""}>Наследовать</option>
             <option value="grant" ${value === "grant" ? "selected" : ""}>Разрешить</option>
             <option value="deny" ${value === "deny" ? "selected" : ""}>Запретить</option>
@@ -11958,18 +12161,44 @@ function renderChannelPermissionsTable(): string {
         </td>
       `;
     }).join("");
-    return `<tr><td class="perm-action-col">${escapeHtml(label)}</td>${cells}</tr>`;
+    return `<tr><td class="perm-action-col">${escapeHtml(ACTION_LABELS_RU[a] ?? a)}</td>${cells}</tr>`;
   }).join("");
+  return `<table class="perm-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+function renderChannelPermissionsTable(): string {
+  const cs = state.channelSettings;
+  if (!cs.data) return "";
+  const { actions, roles } = cs.data;
+
+  // Wave 5: секция точечных прав участников. Колонки — юзеры из userDraft
+  // (существующие overrides + добавленные в этом сеансе).
+  const overriddenIds = Object.keys(cs.userDraft);
+  const userColumns = overriddenIds.map((uid) => ({ key: uid, label: describePeer(uid) }));
+  const addable = state.members.filter((m) => !overriddenIds.includes(m.userId));
+  const userSection = `
+    <div class="perm-help" style="margin-top:18px">
+      <strong>Права участников.</strong> Точечные правила для конкретного юзера —
+      высший приоритет: его «Запретить» бьёт разрешения ролей, «Разрешить» —
+      их запреты.
+    </div>
+    ${userColumns.length > 0 ? renderPermGrid(actions, userColumns, cs.userDraft, "perm-user-select") : `<div class="settings-hint" style="margin:8px 0">Пока нет точечных правил.</div>`}
+    ${userColumns.length > 0 ? `<div class="admin-actions" style="margin-top:4px">${overriddenIds.map((uid) => `<button class="ghost" data-cs-user-remove="${uid}">✕ ${escapeHtml(describePeer(uid))}</button>`).join("")}</div>` : ""}
+    ${addable.length > 0 ? `
+      <select id="cs-user-add" class="perm-select" style="margin-top:8px">
+        <option value="">+ Добавить участника…</option>
+        ${addable.map((m) => `<option value="${m.userId}">${escapeHtml(m.displayName || m.username)}</option>`).join("")}
+      </select>` : ""}
+  `;
+
   return `
     <div class="perm-help">
-      «Наследовать» оставляет право от workspace-роли. «Разрешить» даёт право,
-      даже если базовая роль его не имеет. «Запретить» отнимает.
-      Owner не подчиняется overrides.
+      «Наследовать» оставляет право от workspace-роли (и прав категории,
+      если заданы). «Разрешить» даёт право, даже если базовая роль его не
+      имеет. «Запретить» отнимает. Owner не подчиняется overrides.
     </div>
-    <table class="perm-table">
-      <thead>${head}</thead>
-      <tbody>${body}</tbody>
-    </table>
+    ${renderPermGrid(actions, roles.map((r) => ({ key: r, label: roleLabel(r) })), cs.draft, "perm-select")}
+    ${userSection}
     <div class="admin-actions">
       <button id="channel-perm-save" class="primary" ${cs.saving ? "disabled" : ""}>
         ${cs.saving ? "Сохраняю…" : "Сохранить"}
@@ -11982,9 +12211,15 @@ async function loadChannelPermissions(): Promise<void> {
   const cs = state.channelSettings;
   if (!cs.channelId) return;
   try {
-    const data = await httpClient.get<ChannelPermissionsView>(`/api/v1/channels/${cs.channelId}/permissions`);
+    // Wave 5: роль- и юзер-overrides тянем параллельно.
+    const [data, userData] = await Promise.all([
+      httpClient.get<ChannelPermissionsView>(`/api/v1/channels/${cs.channelId}/permissions`),
+      httpClient.get<ChannelUserPermissionsView>(`/api/v1/channels/${cs.channelId}/user-permissions`)
+    ]);
     state.channelSettings.data = data;
     state.channelSettings.draft = buildDraftFromOverrides(data);
+    state.channelSettings.userData = userData;
+    state.channelSettings.userDraft = buildUserDraft(userData);
     state.channelSettings.loading = false;
     state.channelSettings.error = null;
   } catch (err) {
@@ -11992,6 +12227,19 @@ async function loadChannelPermissions(): Promise<void> {
     state.channelSettings.error = describeError(err);
   }
   render();
+}
+
+// userDraft: ключи — только юзеры с override'ами (или добавленные в UI),
+// в отличие от ролевого draft'а, где колонки фиксированы списком ролей.
+function buildUserDraft(data: ChannelUserPermissionsView): PermDraft {
+  const draft: PermDraft = {};
+  for (const ov of data.overrides) {
+    draft[ov.userId] = {};
+    for (const action of data.actions) draft[ov.userId][action] = "inherit";
+    for (const a of ov.granted) draft[ov.userId][a] = "grant";
+    for (const a of ov.denied) draft[ov.userId][a] = "deny";
+  }
+  return draft;
 }
 
 function buildDraftFromOverrides(data: ChannelPermissionsView): Record<string, Record<string, "inherit" | "grant" | "deny">> {
@@ -12078,12 +12326,40 @@ function attachChannelSettingsHandlers(): void {
   // Permissions <select>'ы — write напрямую без render() для сохранения фокуса.
   rootEl.querySelectorAll<HTMLSelectElement>(".perm-select").forEach((sel) => {
     sel.addEventListener("change", () => {
-      const role = sel.dataset.role;
+      const key = sel.dataset.key;
       const action = sel.dataset.action;
-      if (!role || !action) return;
+      if (!key || !action) return;
       const value = sel.value as "inherit" | "grant" | "deny";
-      if (!state.channelSettings.draft[role]) state.channelSettings.draft[role] = {};
-      state.channelSettings.draft[role][action] = value;
+      if (!state.channelSettings.draft[key]) state.channelSettings.draft[key] = {};
+      state.channelSettings.draft[key][action] = value;
+    });
+  });
+  // Wave 5: селекты точечных прав участников.
+  rootEl.querySelectorAll<HTMLSelectElement>(".perm-user-select").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const key = sel.dataset.key;
+      const action = sel.dataset.action;
+      if (!key || !action) return;
+      const value = sel.value as "inherit" | "grant" | "deny";
+      if (!state.channelSettings.userDraft[key]) state.channelSettings.userDraft[key] = {};
+      state.channelSettings.userDraft[key][action] = value;
+    });
+  });
+  rootEl.querySelector<HTMLSelectElement>("#cs-user-add")?.addEventListener("change", (e) => {
+    const uid = (e.currentTarget as HTMLSelectElement).value;
+    if (!uid) return;
+    const actions = state.channelSettings.data?.actions ?? [];
+    const row: Record<string, "inherit" | "grant" | "deny"> = {};
+    for (const a of actions) row[a] = "inherit";
+    state.channelSettings.userDraft[uid] = row;
+    render();
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-cs-user-remove]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const uid = btn.dataset.csUserRemove;
+      if (!uid) return;
+      delete state.channelSettings.userDraft[uid];
+      render();
     });
   });
   rootEl.querySelector<HTMLButtonElement>("#channel-perm-save")?.addEventListener("click", () => {
@@ -12190,12 +12466,21 @@ async function saveChannelPermissions(): Promise<void> {
   state.channelSettings.error = null;
   render();
   try {
-    const data = await httpClient.put<ChannelPermissionsView>(
-      `/api/v1/channels/${cs.channelId}/permissions`,
-      { overrides: draftToOverrides() }
-    );
+    // Wave 5: сохраняем оба слоя — роли и точечные права участников.
+    const [data, userData] = await Promise.all([
+      httpClient.put<ChannelPermissionsView>(
+        `/api/v1/channels/${cs.channelId}/permissions`,
+        { overrides: draftToOverrides() }
+      ),
+      httpClient.put<ChannelUserPermissionsView>(
+        `/api/v1/channels/${cs.channelId}/user-permissions`,
+        { overrides: permDraftToList(cs.userDraft).map(({ key, granted, denied }) => ({ userId: key, granted, denied })) }
+      )
+    ]);
     state.channelSettings.data = data;
     state.channelSettings.draft = buildDraftFromOverrides(data);
+    state.channelSettings.userData = userData;
+    state.channelSettings.userDraft = buildUserDraft(userData);
     setTransientStatus("Права канала сохранены");
   } catch (err) {
     state.channelSettings.error = describeError(err);
@@ -12203,4 +12488,22 @@ async function saveChannelPermissions(): Promise<void> {
     state.channelSettings.saving = false;
     render();
   }
+}
+
+// Сворачивает PermDraft в список {key, granted, denied}, пропуская
+// полностью «наследуемые» записи. key — roleCode либо userId.
+function permDraftToList(draft: PermDraft): Array<{ key: string; granted: string[]; denied: string[] }> {
+  const out: Array<{ key: string; granted: string[]; denied: string[] }> = [];
+  for (const key of Object.keys(draft)) {
+    const granted: string[] = [];
+    const denied: string[] = [];
+    for (const action of Object.keys(draft[key])) {
+      const v = draft[key][action];
+      if (v === "grant") granted.push(action);
+      else if (v === "deny") denied.push(action);
+    }
+    if (granted.length === 0 && denied.length === 0) continue;
+    out.push({ key, granted, denied });
+  }
+  return out;
 }

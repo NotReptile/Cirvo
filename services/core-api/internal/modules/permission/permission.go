@@ -158,12 +158,15 @@ func Authorize(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.
 	return role, true, allowed
 }
 
-// AuthorizeChannel — то же, но с учётом channel_role_overrides.
+// AuthorizeChannel — то же, но с учётом override-слоёв (Wave 5):
 //
-// Эффективный набор = (union(base_action_mask всех ролей юзера) ∨ any(granted))
-//   − any(denied)
+//	base(union ролей) → category_role_overrides → channel_role_overrides
+//	  → channel_user_overrides
 //
-// Owner короткозамыкается на allowed=true (защита от self-lock).
+// Каждый role-слой: allowed = (allowed ∨ any(granted)) ∧ ¬any(denied),
+// т.е. канальный override перекрывает категорийный. Юзерский слой —
+// высший приоритет: его deny бьёт любые grant'ы ролей, его grant бьёт
+// любые deny ролей. Owner короткозамыкается на allowed=true (self-lock).
 func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, channelID, userID uuid.UUID, action Action) (role string, isMember bool, allowed bool) {
 	err := db.QueryRow(ctx,
 		`select role_code from workspace_members where workspace_id = $1 and user_id = $2`,
@@ -177,16 +180,21 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 	}
 
 	// Один проход: union base masks ролей юзера + флаги granted/denied из
-	// channel_role_overrides per role. Сравнение по role_id (новая колонка).
-	// Параллельно тащим channels.is_private — для ChannelView в приватном
-	// канале base игнорируется, см. ниже.
+	// channel_role_overrides и category_role_overrides per role. Сравнение
+	// по role_id. Параллельно тащим channels.is_private — для ChannelView
+	// в приватном канале base игнорируется, см. ниже.
 	rows, err := db.Query(ctx,
-		`select wr.base_action_mask, coalesce(cro.granted_actions, '{}'), coalesce(cro.denied_actions, '{}'), c.is_private
+		`select wr.base_action_mask,
+		        coalesce(cro.granted_actions, '{}'), coalesce(cro.denied_actions, '{}'),
+		        coalesce(caro.granted_actions, '{}'), coalesce(caro.denied_actions, '{}'),
+		        c.is_private
 		 from workspace_role_members wrm
 		 join workspace_roles wr on wr.id = wrm.role_id
 		 join channels c on c.id = $3
 		 left join channel_role_overrides cro
 		   on cro.role_id = wrm.role_id and cro.channel_id = $3
+		 left join category_role_overrides caro
+		   on caro.role_id = wrm.role_id and caro.category_id = c.category_id
 		 where wrm.workspace_id = $1 and wrm.user_id = $2`,
 		workspaceID, userID, channelID,
 	)
@@ -196,13 +204,12 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 	defer rows.Close()
 
 	actStr := string(action)
-	var baseAllowed, anyGranted, anyDenied, isPrivate, anyRow bool
+	var baseAllowed, chGranted, chDenied, catGranted, catDenied, isPrivate, anyRow bool
 	for rows.Next() {
 		anyRow = true
-		var mask []string
-		var granted, denied []string
+		var mask, granted, denied, cGranted, cDenied []string
 		var priv bool
-		if err := rows.Scan(&mask, &granted, &denied, &priv); err != nil {
+		if err := rows.Scan(&mask, &granted, &denied, &cGranted, &cDenied, &priv); err != nil {
 			continue
 		}
 		isPrivate = priv
@@ -210,10 +217,16 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 			baseAllowed = true
 		}
 		if containsStr(granted, actStr) {
-			anyGranted = true
+			chGranted = true
 		}
 		if containsStr(denied, actStr) {
-			anyDenied = true
+			chDenied = true
+		}
+		if containsStr(cGranted, actStr) {
+			catGranted = true
+		}
+		if containsStr(cDenied, actStr) {
+			catDenied = true
 		}
 	}
 	// Для приватного канала view-доступ через base_action_mask не работает —
@@ -226,7 +239,22 @@ func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, chann
 	if !anyRow {
 		return role, true, fallbackCan(role, action)
 	}
-	allowed = (baseAllowed || anyGranted) && !anyDenied
+	allowed = (baseAllowed || catGranted) && !catDenied
+	allowed = (allowed || chGranted) && !chDenied
+
+	// Юзерский слой — точечные права конкретного юзера в канале.
+	var userGranted, userDenied []string
+	if qerr := db.QueryRow(ctx,
+		`select coalesce(granted_actions, '{}'), coalesce(denied_actions, '{}')
+		 from channel_user_overrides where channel_id = $1 and user_id = $2`,
+		channelID, userID,
+	).Scan(&userGranted, &userDenied); qerr == nil {
+		if containsStr(userDenied, actStr) {
+			allowed = false
+		} else if containsStr(userGranted, actStr) {
+			allowed = true
+		}
+	}
 	return role, true, allowed
 }
 

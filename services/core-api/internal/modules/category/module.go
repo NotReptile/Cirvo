@@ -41,6 +41,9 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("POST /api/v1/workspaces/{workspaceId}/categories", m.handleCreate)
 	router.Protected("PATCH /api/v1/categories/{categoryId}", m.handleUpdate)
 	router.Protected("DELETE /api/v1/categories/{categoryId}", m.handleDelete)
+	// Wave 5 (J.5b): role-override'ы категории, наследуются её каналами.
+	router.Protected("GET /api/v1/categories/{categoryId}/permissions", m.handleGetPermissions)
+	router.Protected("PUT /api/v1/categories/{categoryId}/permissions", m.handleUpdatePermissions)
 }
 
 type categoryView struct {

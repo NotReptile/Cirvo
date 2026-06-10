@@ -53,6 +53,9 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("DELETE /api/v1/channels/{channelId}/members/{userId}", m.handleRemoveMember)
 	router.Protected("GET /api/v1/channels/{channelId}/permissions", m.handleGetPermissions)
 	router.Protected("PUT /api/v1/channels/{channelId}/permissions", m.handleUpdatePermissions)
+	// Wave 5: точечные права конкретных участников в канале.
+	router.Protected("GET /api/v1/channels/{channelId}/user-permissions", m.handleGetUserPermissions)
+	router.Protected("PUT /api/v1/channels/{channelId}/user-permissions", m.handleUpdateUserPermissions)
 }
 
 // publish — фан-аут в workspace, channelID опционально (для delete/update
