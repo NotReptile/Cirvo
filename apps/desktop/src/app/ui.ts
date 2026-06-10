@@ -237,6 +237,15 @@ interface ReplySnippet {
 // Старые сервера до миграции 22 поле не возвращают; считаем тогда 'user'.
 type MessageKind = "user" | "system_join" | "system_call" | "system_channel_event";
 
+// Wave 2: OG-превью ссылки (см. worker linkpreview.go).
+interface LinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  imageUrl?: string;
+  siteName?: string;
+}
+
 interface Message {
   id: string;
   channelId: string;
@@ -251,6 +260,8 @@ interface Message {
   attachments?: Attachment[];
   replyTo?: ReplySnippet;
   mentions?: string[];
+  // Wave 2: OG-карточки, worker заполняет асинхронно (message.previews.updated).
+  linkPreviews?: LinkPreview[];
   isPinned?: boolean;
   pinnedAt?: string;
 }
@@ -2635,6 +2646,15 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
       render();
       break;
     }
+    // Wave 2: worker допилил OG-карточки — дописываем в сообщение.
+    case "message.previews.updated": {
+      const p = event.payload as { messageId: string; linkPreviews?: LinkPreview[] };
+      state.messages = state.messages.map((m) =>
+        m.id === p.messageId ? { ...m, linkPreviews: p.linkPreviews ?? [] } : m
+      );
+      render();
+      break;
+    }
     case "message.reaction.added": {
       const p = event.payload as { messageId: string; userId: string; emoji: string };
       applyReactionDelta(p.messageId, p.emoji, +1, p.userId);
@@ -4583,6 +4603,32 @@ function openImageLightbox(slot: HTMLDivElement): void {
   });
 }
 
+// Wave 2: OG-карточки под сообщением (Discord-style: accent-полоса слева,
+// siteName/title/description + thumb справа). imageUrl хотлинкается с
+// внешнего сайта (CSP null) — заголовок и так весь escape'ится.
+function renderLinkPreviews(previews: LinkPreview[] | undefined): string {
+  if (!previews || previews.length === 0) return "";
+  const cards = previews
+    .filter((p) => p.url && /^https?:\/\//i.test(p.url))
+    .map((p) => {
+      const img = p.imageUrl && /^https?:\/\//i.test(p.imageUrl)
+        ? `<img class="link-preview-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" />`
+        : "";
+      return `
+        <div class="link-preview">
+          <div class="link-preview-text">
+            ${p.siteName ? `<div class="link-preview-site">${escapeHtml(p.siteName)}</div>` : ""}
+            ${p.title ? `<a class="link-preview-title" href="${escapeHtml(p.url)}" target="_blank" rel="noopener noreferrer nofollow">${escapeHtml(p.title)}</a>` : ""}
+            ${p.description ? `<div class="link-preview-desc">${escapeHtml(p.description)}</div>` : ""}
+          </div>
+          ${img}
+        </div>
+      `;
+    })
+    .join("");
+  return cards ? `<div class="link-previews">${cards}</div>` : "";
+}
+
 function renderAttachment(a: Attachment): string {
   if (isImage(a.contentType)) {
     return `<div class="attach-image" data-media-url="${escapeHtml(a.url + "/thumb")}" data-full-url="${escapeHtml(a.url)}" data-filename="${escapeHtml(a.filename || "image")}">
@@ -4946,6 +4992,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
           ? `<div class="attachments">${m.attachments.map((a) => renderAttachment(a)).join("")}</div>`
           : ""
       }
+      ${renderLinkPreviews(m.linkPreviews)}
       ${
         reactions.length > 0
           ? `<div class="reaction-row">

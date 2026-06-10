@@ -50,7 +50,7 @@ var mentionRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})`)
 // свои дополнительные параметры в where после этой константы.
 const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body, m.kind,
         coalesce(m.client_message_id, ''), m.created_at, m.edited_at,
-        m.is_pinned, m.pinned_at,
+        m.is_pinned, m.pinned_at, m.link_previews,
         coalesce(
           (select jsonb_object_agg(emoji, jsonb_build_object('count', cnt, 'mine', mine, 'userIds', user_ids))
            from (
@@ -170,6 +170,9 @@ type messageView struct {
 	Mentions        []string               `json:"mentions"`
 	IsPinned        bool                   `json:"isPinned,omitempty"`
 	PinnedAt        *time.Time             `json:"pinnedAt,omitempty"`
+	// Wave 2: OG-карточки, заполняет worker (link_preview_jobs). Сырой
+	// jsonb-passthrough — структуру знает worker и клиент.
+	LinkPreviews    json.RawMessage        `json:"linkPreviews,omitempty"`
 }
 
 type createRequest struct {
@@ -534,6 +537,17 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Wave 2: link-preview job — если в теле есть http(s)-URL, worker
+	// асинхронно подтянет OG-мету и допишет messages.link_previews.
+	// Атомарно с insert (та же tx); сбой enqueue не валит отправку.
+	if hasPreviewableURL(req.Body) {
+		if _, err := tx.Exec(r.Context(),
+			`insert into link_preview_jobs (message_id) values ($1)`, messageID,
+		); err != nil {
+			m.logger.Warn("link-preview enqueue failed", "messageId", messageID, "error", err)
+		}
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
@@ -546,6 +560,14 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	m.publishScope("message.created", scope, channelID, view)
 	sharedhttp.WriteJSON(w, http.StatusCreated, view)
+}
+
+// hasPreviewableURL — лёгкая проверка «есть ли в теле http(s)-ссылка».
+// Точную экстракцию (до 3 уникальных, обрезка пунктуации) делает worker.
+var previewURLRe = regexp.MustCompile(`https?://\S+`)
+
+func hasPreviewableURL(body string) bool {
+	return previewURLRe.MatchString(body)
 }
 
 // parseMentionSlugs тянет из body уникальные `@<username>` (lowercased
@@ -728,6 +750,23 @@ func (m *Module) handleEdit(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+		}
+	}
+
+	// Wave 2: пересборка link-preview после правки. Есть URL — worker
+	// пересчитает (и перезатрёт старые); нет — чистим колонку сразу,
+	// чтобы карточка от вырезанной ссылки не зависала.
+	if hasPreviewableURL(req.Body) {
+		if _, err := tx.Exec(r.Context(),
+			`insert into link_preview_jobs (message_id) values ($1)`, messageID,
+		); err != nil {
+			m.logger.Warn("link-preview enqueue failed", "messageId", messageID, "error", err)
+		}
+	} else {
+		if _, err := tx.Exec(r.Context(),
+			`update messages set link_previews = null where id = $1`, messageID,
+		); err != nil {
+			m.logger.Warn("link-preview clear failed", "messageId", messageID, "error", err)
 		}
 	}
 
@@ -1234,6 +1273,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		edited           *time.Time
 		isPinned         bool
 		pinnedAt         *time.Time
+		linkPreviewsJSON []byte
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
 		replyJSON        []byte
@@ -1241,7 +1281,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		channelName      string
 		highlight        string
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
 		return messageView{}, "", "", err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1278,6 +1318,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		Mentions:        mentions,
 		IsPinned:        isPinned,
 		PinnedAt:        pinnedAt,
+		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
 	}, channelName, highlight, nil
 }
 
@@ -1395,12 +1436,13 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		edited            *time.Time
 		isPinned          bool
 		pinnedAt          *time.Time
+		linkPreviewsJSON  []byte
 		reactionsJSON     []byte
 		attachmentsJSON   []byte
 		replyJSON         []byte
 		mentionsJSON      []byte
 	)
-	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1437,7 +1479,17 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		Mentions:        mentions,
 		IsPinned:        isPinned,
 		PinnedAt:        pinnedAt,
+		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
 	}, nil
+}
+
+// normalizeJSONB — NULL-jsonb приходит как nil или "null"; для omitempty
+// в view нужен честный nil.
+func normalizeJSONB(raw []byte) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return raw
 }
 
 func (m *Module) publish(eventName string, workspaceID, channelID uuid.UUID, payload any) {
@@ -1505,12 +1557,13 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		edited           *time.Time
 		isPinned         bool
 		pinnedAt         *time.Time
+		linkPreviewsJSON []byte
 		reactionsJSON    []byte
 		attachmentsJSON  []byte
 		replyJSON        []byte
 		mentionsJSON     []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1547,6 +1600,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		Mentions:        mentions,
 		IsPinned:        isPinned,
 		PinnedAt:        pinnedAt,
+		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
 	}, nil
 }
 

@@ -42,13 +42,15 @@ func main() {
 	mediaRunner := jobs.NewRunner(logger, db, store)
 	notifRunner := jobs.NewNotificationRunner(logger, db, redisClient)
 	retentionRunner := jobs.NewRetentionRunner(logger, db, store)
+	linkPreviewRunner := jobs.NewLinkPreviewRunner(logger, db, redisClient)
 
 	logger.Info("starting worker", "environment", cfg.Environment)
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); mediaRunner.Run(ctx) }()
 	go func() { defer wg.Done(); notifRunner.Run(ctx) }()
 	go func() { defer wg.Done(); retentionRunner.Run(ctx) }()
+	go func() { defer wg.Done(); linkPreviewRunner.Run(ctx) }()
 	wg.Wait()
 }
