@@ -2038,6 +2038,84 @@ input[type="color"] {
   50% { opacity: 1; }
 }
 
+/* Wave 2 — syntax highlight (highlight.js, своя палитра под обе темы) */
+.md-code-block { position: relative; }
+.md-code-lang {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-mute);
+  opacity: 0.8;
+  user-select: none;
+}
+.hljs-comment, .hljs-quote { color: #7d8590; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-meta { color: #c678dd; }
+.hljs-string, .hljs-regexp, .hljs-addition { color: #98c379; }
+.hljs-number, .hljs-literal, .hljs-symbol { color: #d19a66; }
+.hljs-title, .hljs-title.function_, .hljs-section { color: #61afef; }
+.hljs-title.class_, .hljs-type, .hljs-built_in { color: #e5c07b; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: #e06c75; }
+.hljs-name, .hljs-tag { color: #e06c75; }
+.hljs-params { color: inherit; }
+.hljs-deletion { color: #e06c75; background: rgba(224, 108, 117, 0.1); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+:root[data-theme="light"] .hljs-comment,
+:root[data-theme="light"] .hljs-quote { color: #6a737d; }
+:root[data-theme="light"] .hljs-keyword,
+:root[data-theme="light"] .hljs-selector-tag,
+:root[data-theme="light"] .hljs-meta { color: #a626a4; }
+:root[data-theme="light"] .hljs-string,
+:root[data-theme="light"] .hljs-regexp,
+:root[data-theme="light"] .hljs-addition { color: #50a14f; }
+:root[data-theme="light"] .hljs-number,
+:root[data-theme="light"] .hljs-literal,
+:root[data-theme="light"] .hljs-symbol { color: #986801; }
+:root[data-theme="light"] .hljs-title,
+:root[data-theme="light"] .hljs-section { color: #4078f2; }
+:root[data-theme="light"] .hljs-title.class_,
+:root[data-theme="light"] .hljs-type,
+:root[data-theme="light"] .hljs-built_in { color: #c18401; }
+:root[data-theme="light"] .hljs-attr,
+:root[data-theme="light"] .hljs-attribute,
+:root[data-theme="light"] .hljs-variable,
+:root[data-theme="light"] .hljs-name,
+:root[data-theme="light"] .hljs-tag { color: #e45649; }
+
+/* Wave 2 — плавающая date-пилюля при скролле */
+.sticky-date {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--text-mute);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+/* Wave 2 — slash-команды popup (на базе mention-popup) */
+.slash-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+.slash-name { font-weight: 600; font-size: 13px; }
+.slash-args { font-weight: 400; color: var(--text-mute); font-size: 12px; }
+.slash-desc { font-size: 11px; color: var(--text-mute); }
+
 /* Wave 2 — emoji-picker (композер + реакции) */
 .composer-emoji-btn {
   border: none;

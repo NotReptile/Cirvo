@@ -8,6 +8,7 @@ import { runIceCheck, type IceCheckResult } from "../call/iceCheck";
 import { checkForUpdate, relaunchApp, type UpdateHandle } from "./tauriUpdater";
 import { openLightbox } from "./lightbox";
 import { openEmojiPicker } from "./emojiPicker";
+import { highlightCode } from "./codeHighlight";
 import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import {
   applyAppearance,
@@ -2204,6 +2205,80 @@ async function loadMembers(): Promise<void> {
   }
 }
 
+// Wave 2: клиентские slash-команды (Discord-набор). Неизвестная /команда
+// уходит обычным текстом — как в Discord. /nick — действие без отправки.
+const SLASH_COMMANDS: { name: string; args: string; desc: string }[] = [
+  { name: "shrug", args: "[текст]", desc: "¯\\_(ツ)_/¯ в конец сообщения" },
+  { name: "tableflip", args: "[текст]", desc: "(╯°□°)╯︵ ┻━┻" },
+  { name: "unflip", args: "[текст]", desc: "┬─┬ ノ( ゜-゜ノ)" },
+  { name: "me", args: "текст", desc: "Курсивное сообщение-действие" },
+  { name: "spoiler", args: "текст", desc: "Спрятать текст под спойлер" },
+  { name: "nick", args: "имя", desc: "Сменить отображаемое имя" }
+];
+
+type SlashAction = { kind: "send"; body: string } | { kind: "nick"; name: string };
+
+function transformSlashCommand(body: string): SlashAction {
+  if (!body.startsWith("/")) return { kind: "send", body };
+  const sp = body.indexOf(" ");
+  const cmd = (sp === -1 ? body.slice(1) : body.slice(1, sp)).toLowerCase();
+  const arg = sp === -1 ? "" : body.slice(sp + 1).trim();
+  switch (cmd) {
+    case "shrug":
+      // Backslash перед `_` — чтобы renderBody не превратил (ツ) в курсив
+      // (MD_ESCAPE_RE стэшит литеральный символ).
+      return { kind: "send", body: `${arg ? arg + " " : ""}¯\\_(ツ)\\_/¯` };
+    case "tableflip":
+      return { kind: "send", body: `${arg ? arg + " " : ""}(╯°□°)╯︵ ┻━┻` };
+    case "unflip":
+      return { kind: "send", body: `${arg ? arg + " " : ""}┬─┬ ノ( ゜-゜ノ)` };
+    case "me":
+      return { kind: "send", body: arg ? `*${arg}*` : body };
+    case "spoiler":
+      return { kind: "send", body: arg ? `||${arg}||` : body };
+    case "nick":
+      return { kind: "nick", name: arg };
+    default:
+      return { kind: "send", body };
+  }
+}
+
+// Popup-подсказка по «/» в начале композера. Переиспользует CSS mention-popup.
+function updateSlashPopup(input: HTMLInputElement): void {
+  const popup = rootEl.querySelector<HTMLDivElement>("#slash-popup");
+  if (!popup) return;
+  const m = /^\/([a-z]*)$/i.exec(input.value);
+  if (!m) {
+    popup.hidden = true;
+    return;
+  }
+  const q = m[1].toLowerCase();
+  const hits = SLASH_COMMANDS.filter((c) => c.name.startsWith(q));
+  if (hits.length === 0) {
+    popup.hidden = true;
+    return;
+  }
+  popup.innerHTML = hits
+    .map(
+      (c) => `
+    <button type="button" class="mention-item slash-item" data-slash="${c.name}">
+      <span class="slash-name">/${c.name}${c.args ? ` <span class="slash-args">${escapeHtml(c.args)}</span>` : ""}</span>
+      <span class="slash-desc">${escapeHtml(c.desc)}</span>
+    </button>`
+    )
+    .join("");
+  popup.hidden = false;
+  popup.querySelectorAll<HTMLButtonElement>("[data-slash]").forEach((b) => {
+    b.addEventListener("click", () => {
+      input.value = `/${b.dataset.slash} `;
+      popup.hidden = true;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  });
+}
+
 // Wave 2: typing-индикатор «X печатает…». Полностью transient: отправка с
 // клиентским throttle 3с (сервер дополнительно троттлит 2с), приём — TTL 8с
 // в module-map. Строка под композером обновляется прямым DOM-mutate, без
@@ -3802,6 +3877,7 @@ function renderDMChannelView(dm: DMItem): string {
     <div id="drop-zone" class="drop-zone" hidden>
       <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
     </div>
+    <div id="sticky-date" class="sticky-date" hidden></div>
     <div id="message-list" class="message-list">
       ${renderMessagesWithDivider()}
     </div>
@@ -3809,6 +3885,7 @@ function renderDMChannelView(dm: DMItem): string {
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     ${renderReplyBar()}
     <div id="mention-popup" class="mention-popup" hidden></div>
+    <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
       <label class="attach-btn" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
@@ -3993,6 +4070,7 @@ function renderChannelView(channel: Channel): string {
     ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
       <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
     </div>` : ""}
+    <div id="sticky-date" class="sticky-date" hidden></div>
     <div id="message-list" class="message-list">
       ${renderMessagesWithDivider()}
     </div>
@@ -4000,6 +4078,7 @@ function renderChannelView(channel: Channel): string {
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     ${renderReplyBar()}
     <div id="mention-popup" class="mention-popup" hidden></div>
+    <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
       <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
@@ -4683,7 +4762,12 @@ function dayLabel(iso: string): string {
 // правилу `[a-z0-9_]{3,32}`. Префикс — начало строки или не-словарный
 // символ, чтобы не матчить email'ы (`hi@user`).
 const MENTION_RE_GLOBAL = /(^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})/g;
-const FENCED_RE = /```([\s\S]*?)```/g;
+// Wave 2: опциональный язык после ``` — только если за ним перевод строки
+// (```код``` в одну строку без языка не должен съедать первое слово).
+const FENCED_RE = /```(?:([A-Za-z0-9+#-]{1,20})\n)?([\s\S]*?)```/g;
+// Backslash-escape markdown-маркеров: `\*`, `\_`, `\~`, `\|`, `\\`, "\`".
+// Нужен в т.ч. для /shrug — «¯\_(ツ)_/¯» без escape превращал бы (ツ) в курсив.
+const MD_ESCAPE_RE = /\\([\\*_~|`])/g;
 const INLINE_CODE_RE = /`([^`\n]+)`/g;
 const URL_RE = /\bhttps?:\/\/[^\s<>`]+/g;
 const BOLD_RE = /\*\*([^*\n]+?)\*\*/g;
@@ -4709,16 +4793,23 @@ function renderBody(body: string): string {
   };
 
   // 1) Fenced code blocks — самый высокий приоритет, чтобы внутри
-  //    не интерпретировались **, _, бэктики и т.д.
-  let text = body.replace(FENCED_RE, (_, raw: string) => {
+  //    не интерпретировались **, _, бэктики и т.д. Wave 2: ```lang →
+  //    подсветка через highlight.js (highlightCode сам эскейпит).
+  let text = body.replace(FENCED_RE, (_, lang: string | undefined, raw: string) => {
     const stripped = raw.replace(/^\n/, "").replace(/\n$/, "");
-    return stash(`<pre class="md-code-block"><code>${escapeHtml(stripped)}</code></pre>`);
+    const { html, language } = highlightCode(stripped, lang ?? null);
+    const langBadge = language ? `<span class="md-code-lang">${escapeHtml(language)}</span>` : "";
+    return stash(`<pre class="md-code-block">${langBadge}<code class="hljs">${html}</code></pre>`);
   });
 
   // 2) Inline code.
   text = text.replace(INLINE_CODE_RE, (_, raw: string) =>
     stash(`<code class="md-code">${escapeHtml(raw)}</code>`)
   );
+
+  // 2.5) Backslash-escape: `\*` и т.п. → литеральный символ, маркером
+  //      не считается (стэшится до остальных markdown-проходов).
+  text = text.replace(MD_ESCAPE_RE, (_, ch: string) => stash(escapeHtml(ch)));
 
   // 3) URL autolink. Хвостовые пунктуации (.,!?;:)) отрезаем, чтобы
   //    «загляни http://x.com.» не съело точку.
@@ -9916,6 +10007,7 @@ function attachShellHandlers(): void {
       saveDraft(state.selectedChannelId, composerInput.value);
       if (composerInput.value) maybeSendTyping();
       updateMentionPopup(composerInput, mentionPopup);
+      updateSlashPopup(composerInput);
     });
     // Wave 2: кнопка-смайл рядом с send. Вставка по каретке + dispatch
     // input — чтобы draft сохранился и mention-popup пересчитался.
@@ -10015,6 +10107,27 @@ function attachShellHandlers(): void {
     const attachmentIds = state.pendingUploads.map((p) => p.id);
     if (!body && attachmentIds.length === 0) return;
     const channelIdSnapshot = state.selectedChannelId;
+    // Wave 2: slash-команды. /nick — действие без отправки сообщения,
+    // остальные трансформируют тело перед POST.
+    const slash = transformSlashCommand(body);
+    if (slash.kind === "nick") {
+      input.value = "";
+      saveDraft(channelIdSnapshot, "");
+      if (!slash.name) {
+        setTransientStatus("Использование: /nick новое_имя");
+        return;
+      }
+      try {
+        await httpClient.put("/api/v1/users/me", { displayName: slash.name });
+        if (state.me) state.me = { ...state.me, displayName: slash.name };
+        setTransientStatus(`Имя изменено на «${slash.name}»`);
+      } catch (err) {
+        state.status = describeError(err);
+      }
+      render();
+      return;
+    }
+    const bodyToSend = slash.body;
     input.value = "";
     saveDraft(channelIdSnapshot, "");
     const pendingSnapshot = state.pendingUploads;
@@ -10025,7 +10138,7 @@ function attachShellHandlers(): void {
     render();
     try {
       const created = await httpClient.post<Message>(`/api/v1/channels/${state.selectedChannelId}/messages`, {
-        body,
+        body: bodyToSend,
         clientMessageId: crypto.randomUUID(),
         attachmentIds,
         replyToMessageId: replyingSnapshot?.messageId ?? undefined
@@ -10172,10 +10285,44 @@ function attachShellHandlers(): void {
   }
 }
 
+// Wave 2: плавающая date-пилюля при скролле (Discord-style). Показывает
+// день верхней видимой границы, исчезает через 1.2с после остановки.
+let stickyDateHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+function updateStickyDate(list: HTMLDivElement): void {
+  const pill = rootEl.querySelector<HTMLElement>("#sticky-date");
+  if (!pill) return;
+  if (list.scrollTop < 20) {
+    pill.hidden = true;
+    return;
+  }
+  const listRect = list.getBoundingClientRect();
+  let label: string | null = null;
+  // Дивайдеров в окне немного (1 на день) — линейный проход дешёвый.
+  for (const holder of Array.from(list.querySelectorAll<HTMLElement>(".day-divider"))) {
+    if (holder.getBoundingClientRect().top <= listRect.top + 12) {
+      label = holder.textContent?.trim() ?? null;
+    } else {
+      break;
+    }
+  }
+  if (!label) {
+    pill.hidden = true;
+    return;
+  }
+  pill.textContent = label;
+  pill.hidden = false;
+  if (stickyDateHideTimer) clearTimeout(stickyDateHideTimer);
+  stickyDateHideTimer = setTimeout(() => {
+    pill.hidden = true;
+  }, 1200);
+}
+
 function onMessageListScroll(e: Event): void {
   const list = e.currentTarget as HTMLDivElement;
   const bottomDistance = list.scrollHeight - list.scrollTop - list.clientHeight;
   state.stickToBottom = bottomDistance < 80;
+  updateStickyDate(list);
   // Подгружаем старые когда юзер близок к верху и есть что грузить.
   if (
     list.scrollTop < 200 &&
