@@ -16,6 +16,7 @@ import {
   updateAppearance,
   watchSystemTheme,
   type Density,
+  type GifAvatarsMode,
   type ThemeMode
 } from "./appearance";
 import {
@@ -1080,7 +1081,9 @@ function insertWsRailImg(slot: HTMLButtonElement, animatedUrl: string, staticUrl
 }
 
 function extractFirstFrame(blob: Blob, blobUrl: string): Promise<string | null> {
-  if (blob.type !== "image/gif") return Promise.resolve(null);
+  // I.14: APNG тоже анимированный — first frame снимается тем же canvas'ом
+  // (drawImage на onload рисует первый кадр).
+  if (blob.type !== "image/gif" && blob.type !== "image/apng") return Promise.resolve(null);
   return new Promise<string | null>((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -2410,8 +2413,8 @@ function renderPinsPopup(): string {
   }
   if (state.channelPins.length === 0) {
     return `<div class="pins-popup">
-      <div class="pins-popup-header">Закреплённые сообщения</div>
-      <div class="pins-empty">Пока ничего не закреплено.</div>
+      <div class="pins-popup-header">${t("header.pins")}</div>
+      <div class="pins-empty">${t("pins.empty")}</div>
     </div>`;
   }
   const items = state.channelPins.map((m) => {
@@ -2432,7 +2435,7 @@ function renderPinsPopup(): string {
   }).join("");
   return `
     <div class="pins-popup">
-      <div class="pins-popup-header">Закреплённые сообщения · ${state.channelPins.length}</div>
+      <div class="pins-popup-header">${t("header.pins")} · ${state.channelPins.length}</div>
       <div class="pins-popup-list">${items}</div>
     </div>
   `;
@@ -2621,10 +2624,10 @@ function updateTypingLine(): void {
   el.classList.add("active");
   el.textContent =
     names.length === 1
-      ? `${names[0]} печатает…`
+      ? t("chat.typing.one", { a: names[0] })
       : names.length === 2
-        ? `${names[0]} и ${names[1]} печатают…`
-        : "Несколько человек печатают…";
+        ? t("chat.typing.two", { a: names[0], b: names[1] })
+        : t("chat.typing.many");
 }
 
 function handleRealtimeEvent(event: RealtimeEvent): void {
@@ -3235,7 +3238,7 @@ function renderShell(): void {
     ${connState === "reconnecting" && me ? `
       <div class="conn-banner" role="status">
         <span class="conn-banner-spinner"></span>
-        Соединение потеряно — переподключаюсь…
+        ${t("conn.reconnecting")}
       </div>
     ` : ""}
     ${me ? renderUpdateBanner() : ""}
@@ -3602,7 +3605,7 @@ function renderMemberSidebar(): string {
       sections.push(renderGroup(role.name, members));
     }
     const rest = online.filter((m) => !used.has(m.userId));
-    sections.push(renderGroup("В сети", rest));
+    sections.push(renderGroup(t("members.online"), rest));
     groupsHtml = sections.join("");
   } else {
     const owners = online.filter((m) => m.role === "owner");
@@ -3612,16 +3615,16 @@ function renderMemberSidebar(): string {
       (m) => m.role !== "owner" && m.role !== "admin" && m.role !== "moderator"
     );
     groupsHtml =
-      renderGroup("Владелец", owners) +
-      renderGroup("Администраторы", admins) +
-      renderGroup("Модераторы", moderators) +
-      renderGroup("В сети", onlineMembers);
+      renderGroup(t("members.owner"), owners) +
+      renderGroup(t("members.admins"), admins) +
+      renderGroup(t("members.mods"), moderators) +
+      renderGroup(t("members.online"), onlineMembers);
   }
   return `
     <aside class="member-sidebar">
       ${groupsHtml}
-      ${renderGroup("Не в сети", offline)}
-      ${state.members.length === 0 ? `<div class="member-sidebar-empty">Никого нет</div>` : ""}
+      ${renderGroup(t("members.offline"), offline)}
+      ${state.members.length === 0 ? `<div class="member-sidebar-empty">${t("members.none")}</div>` : ""}
     </aside>
   `;
 }
@@ -4408,7 +4411,7 @@ function renderDMChannelView(dm: DMItem): string {
       </div>
       <div class="channel-header-actions">
         <button id="dm-call" class="ghost" data-user-id="${escapeHtml(dm.peer.userId)}" title="Позвонить" aria-label="Позвонить">${icon("phone")}</button>
-        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="Закреплённые сообщения" aria-label="Закреплённые">${icon("pin")}</button>
+        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="${t("header.pins")}" aria-label="${t("header.pins")}">${icon("pin")}</button>
       </div>
       ${state.pinsPopupOpen && state.channelPinsChannelId === dm.channelId ? renderPinsPopup() : ""}
     </header>
@@ -4462,7 +4465,7 @@ function renderBellButton(): string {
   const badge = count > 0
     ? `<span class="bell-badge">${count > 99 ? "99+" : count}</span>`
     : "";
-  return `<button id="open-notifications" class="ghost bell-btn" title="Уведомления" aria-label="Уведомления">${icon("bell")}${badge}</button>`;
+  return `<button id="open-notifications" class="ghost bell-btn" title="${t("modal.notifications")}" aria-label="${t("modal.notifications")}">${icon("bell")}${badge}</button>`;
 }
 
 // J.5: dropdown под ch-panel-header'ом. Discord-style меню для управления
@@ -4524,7 +4527,7 @@ function renderInvitesModal(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal" role="dialog">
         <div class="modal-header">
-          <h3>Приглашения · ${escapeHtml(ws?.name ?? "")}</h3>
+          <h3>${t("modal.invites")} · ${escapeHtml(ws?.name ?? "")}</h3>
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="modal-body">
@@ -4598,15 +4601,15 @@ function renderChannelView(channel: Channel): string {
         ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
       </div>
       <div class="channel-header-actions">
-        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="Закреплённые сообщения" aria-label="Закреплённые">${icon("pin")}</button>
-        <button id="open-search" class="ghost" title="Поиск по сообщениям" aria-label="Поиск">${icon("search")}</button>
-        ${canModerate ? `<button id="open-audit" class="ghost" title="Журнал событий" aria-label="Журнал событий">${icon("scroll")}</button>` : ""}
-        <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? "Скрыть участников" : "Показать участников"}" aria-label="Участники">${icon("users")}</button>
+        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="${t("header.pins")}" aria-label="${t("header.pins")}">${icon("pin")}</button>
+        <button id="open-search" class="ghost" title="${t("header.search")}" aria-label="${t("modal.search")}">${icon("search")}</button>
+        ${canModerate ? `<button id="open-audit" class="ghost" title="${t("header.audit")}" aria-label="${t("header.audit")}">${icon("scroll")}</button>` : ""}
+        <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? t("header.members.hide") : t("header.members.show")}" aria-label="${t("modal.members")}">${icon("users")}</button>
       </div>
       ${state.pinsPopupOpen && state.channelPinsChannelId === channel.id ? renderPinsPopup() : ""}
     </header>
     ${canSend ? `<div id="drop-zone" class="drop-zone" hidden>
-      <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
+      <div class="drop-zone-inner">${t("chat.dropzone")}</div>
     </div>` : ""}
     <div id="sticky-date" class="sticky-date" hidden></div>
     <div id="message-list" class="message-list">
@@ -4619,7 +4622,7 @@ function renderChannelView(channel: Channel): string {
     <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
-      <label class="attach-btn ${canSend ? "" : "disabled"}" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
+      <label class="attach-btn ${canSend ? "" : "disabled"}" title="${t("chat.composer.attach", { max: MAX_ATTACHMENTS })}">
         ${icon("paperclip")}
         <input type="file" id="attach-input" multiple hidden ${canSend ? "" : "disabled"} />
       </label>
@@ -4628,13 +4631,13 @@ function renderChannelView(channel: Channel): string {
         autocomplete="off"
         placeholder="${canSend
           ? (slowModeRemainingSec(channel.id) > 0
-              ? `Медленный режим: ${slowModeRemainingSec(channel.id)}с до следующего сообщения`
-              : `Сообщение в #${channel.name}`)
-          : "Этот канал не принимает сообщения"}"
+              ? t("chat.composer.slowmode", { sec: slowModeRemainingSec(channel.id) })
+              : t("chat.composer.message_in", { name: channel.name }))
+          : t("chat.composer.readonly")}"
         ${canSend ? "" : "disabled"}
         value="${escapeHtml(canSend ? loadDraft(channel.id) : "")}"
       />
-      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="Эмодзи" ${canSend ? "" : "disabled"}>${icon("smile")}</button>
+      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="${t("chat.composer.emoji")}" ${canSend ? "" : "disabled"}>${icon("smile")}</button>
       <button type="submit" ${canSend && slowModeRemainingSec(channel.id) === 0 ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
@@ -4801,11 +4804,11 @@ function renderVoiceStrip(): string {
       </div>
       <ul class="voice-strip-list">${participants}</ul>
       <div class="voice-strip-actions">
-        ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? "Включить микрофон" : "Заглушить", muted ? "danger" : "")}
-        ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? "Включить звук" : "Заглушить всё", isDeafened() ? "danger" : "")}
-        ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? "Выключить камеру" : "Включить камеру", "", screenOn)}
-        ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? "Прекратить демо" : "Поделиться экраном", screenOn ? "active" : "")}
-        ${callIconButton("voice-leave", "log-out", leaving ? "Выхожу…" : "Выйти", "hangup", leaving)}
+        ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? t("voice.unmute") : t("voice.mute"), muted ? "danger" : "")}
+        ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? t("voice.undeafen") : t("voice.deafen"), isDeafened() ? "danger" : "")}
+        ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? t("voice.cam.off") : t("voice.cam.on"), "", screenOn)}
+        ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? t("voice.screen.stop") : t("voice.screen.start"), screenOn ? "active" : "")}
+        ${callIconButton("voice-leave", "log-out", leaving ? t("voice.leaving") : t("voice.leave"), "hangup", leaving)}
       </div>
     </div>
   `;
@@ -5317,9 +5320,9 @@ function dayLabel(iso: string): string {
   const now = new Date();
   const sod = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diff = Math.round((sod(now) - sod(d)) / 86400000);
-  if (diff === 0) return "Сегодня";
-  if (diff === 1) return "Вчера";
-  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+  if (diff === 0) return t("date.today");
+  if (diff === 1) return t("date.yesterday");
+  return d.toLocaleDateString(intlLocale(), { day: "numeric", month: "long", year: "numeric" });
 }
 
 // MENTION_RE_GLOBAL — синхронен с backend mentionRe: `@<slug>`, slug по
@@ -5492,30 +5495,24 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   const avatarSlot = grouped
     ? `<span class="message-avatar message-avatar-spacer" aria-hidden="true"><span class="grouped-timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${escapeHtml(formatTimeSmartShort(m.createdAt))}</span></span>`
     : avatarHtml;
+  // Wave 6: общий тулбар для обоих вариантов meta — i18n в одном месте.
+  const actionsHtml = `<span class="message-actions">
+          <button class="ghost action-react" data-id="${m.id}" title="${t("msg.react")}">${icon("smile")}</button>
+          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="${t("msg.reply")}">${icon("reply")}</button>
+          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="${t("msg.edit")}">${icon("pencil")}</button>` : ""}
+          ${canPin
+            ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" title="${m.isPinned ? t("msg.unpin") : t("msg.pin")}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
+            : ""}
+          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="${t("common.delete")}">${icon("trash")}</button>` : ""}
+        </span>`;
   const metaBlock = grouped
     ? `<div class="message-meta message-meta-grouped">
-        <span class="message-actions">
-          <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
-          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">${icon("reply")}</button>
-          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">${icon("pencil")}</button>` : ""}
-          ${canPin
-            ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" title="${m.isPinned ? "Открепить" : "Закрепить"}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
-            : ""}
-          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">${icon("trash")}</button>` : ""}
-        </span>
+        ${actionsHtml}
       </div>`
     : `<div class="message-meta">
-        <span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}${isMine ? ` <span class="author-mine">· вы</span>` : ""}
-        <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
-        <span class="message-actions">
-          <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
-          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="Ответить">${icon("reply")}</button>
-          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="Редактировать">${icon("pencil")}</button>` : ""}
-          ${canPin
-            ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" title="${m.isPinned ? "Открепить" : "Закрепить"}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
-            : ""}
-          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="Удалить">${icon("trash")}</button>` : ""}
-        </span>
+        <span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}${isMine ? ` <span class="author-mine">${t("msg.you")}</span>` : ""}
+        <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? t("msg.edited") : ""}</span>
+        ${actionsHtml}
       </div>`;
   const pinnedCls = m.isPinned ? " message-pinned" : "";
   return `
@@ -5937,7 +5934,7 @@ function renderWorkspaceSettingsModal(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal ws-settings-modal" role="dialog">
         <div class="modal-header">
-          <h3>Настройки · ${escapeHtml(ws.name)}</h3>
+          <h3>${t("modal.wssettings")} · ${escapeHtml(ws.name)}</h3>
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="ws-settings-shell">
@@ -6818,7 +6815,7 @@ function renderWorkspaceRolesModal(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal modal-wide roles-modal" role="dialog">
         <div class="modal-header">
-          <h3>Роли · ${escapeHtml(ws.name)}</h3>
+          <h3>${t("modal.roles")} · ${escapeHtml(ws.name)}</h3>
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="modal-body roles-modal-body">
@@ -7181,7 +7178,7 @@ function renderNotificationsModal(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal modal-wide" role="dialog">
         <div class="modal-header">
-          <h3>Уведомления</h3>
+          <h3>${t("modal.notifications")}</h3>
           <div class="modal-header-actions">
             ${state.notificationsUnread > 0
               ? `<button id="notif-mark-all" class="ghost">Прочитано всё</button>`
@@ -7233,7 +7230,7 @@ function renderSearchModal(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal modal-wide" role="dialog">
         <div class="modal-header">
-          <h3>Поиск · ${escapeHtml(ws.name)}</h3>
+          <h3>${t("modal.search")} · ${escapeHtml(ws.name)}</h3>
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="modal-body">
@@ -7274,7 +7271,7 @@ function renderAuditModal(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal modal-wide" role="dialog">
         <div class="modal-header">
-          <h3>Журнал событий · ${escapeHtml(ws.name)}</h3>
+          <h3>${t("modal.audit")} · ${escapeHtml(ws.name)}</h3>
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="modal-body">
@@ -7532,6 +7529,7 @@ const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   { tab: "appearance", label: "Акцентный цвет", keywords: ["accent", "color", "цвет"] },
   { tab: "appearance", label: "Плотность", keywords: ["density", "cozy", "compact", "уютная", "компактная"] },
   { tab: "appearance", label: "Сообщения", keywords: ["группировка", "role", "цвет ролей", "group"] },
+  { tab: "appearance", label: "Анимированные аватары", keywords: ["gif", "apng", "анимация", "hover", "наведение"] },
   { tab: "language", label: "Язык интерфейса", keywords: ["locale", "language", "russian", "english", "ru", "en", "перевод"] },
   { tab: "language", label: "Формат времени", keywords: ["12-часовой", "24-часовой", "am", "pm", "часы", "time format"] }
 ];
@@ -7937,6 +7935,20 @@ function renderSettingsAppearanceTab(): string {
         <span>Подсвечивать имя автора цветом роли</span>
       </label>
     </div>
+
+    <div class="settings-section">
+      <h3>Анимированные аватары</h3>
+      <div class="settings-row" style="display:flex; gap:8px; align-items:center;">
+        <select id="ap-gif-avatars" class="settings-select">
+          <option value="always" ${s.gifAvatars === "always" ? "selected" : ""}>Проигрывать всегда</option>
+          <option value="hover" ${s.gifAvatars === "hover" ? "selected" : ""}>Только при наведении</option>
+          <option value="never" ${s.gifAvatars === "never" ? "selected" : ""}>Никогда (статичный кадр)</option>
+        </select>
+      </div>
+      <small class="settings-hint">
+        Анимированные баннеры профиля проигрываются всегда.
+      </small>
+    </div>
   `;
 }
 
@@ -7974,6 +7986,12 @@ function attachSettingsAppearanceHandlers(): void {
   });
   rootEl.querySelector<HTMLInputElement>("#ap-role-colors")?.addEventListener("change", (e) => {
     updateAppearance({ roleColors: (e.currentTarget as HTMLInputElement).checked });
+    render();
+  });
+  // I.14: режим анимации аватаров. render() пересоздаёт avatar-слоты —
+  // attachAvatarSlots перезаполнит их уже в новом режиме.
+  rootEl.querySelector<HTMLSelectElement>("#ap-gif-avatars")?.addEventListener("change", (e) => {
+    updateAppearance({ gifAvatars: (e.currentTarget as HTMLSelectElement).value as GifAvatarsMode });
     render();
   });
 }
@@ -9437,7 +9455,7 @@ function renderMembersModal(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal modal-wide" role="dialog">
         <div class="modal-header">
-          <h3>Участники · ${escapeHtml(ws.name)}</h3>
+          <h3>${t("modal.members")} · ${escapeHtml(ws.name)}</h3>
           <button class="ghost modal-close-btn" data-modal-close>✕</button>
         </div>
         <div class="modal-body">
@@ -11343,6 +11361,27 @@ function attachShellHandlers(): void {
   // letter-placeholder под <img> — placeholder остаётся видим, пока blob
   // не приехал; при успешной загрузке мы добавляем <img> сверху (placeholder
   // буква скрыта CSS'ом когда есть .avatar-pic img).
+  // I.14: GIF/APNG-аватары. gifStaticCache хранит первый кадр по media-url
+  // (присутствие записи = «этот media анимированный»). Режим из I.5:
+  // always — анимация всегда; hover — статичный кадр + анимация при
+  // наведении; never — только статичный кадр.
+  const fillAvatarSlot = (s: HTMLSpanElement, animUrl: string, staticUrl: string | null): void => {
+    if (s.querySelector("img")) return;
+    const mode = getAppearance().gifAvatars;
+    const useStatic = staticUrl !== null && mode !== "always";
+    s.insertAdjacentHTML("afterbegin", `<img class="avatar-img" src="${useStatic ? staticUrl : animUrl}" alt="" />`);
+    if (staticUrl !== null && mode === "hover" && !s.dataset.gifBound) {
+      s.dataset.gifBound = "1";
+      s.addEventListener("mouseenter", () => {
+        const img = s.querySelector<HTMLImageElement>(".avatar-img");
+        if (img) img.src = animUrl;
+      });
+      s.addEventListener("mouseleave", () => {
+        const img = s.querySelector<HTMLImageElement>(".avatar-img");
+        if (img) img.src = staticUrl;
+      });
+    }
+  };
   rootEl.querySelectorAll<HTMLSpanElement>(".avatar-pic.has-media").forEach((slot) => {
     const mediaId = slot.dataset.avatarMedia;
     if (!mediaId) return;
@@ -11350,7 +11389,7 @@ function attachShellHandlers(): void {
     const url = `/api/v1/media/${mediaId}`;
     const cached = mediaBlobCache.get(url);
     if (cached) {
-      slot.insertAdjacentHTML("afterbegin", `<img class="avatar-img" src="${cached}" alt="" />`);
+      fillAvatarSlot(slot, cached, gifStaticCache.get(url) ?? null);
       return;
     }
     void (async () => {
@@ -11358,18 +11397,16 @@ function attachShellHandlers(): void {
         const blob = await httpClient.getBlob(url);
         const blobUrl = URL.createObjectURL(blob);
         mediaBlobCache.set(url, blobUrl);
-        const fresh = rootEl.querySelector<HTMLSpanElement>(
-          `.avatar-pic.has-media[data-avatar-media="${CSS.escape(mediaId)}"]`
-        );
+        let staticUrl: string | null = null;
+        if (blob.type === "image/gif" || blob.type === "image/apng") {
+          staticUrl = await extractFirstFrame(blob, blobUrl);
+          if (staticUrl) gifStaticCache.set(url, staticUrl);
+        }
         // Может быть несколько слотов с тем же media-id (мой аватар в
         // user-strip и в моих сообщениях). Заполним все.
         rootEl.querySelectorAll<HTMLSpanElement>(
           `.avatar-pic.has-media[data-avatar-media="${CSS.escape(mediaId)}"]`
-        ).forEach((s) => {
-          if (s.querySelector("img")) return;
-          s.insertAdjacentHTML("afterbegin", `<img class="avatar-img" src="${blobUrl}" alt="" />`);
-        });
-        void fresh;
+        ).forEach((s) => fillAvatarSlot(s, blobUrl, staticUrl));
       } catch {
         // оставляем letter-placeholder
       }

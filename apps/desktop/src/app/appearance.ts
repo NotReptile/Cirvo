@@ -5,6 +5,9 @@
 
 export type ThemeMode = "dark" | "light" | "auto";
 export type Density = "cozy" | "compact";
+// Wave 7 (I.14): анимация GIF/APNG-аватаров. hover = статичный первый
+// кадр, анимация при наведении; never = всегда статичный кадр.
+export type GifAvatarsMode = "always" | "hover" | "never";
 
 export interface AppearanceSettings {
   theme: ThemeMode;
@@ -12,6 +15,7 @@ export interface AppearanceSettings {
   density: Density;
   groupMessages: boolean; // склеивать подряд идущие от одного автора
   roleColors: boolean; // подсвечивать имя автора цветом роли
+  gifAvatars: GifAvatarsMode;
 }
 
 const LS_KEY = "rucord:appearance";
@@ -21,7 +25,8 @@ const DEFAULTS: AppearanceSettings = {
   accent: "",
   density: "cozy",
   groupMessages: true,
-  roleColors: true
+  roleColors: true,
+  gifAvatars: "always"
 };
 
 let cache: AppearanceSettings | null = null;
