@@ -216,6 +216,10 @@ interface Channel {
   isNsfw?: boolean;
   // J.5: null/undefined = «Без категории» (Discord-pattern, отдельный блок).
   categoryId?: string | null;
+  // Wave 8: ISO-дата = канал в архиве (read-only, в sidebar — блок «Архив»).
+  archivedAt?: string | null;
+  // Wave 8: '#rrggbb' — цвет имени канала в sidebar; пусто = цвет темы.
+  nameColor?: string | null;
 }
 
 // J.5: пользовательская категория каналов. CRUD через `/api/v1/workspaces/{ws}/categories`
@@ -524,7 +528,8 @@ interface ChannelSettingsState {
   userDraft: PermDraft;
   // J.3: draft для таба «Обзор» — отдельный от permission'ов draft.
   // J.5: categoryId draft — пустая строка "" = «Без категории» (NULL).
-  overviewDraft: { name: string; topic: string; slowMode: number; isNsfw: boolean; categoryId: string };
+  // Wave 8: nameColor — '#rrggbb' либо "" = цвет темы.
+  overviewDraft: { name: string; topic: string; slowMode: number; isNsfw: boolean; categoryId: string; nameColor: string };
 }
 
 // Wave 5 (J.5b): права категории — отдельная модалка (ПКМ по заголовку
@@ -706,6 +711,8 @@ interface AppState {
   voicePeekAll: Record<string, VoicePeekParticipant[]>;
   replyingTo: ReplySnippet | null;
   mentionAutocomplete: MentionAutocomplete | null;
+  // Wave 8: автокомплит `#канал` в композере — зеркалит mentionAutocomplete.
+  channelAutocomplete: MentionAutocomplete | null;
   // C.4: smart scroll + lazy pagination
   messagesCursor: string | null;       // следующий before= для подгрузки старых
   messagesHasMore: boolean;
@@ -911,6 +918,7 @@ const state: AppState = {
   voicePeekAll: {},
   replyingTo: null,
   mentionAutocomplete: null,
+  channelAutocomplete: null,
   messagesCursor: null,
   messagesHasMore: false,
   messagesLoadingOlder: false,
@@ -950,7 +958,7 @@ const state: AppState = {
     draft: {},
     userData: null,
     userDraft: {},
-    overviewDraft: { name: "", topic: "", slowMode: 0, isNsfw: false, categoryId: "" }
+    overviewDraft: { name: "", topic: "", slowMode: 0, isNsfw: false, categoryId: "", nameColor: "" }
   },
   workspaceRoles: {
     workspaceId: null,
@@ -3661,6 +3669,7 @@ function renderChannelMenu(): string {
       <div class="channel-menu-separator"></div>
       ${canManage ? `<button class="channel-menu-item" data-channel-action="rename" data-id="${ch.id}">${t("menu.rename")}</button>` : ""}
       ${canManage ? `<button class="channel-menu-item" data-channel-action="clone" data-id="${ch.id}">${t("menu.clone")}</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-channel-action="${ch.archivedAt ? "unarchive" : "archive"}" data-id="${ch.id}">${ch.archivedAt ? t("menu.unarchive") : t("menu.archive")}</button>` : ""}
       <button class="channel-menu-item" data-channel-action="copy-id" data-id="${ch.id}">${t("menu.copyid")}</button>
       ${canManage ? `<div class="channel-menu-separator"></div><button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">${t("menu.delete_channel")}</button>` : ""}
     </div>
@@ -4069,7 +4078,14 @@ function renderChannelsBlock(): string {
   const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
   const categories = [...state.categories].sort((a, b) => a.position - b.position || a.createdAt.localeCompare(b.createdAt));
   const channelsByCat = new Map<string | null, Channel[]>();
+  // Wave 8: архивные каналы не участвуют в категориях — копятся в отдельный
+  // сворачиваемый блок внизу sidebar'а.
+  const archived: Channel[] = [];
   for (const ch of state.channels) {
+    if (ch.archivedAt) {
+      archived.push(ch);
+      continue;
+    }
     const key = ch.categoryId ?? null;
     const list = channelsByCat.get(key) ?? [];
     list.push(ch);
@@ -4090,6 +4106,53 @@ function renderChannelsBlock(): string {
   return `
     ${orphanBlock}
     ${catBlocks}
+    ${renderArchivedBlock(archived, canManage)}
+  `;
+}
+
+// Wave 8: блок «Архив» — отдельная секция в самом низу. По умолчанию
+// свёрнута (persist в localStorage); свёрнутая показывает только активный
+// канал, как и обычные категории (J.6).
+const ARCHIVE_COLLAPSED_KEY = "rucord:archive-collapsed";
+
+function isArchiveCollapsed(): boolean {
+  try {
+    return localStorage.getItem(ARCHIVE_COLLAPSED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function renderArchivedBlock(archived: Channel[], canManage: boolean): string {
+  if (archived.length === 0) return "";
+  archived.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  const collapsed = isArchiveCollapsed();
+  const visible = collapsed ? archived.filter((c) => c.id === state.selectedChannelId) : archived;
+  const items = visible
+    .map((ch) => {
+      const cls = ch.id === state.selectedChannelId ? "active" : "";
+      const actions = canManage
+        ? `<span class="channel-item-actions">
+             <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
+           </span>`
+        : "";
+      return `
+        <li class="${cls} archived" data-ch="${ch.id}">
+          <span class="channel-prefix">${channelPrefix(ch)}</span>
+          <span class="channel-name"${ch.nameColor ? ` style="color:${escapeHtml(ch.nameColor)}"` : ""}>${escapeHtml(ch.name)}</span>
+          ${actions}
+        </li>
+      `;
+    })
+    .join("");
+  return `
+    <div class="section-title ch-category-title ${collapsed ? "collapsed" : ""}">
+      <button class="ch-category-toggle" data-archive-collapse>
+        <span class="ch-category-label">${t("sidebar.archive")} · ${archived.length}</span>
+        <span class="ch-category-glyph">${collapsed ? "▸" : "▾"}</span>
+      </button>
+    </div>
+    <ul class="channel-list channel-list-archived">${items}</ul>
   `;
 }
 
@@ -4139,7 +4202,7 @@ function renderChannelCategory(
       return `
         <li class="${cls}" data-ch="${ch.id}" data-cat-id="${escapeHtml(catId ?? "")}"${canManage ? ' draggable="true"' : ""}>
           <span class="channel-prefix">${channelPrefix(ch)}</span>
-          <span class="channel-name">${escapeHtml(ch.name)}</span>
+          <span class="channel-name"${ch.nameColor ? ` style="color:${escapeHtml(ch.nameColor)}"` : ""}>${escapeHtml(ch.name)}</span>
           ${badge}
           ${actions}
         </li>
@@ -4587,7 +4650,9 @@ function renderChannelView(channel: Channel): string {
       </div>
     `;
   }
-  const canSend = channel.kind === "text";
+  // Wave 8: архивный канал — read-only (бэк отдаст 403 на POST в любом случае).
+  const isArchived = !!channel.archivedAt;
+  const canSend = channel.kind === "text" && !isArchived;
   const ws = state.workspaces.find((w) => w.id === channel.workspaceId);
   const canModerate = !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
   // J.1 + J.4: тема канала переехала на ту же строку, что и имя
@@ -4598,6 +4663,7 @@ function renderChannelView(channel: Channel): string {
     <header class="channel-header">
       <div class="channel-header-title">
         <h2>${channelPrefix(channel)}<span class="channel-header-name">${escapeHtml(channel.name)}</span></h2>
+        ${isArchived ? `<span class="channel-archived-badge">${t("chat.header.archived")}</span>` : ""}
         ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
       </div>
       <div class="channel-header-actions">
@@ -4619,6 +4685,7 @@ function renderChannelView(channel: Channel): string {
     ${state.pendingUploads.length > 0 ? renderPendingUploads() : ""}
     ${renderReplyBar()}
     <div id="mention-popup" class="mention-popup" hidden></div>
+    <div id="channel-popup" class="mention-popup" hidden></div>
     <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
@@ -4633,7 +4700,7 @@ function renderChannelView(channel: Channel): string {
           ? (slowModeRemainingSec(channel.id) > 0
               ? t("chat.composer.slowmode", { sec: slowModeRemainingSec(channel.id) })
               : t("chat.composer.message_in", { name: channel.name }))
-          : t("chat.composer.readonly")}"
+          : (isArchived ? t("chat.composer.archived") : t("chat.composer.readonly"))}"
         ${canSend ? "" : "disabled"}
         value="${escapeHtml(canSend ? loadDraft(channel.id) : "")}"
       />
@@ -4704,29 +4771,34 @@ function renderVoiceChannelView(channel: Channel): string {
   // канала, подзаголовком и primary-кнопкой по центру. Когда есть
   // участники (joined или просто peek с активными) — обычный voice-tiles
   // layout.
+  // Wave 8: архивный voice — join спрятан (бэк в любом случае вернёт 403).
+  const isArchived = !!channel.archivedAt;
   const header = `
     <header class="channel-header">
       <div class="channel-header-title">
         <h2>${channelPrefix(channel)}<span class="channel-header-name">${escapeHtml(channel.name)}</span></h2>
+        ${isArchived ? `<span class="channel-archived-badge">${t("chat.header.archived")}</span>` : ""}
         ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
       </div>
     </header>
   `;
 
   if (participants.length === 0 && !joined) {
-    const subtitle = busyOther
-      ? "Сейчас вы в другом голосовом канале. Сначала выйдите оттуда."
-      : "Сейчас в голосовом чате никого нет";
+    const subtitle = isArchived
+      ? t("chat.composer.archived")
+      : busyOther
+        ? "Сейчас вы в другом голосовом канале. Сначала выйдите оттуда."
+        : "Сейчас в голосовом чате никого нет";
     return `
       ${header}
       <div class="voice-hero">
         <div class="voice-hero-card">
           <h1 class="voice-hero-title">${escapeHtml(channel.name)}</h1>
           <div class="voice-hero-subtitle">${escapeHtml(subtitle)}</div>
-          <button id="voice-join" class="voice-hero-cta primary" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
+          ${isArchived ? "" : `<button id="voice-join" class="voice-hero-cta primary" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
             ${icon("phone-outgoing", { size: 16 })}
             <span>${joining ? "Подключаюсь…" : "Присоединиться к голосовому каналу"}</span>
-          </button>
+          </button>`}
           ${error ? `<div class="voice-hero-error">${escapeHtml(error)}</div>` : ""}
         </div>
       </div>
@@ -5332,6 +5404,10 @@ const MENTION_RE_GLOBAL = /(^|[^A-Za-z0-9_])@([a-z0-9_]{3,32})/g;
 // Wave 4: @everyone/@here — подсвечиваются только если бэк подтвердил
 // (message.mentionEveryone), иначе остаются обычным текстом.
 const EVERYONE_RE_GLOBAL = /(^|[^A-Za-z0-9_])@(everyone|here)\b/g;
+// Wave 8: #channel-ссылки. Токен — непрерывное «слово» (имена с пробелами
+// не линкуются — Discord-конвенция); матч против известных имён каналов
+// текущего воркспейса, иначе остаётся обычным текстом.
+const CHANNEL_RE_GLOBAL = /(^|[^\p{L}\p{N}_#])#([\p{L}\p{N}_-]{1,64})/gu;
 // Wave 2: опциональный язык после ``` — только если за ним перевод строки
 // (```код``` в одну строку без языка не должен съедать первое слово).
 const FENCED_RE = /```(?:([A-Za-z0-9+#-]{1,20})\n)?([\s\S]*?)```/g;
@@ -5410,6 +5486,16 @@ function renderBody(body: string, mentionEveryone?: string): string {
       prefix + stash(`<span class="mention mention-everyone">@${token}</span>`)
     );
   }
+
+  // 4.7) #channel-ссылки (Wave 8). Клик обрабатывается делегатом на
+  // message-list (data-channel-link → selectChannel). Архивные каналы
+  // линкуются тоже — это и есть «доступен по прямой ссылке».
+  const knownChannels = new Map(state.channels.map((c) => [c.name.toLowerCase(), c]));
+  text = text.replace(CHANNEL_RE_GLOBAL, (full: string, prefix: string, name: string) => {
+    const ch = knownChannels.get(name.toLowerCase());
+    if (!ch) return full;
+    return prefix + stash(`<span class="channel-link" data-channel-link="${ch.id}">#${escapeHtml(name)}</span>`);
+  });
 
   // 5) Эскейпим всё оставшееся. Плейсхолдеры (N) состоят
   //    только из управляющего символа и цифр — escapeHtml их не трогает.
@@ -10465,7 +10551,8 @@ function attachShellHandlers(): void {
           topic: ch?.topic ?? "",
           slowMode: ch?.slowModeSeconds ?? 0,
           isNsfw: !!ch?.isNsfw,
-          categoryId: ch?.categoryId ?? ""
+          categoryId: ch?.categoryId ?? "",
+          nameColor: ch?.nameColor ?? ""
         }
       };
       render();
@@ -10874,6 +10961,20 @@ function attachShellHandlers(): void {
         render();
         return;
       }
+      if (action === "archive" || action === "unarchive") {
+        // Wave 8: soft-archive через PATCH. realtime channel.updated догонит
+        // остальных клиентов; локально апдейтим ответом сразу.
+        try {
+          const updated = await httpClient.patch<Channel>(`/api/v1/channels/${id}`, {
+            archived: action === "archive"
+          });
+          state.channels = state.channels.map((c) => (c.id === id ? updated : c));
+        } catch (err) {
+          state.status = describeError(err);
+        }
+        render();
+        return;
+      }
       if (action === "rename") {
         const nextRaw = await promptDialog({
           title: "Переименовать канал",
@@ -11119,6 +11220,16 @@ function attachShellHandlers(): void {
       saveCollapsedCategories();
       render();
     });
+  });
+  // Wave 8: collapse-toggle блока «Архив».
+  rootEl.querySelector<HTMLButtonElement>("[data-archive-collapse]")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    try {
+      localStorage.setItem(ARCHIVE_COLLAPSED_KEY, isArchiveCollapsed() ? "0" : "1");
+    } catch {
+      /* quota / disabled */
+    }
+    render();
   });
   attachCreateChannelHandlers();
   attachWorkspaceSettingsHandlers();
@@ -11512,11 +11623,14 @@ function attachShellHandlers(): void {
   // терять фокус/курсор в input'е (см. техдолг про инкрементальный апдейт).
   const composerInput = rootEl.querySelector<HTMLInputElement>('#send-form input[name="body"]');
   const mentionPopup = rootEl.querySelector<HTMLDivElement>("#mention-popup");
+  // Wave 8: попап `#канал` — есть только в workspace-каналах (в DM нет).
+  const channelPopup = rootEl.querySelector<HTMLDivElement>("#channel-popup");
   if (composerInput && mentionPopup) {
     composerInput.addEventListener("input", () => {
       saveDraft(state.selectedChannelId, composerInput.value);
       if (composerInput.value) maybeSendTyping();
       updateMentionPopup(composerInput, mentionPopup);
+      if (channelPopup) updateChannelPopup(composerInput, channelPopup);
       updateSlashPopup(composerInput);
     });
     // Wave 2: кнопка-смайл рядом с send. Вставка по каретке + dispatch
@@ -11536,12 +11650,16 @@ function attachShellHandlers(): void {
         }
       });
     });
-    composerInput.addEventListener("click", () => updateMentionPopup(composerInput, mentionPopup));
+    composerInput.addEventListener("click", () => {
+      updateMentionPopup(composerInput, mentionPopup);
+      if (channelPopup) updateChannelPopup(composerInput, channelPopup);
+    });
     composerInput.addEventListener("keyup", (ev) => {
       // ArrowLeft/Right двигают каретку — пересчитаем токен. Стрелки
       // вверх/вниз и Enter обрабатываются на keydown ниже.
       if (ev.key === "ArrowLeft" || ev.key === "ArrowRight" || ev.key === "Home" || ev.key === "End") {
         updateMentionPopup(composerInput, mentionPopup);
+        if (channelPopup) updateChannelPopup(composerInput, channelPopup);
       }
     });
     composerInput.addEventListener("keydown", (ev) => {
@@ -11551,11 +11669,39 @@ function attachShellHandlers(): void {
         ev.key === "ArrowUp" &&
         composerInput.value === "" &&
         !state.editingMessageId &&
-        (!state.mentionAutocomplete || mentionPopup.hidden)
+        (!state.mentionAutocomplete || mentionPopup.hidden) &&
+        (!state.channelAutocomplete || !channelPopup || channelPopup.hidden)
       ) {
         if (tryEditLastOwnMessage()) {
           ev.preventDefault();
           return;
+        }
+      }
+      // Wave 8: навигация по channel-попапу. Токены `@…` и `#…` взаимно
+      // исключающие — активен максимум один попап.
+      if (channelPopup && state.channelAutocomplete && !channelPopup.hidden) {
+        const chMatches = filterChannelMatches(state.channelAutocomplete.query);
+        if (chMatches.length > 0) {
+          if (ev.key === "ArrowDown") {
+            ev.preventDefault();
+            state.channelAutocomplete.selectIndex = (state.channelAutocomplete.selectIndex + 1) % chMatches.length;
+            renderChannelPopupContent(channelPopup, chMatches, state.channelAutocomplete.selectIndex);
+            return;
+          } else if (ev.key === "ArrowUp") {
+            ev.preventDefault();
+            state.channelAutocomplete.selectIndex =
+              (state.channelAutocomplete.selectIndex - 1 + chMatches.length) % chMatches.length;
+            renderChannelPopupContent(channelPopup, chMatches, state.channelAutocomplete.selectIndex);
+            return;
+          } else if (ev.key === "Enter" || ev.key === "Tab") {
+            ev.preventDefault();
+            applyChannelPick(composerInput, channelPopup, chMatches[state.channelAutocomplete.selectIndex].name);
+            return;
+          } else if (ev.key === "Escape") {
+            ev.preventDefault();
+            hideChannelPopup(channelPopup);
+            return;
+          }
         }
       }
       if (!state.mentionAutocomplete || mentionPopup.hidden) return;
@@ -11580,13 +11726,22 @@ function attachShellHandlers(): void {
     });
     composerInput.addEventListener("blur", () => {
       // Микро-задержка чтобы клик по popup успел отработать раньше скрытия.
-      setTimeout(() => hideMentionPopup(mentionPopup), 120);
+      setTimeout(() => {
+        hideMentionPopup(mentionPopup);
+        if (channelPopup) hideChannelPopup(channelPopup);
+      }, 120);
     });
     mentionPopup.addEventListener("mousedown", (ev) => {
       const target = (ev.target as HTMLElement).closest<HTMLElement>("[data-mention-username]");
       if (!target) return;
       ev.preventDefault();
       applyMentionPick(composerInput, mentionPopup, target.dataset.mentionUsername!);
+    });
+    channelPopup?.addEventListener("mousedown", (ev) => {
+      const target = (ev.target as HTMLElement).closest<HTMLElement>("[data-channel-pick]");
+      if (!target) return;
+      ev.preventDefault();
+      applyChannelPick(composerInput, channelPopup, target.dataset.channelPick!);
     });
 
     // G.1.c: Ctrl+V вставка вложений из буфера. Любые file-items в
@@ -11790,6 +11945,14 @@ function attachShellHandlers(): void {
       if (target && !target.classList.contains("revealed")) {
         target.classList.add("revealed");
         ev.stopPropagation();
+        return;
+      }
+      // Wave 8: клик по #channel-ссылке — переход в канал (включая архивные).
+      const chLink = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-channel-link]");
+      const chId = chLink?.dataset.channelLink;
+      if (chId && chId !== state.selectedChannelId) {
+        ev.stopPropagation();
+        void selectChannel(chId);
       }
     });
   }
@@ -11927,6 +12090,84 @@ function applyMentionPick(input: HTMLInputElement, popup: HTMLDivElement, userna
   const newCaret = startOfToken + replacement.length;
   input.setSelectionRange(newCaret, newCaret);
   hideMentionPopup(popup);
+  input.focus();
+}
+
+// ---- channel popup (Wave 8) ------------------------------------------------
+// `#<prefix>` перед кареткой → попап каналов текущего воркспейса, зеркалит
+// mention-попап. Предлагаем только «линкуемые» имена (без пробелов) — иначе
+// вставленный токен не превратился бы в ссылку в renderBody.
+
+const CHANNEL_TOKEN_RE = /(?:^|\s)#([\p{L}\p{N}_-]{0,64})$/u;
+const CHANNEL_LINKABLE_RE = /^[\p{L}\p{N}_-]{1,64}$/u;
+
+function filterChannelMatches(query: string): Channel[] {
+  const q = query.toLowerCase();
+  const out: Channel[] = [];
+  // Архивные тоже линкуются («доступен по прямой ссылке») — идут в конце.
+  const ordered = [...state.channels].sort(
+    (a, b) => Number(!!a.archivedAt) - Number(!!b.archivedAt) || a.name.localeCompare(b.name)
+  );
+  for (const ch of ordered) {
+    if (!CHANNEL_LINKABLE_RE.test(ch.name)) continue;
+    if (!ch.name.toLowerCase().startsWith(q)) continue;
+    out.push(ch);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
+function updateChannelPopup(input: HTMLInputElement, popup: HTMLDivElement): void {
+  const caret = input.selectionStart ?? input.value.length;
+  const head = input.value.slice(0, caret);
+  const m = head.match(CHANNEL_TOKEN_RE);
+  if (!m) {
+    hideChannelPopup(popup);
+    return;
+  }
+  const query = m[1];
+  const matches = filterChannelMatches(query);
+  if (matches.length === 0) {
+    hideChannelPopup(popup);
+    return;
+  }
+  const prevIndex = state.channelAutocomplete?.selectIndex ?? 0;
+  const selectIndex = Math.min(prevIndex, matches.length - 1);
+  state.channelAutocomplete = { query, selectIndex };
+  renderChannelPopupContent(popup, matches, selectIndex);
+  popup.hidden = false;
+}
+
+function renderChannelPopupContent(popup: HTMLDivElement, matches: Channel[], selectIndex: number): void {
+  popup.innerHTML = matches
+    .map(
+      (ch, i) => `<div class="mention-item${i === selectIndex ? " selected" : ""}" data-channel-pick="${escapeHtml(ch.name)}">
+        <span class="mention-name">${channelPrefix(ch)}${escapeHtml(ch.name)}</span>
+        ${ch.archivedAt ? `<span class="mention-sub">${t("sidebar.archive")}</span>` : ch.topic ? `<span class="mention-sub">${escapeHtml(ch.topic)}</span>` : ""}
+      </div>`
+    )
+    .join("");
+}
+
+function hideChannelPopup(popup: HTMLDivElement): void {
+  popup.hidden = true;
+  popup.innerHTML = "";
+  state.channelAutocomplete = null;
+}
+
+function applyChannelPick(input: HTMLInputElement, popup: HTMLDivElement, name: string): void {
+  const caret = input.selectionStart ?? input.value.length;
+  const head = input.value.slice(0, caret);
+  const tail = input.value.slice(caret);
+  const m = head.match(CHANNEL_TOKEN_RE);
+  if (!m) return;
+  const prefixLen = m[0].length - 1 - m[1].length;
+  const startOfToken = head.length - m[0].length + prefixLen;
+  const replacement = "#" + name + " ";
+  input.value = input.value.slice(0, startOfToken) + replacement + tail;
+  const newCaret = startOfToken + replacement.length;
+  input.setSelectionRange(newCaret, newCaret);
+  hideChannelPopup(popup);
   input.focus();
 }
 
@@ -12590,6 +12831,14 @@ function renderChannelSettingsOverview(): string {
       <small class="settings-hint">Группа в sidebar'е. Каналы без категории идут отдельным блоком сверху.</small>
     </div>
     <div class="settings-section">
+      <h3>Цвет названия</h3>
+      <div class="cs-color-row">
+        <input id="cs-color" type="color" value="${escapeHtml(draft.nameColor || "#8e9297")}" />
+        <button id="cs-color-reset" class="ghost" ${draft.nameColor ? "" : "disabled"}>Сбросить</button>
+      </div>
+      <small class="settings-hint">Цвет имени канала в списке слева. «Сбросить» вернёт цвет темы.</small>
+    </div>
+    <div class="settings-section">
       <h3>Медленный режим</h3>
       <select id="cs-slowmode" class="settings-select">${slowOpts}</select>
       <small class="settings-hint">
@@ -12917,6 +13166,19 @@ function attachChannelSettingsHandlers(): void {
   rootEl.querySelector<HTMLSelectElement>("#cs-slowmode")?.addEventListener("change", (e) => {
     draft.slowMode = Number((e.currentTarget as HTMLSelectElement).value);
   });
+  // Wave 8: цвет имени. input — live в draft без render(); reset — draft=""
+  // (DOM-mutate кнопки/пикера, чтобы не терять открытый picker).
+  const colorEl = rootEl.querySelector<HTMLInputElement>("#cs-color");
+  const colorResetEl = rootEl.querySelector<HTMLButtonElement>("#cs-color-reset");
+  colorEl?.addEventListener("input", () => {
+    draft.nameColor = colorEl.value;
+    if (colorResetEl) colorResetEl.disabled = false;
+  });
+  colorResetEl?.addEventListener("click", () => {
+    draft.nameColor = "";
+    if (colorEl) colorEl.value = "#8e9297";
+    colorResetEl.disabled = true;
+  });
   rootEl.querySelector<HTMLSelectElement>("#cs-category")?.addEventListener("change", (e) => {
     draft.categoryId = (e.currentTarget as HTMLSelectElement).value;
   });
@@ -12978,6 +13240,8 @@ async function saveChannelOverview(): Promise<void> {
   if (draft.isNsfw !== !!channel.isNsfw) patch.isNsfw = draft.isNsfw;
   // J.5: categoryId: "" = снять привязку (backend получит "" → NULL); UUID = переместить.
   if ((draft.categoryId || "") !== (channel.categoryId ?? "")) patch.categoryId = draft.categoryId;
+  // Wave 8: nameColor: "" = сброс на цвет темы (backend получит "" → NULL).
+  if ((draft.nameColor || "") !== (channel.nameColor ?? "")) patch.nameColor = draft.nameColor;
   if (Object.keys(patch).length === 0) {
     state.channelSettings.saving = false;
     setTransientStatus("Без изменений");

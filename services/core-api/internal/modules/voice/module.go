@@ -86,6 +86,13 @@ func (m *Module) handleJoin(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel is not voice")
 		return
 	}
+	// Wave 8: в архивный voice-канал не подключаемся — сначала вернуть из архива.
+	var archivedAt *time.Time
+	if err := m.db.QueryRow(r.Context(),
+		`select archived_at from channels where id = $1`, channelID).Scan(&archivedAt); err == nil && archivedAt != nil {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "channel is archived")
+		return
+	}
 
 	tx, err := m.db.Begin(r.Context())
 	if err != nil {

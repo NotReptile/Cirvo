@@ -647,6 +647,37 @@ input[type="color"] {
 .channel-list li.muted .channel-name { text-decoration: line-through; }
 .channel-list li.muted .unread-badge { display: none; }
 
+/* Wave 8: архивные каналы — приглушённый блок внизу sidebar'а. */
+.channel-list-archived li.archived:not(.active) { opacity: 0.55; }
+
+/* Wave 8: бейдж «в архиве» в шапке канала. */
+.channel-archived-badge {
+  flex: none;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+/* Wave 8: ряд color-picker'а в настройках канала. */
+.cs-color-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cs-color-row input[type="color"] {
+  width: 48px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elev-2);
+  cursor: pointer;
+}
+
 /* Popup управления громкостью remote-участника (ПКМ на чужом voice-tile). */
 .voice-volume-menu {
   position: fixed;
@@ -807,6 +838,19 @@ input[type="color"] {
 .mention.mention-everyone {
   background: rgba(250, 166, 26, 0.22);
   color: #ffd980;
+}
+/* Wave 8: кликабельная #channel-ссылка в сообщении — визуально как mention. */
+.channel-link {
+  color: #b4c2ff;
+  background: rgba(88, 101, 242, 0.18);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.channel-link:hover {
+  background: rgba(88, 101, 242, 0.4);
+  color: #fff;
 }
 
 /* C.3: inline markdown */

@@ -369,8 +369,17 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	// одного юзера допустима (race-окно мс на ту же пуш-стрим).
 	if scope.Kind == "text" {
 		var slowSec int
-		if err := m.db.QueryRow(r.Context(),
-			`select slow_mode_seconds from channels where id = $1`, channelID).Scan(&slowSec); err == nil && slowSec > 0 {
+		var archivedAt *time.Time
+		err := m.db.QueryRow(r.Context(),
+			`select slow_mode_seconds, archived_at from channels where id = $1`, channelID).Scan(&slowSec, &archivedAt)
+		// Wave 8: архивный канал read-only для всех (включая модераторов) —
+		// чтобы написать, канал возвращают из архива через PATCH. System-плашки
+		// идут через PostSystemMessage и этот guard не проходят.
+		if err == nil && archivedAt != nil {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "channel is archived")
+			return
+		}
+		if err == nil && slowSec > 0 {
 			isModerator := permission.CanInChannel(r.Context(), m.db, scope.WorkspaceID, channelID, userID, permission.MessageModerate)
 			if !isModerator {
 				var lastTS *time.Time

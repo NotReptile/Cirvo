@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -77,17 +78,21 @@ func (m *Module) publish(eventName string, workspaceID uuid.UUID, channelID stri
 }
 
 type channelView struct {
-	ID              string    `json:"id"`
-	WorkspaceID     string    `json:"workspaceId"`
-	Kind            string    `json:"kind"`
-	Name            string    `json:"name"`
-	Topic           string    `json:"topic,omitempty"`
-	IsPrivate       bool      `json:"isPrivate"`
-	Position        int       `json:"position"`
-	CreatedAt       time.Time `json:"createdAt"`
-	SlowModeSeconds int       `json:"slowModeSeconds"`
-	IsNsfw          bool      `json:"isNsfw"`
-	CategoryID      *string   `json:"categoryId"`
+	ID              string     `json:"id"`
+	WorkspaceID     string     `json:"workspaceId"`
+	Kind            string     `json:"kind"`
+	Name            string     `json:"name"`
+	Topic           string     `json:"topic,omitempty"`
+	IsPrivate       bool       `json:"isPrivate"`
+	Position        int        `json:"position"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	SlowModeSeconds int        `json:"slowModeSeconds"`
+	IsNsfw          bool       `json:"isNsfw"`
+	CategoryID      *string    `json:"categoryId"`
+	// Wave 8: soft-archive. NULL = активный канал.
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
+	// Wave 8: hex-цвет имени канала в sidebar, "" = цвет темы.
+	NameColor string `json:"nameColor,omitempty"`
 }
 
 type createRequest struct {
@@ -136,7 +141,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	//     соответствующего channel_role_overrides. base_action_mask на приватные
 	//     каналы НЕ распространяется (H.6).
 	rows, err := m.db.Query(r.Context(),
-		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id
+		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id, c.archived_at, coalesce(c.name_color, '')
 		 from channels c
 		 where c.workspace_id = $1
 		   and (
@@ -168,7 +173,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		var v channelView
 		var id, wsID uuid.UUID
 		var catUUID *uuid.UUID
-		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &catUUID); err != nil {
+		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &catUUID, &v.ArchivedAt, &v.NameColor); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -337,7 +342,15 @@ type updateRequest struct {
 	// J.5(a): drag-reorder каналов. Клиент шлёт integer-позицию
 	// (мидпоинт между соседями); порядок в sidebar = ORDER BY position.
 	Position *int `json:"position"`
+	// Wave 8: true = в архив (archived_at = now()), false = вернуть из архива.
+	// nil = не трогать. Повторная архивация не двигает archived_at.
+	Archived *bool `json:"archived"`
+	// Wave 8: '#rrggbb'; пустая строка = сбросить на цвет темы (NULL).
+	NameColor *string `json:"nameColor"`
 }
+
+// nameColorRe — синхронен с CHECK channels_name_color_chk (миграция 37).
+var nameColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
 // handleUpdate — PATCH /api/v1/channels/{id}. Изменяем name/topic/isPrivate.
 // kind менять нельзя: это поменяло бы UX-контракт (voice vs text), а
@@ -391,6 +404,16 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Wave 8: цвет валидируем до UPDATE — CHECK в БД тоже ловит, но 400
+	// дружелюбнее 500. Пустая строка — легальный «сброс».
+	if req.NameColor != nil {
+		trimmed := strings.TrimSpace(*req.NameColor)
+		if trimmed != "" && !nameColorRe.MatchString(trimmed) {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nameColor must be #rrggbb")
+			return
+		}
+		req.NameColor = &trimmed
+	}
 
 	// J.5: categoryId — пустая строка = снять привязку (NULL),
 	// валидный UUID = присвоить (но категория должна быть из того же ws'а).
@@ -421,10 +444,12 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// Запоминаем old name до апдейта, чтобы post-система могла оформить
 	// «Канал переименован: #old → #new». Если запрос не меняет имя — поле
-	// будет пустым и плашку не пишем.
+	// будет пустым и плашку не пишем. old archived_at — для плашки
+	// архивации (пишем только при фактической смене состояния).
 	var oldName, oldKind string
+	var oldArchivedAt *time.Time
 	if err := m.db.QueryRow(r.Context(),
-		`select name, kind from channels where id = $1`, channelID).Scan(&oldName, &oldKind); err != nil {
+		`select name, kind, archived_at from channels where id = $1`, channelID).Scan(&oldName, &oldKind, &oldArchivedAt); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
@@ -439,9 +464,12 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		   is_nsfw           = coalesce($8, is_nsfw),
 		   category_id       = case when $9::bool then $10::uuid else category_id end,
 		   position          = coalesce($11, position),
+		   archived_at       = case when $12::bool then (case when $13::bool then coalesce(archived_at, $6) end) else archived_at end,
+		   name_color        = case when $14::bool then nullif($15, '') else name_color end,
 		   updated_at        = $6
 		 where id = $1`,
 		channelID, req.Name, req.Topic != nil, derefString(req.Topic), req.IsPrivate, now, req.SlowModeSeconds, req.IsNsfw, categoryTouch, newCategoryID, req.Position,
+		req.Archived != nil, req.Archived != nil && *req.Archived, req.NameColor != nil, derefString(req.NameColor),
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
@@ -454,10 +482,10 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	var v channelView
 	var reloadCat *uuid.UUID
 	err = m.db.QueryRow(r.Context(),
-		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id
+		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, '')
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &reloadCat)
+	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &reloadCat, &v.ArchivedAt, &v.NameColor)
 	if reloadCat != nil {
 		s := reloadCat.String()
 		v.CategoryID = &s
@@ -478,6 +506,19 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// H.9.iii: system-плашка при переименовании text-канала.
 	if oldKind == "text" && m.messages != nil && req.Name != nil && *req.Name != oldName {
 		body := "Канал переименован: #" + oldName + " → #" + v.Name
+		if err := m.messages.PostSystemMessage(r.Context(), channelID, scope.WorkspaceID, userID, "system_channel_event", body); err != nil {
+			m.logger.Warn("channel.update: PostSystemMessage failed", slog.String("err", err.Error()))
+		}
+	}
+	// Wave 8: плашка при фактической смене archive-состояния. Порядок важен:
+	// «возвращён» постится после снятия archived_at (постинг в архивный канал
+	// message-модуль отклоняет), «перемещён» — тоже после UPDATE, поэтому
+	// PostSystemMessage обходит архивный guard (kind != 'user').
+	if oldKind == "text" && m.messages != nil && req.Archived != nil && *req.Archived != (oldArchivedAt != nil) {
+		body := "Канал возвращён из архива"
+		if *req.Archived {
+			body = "Канал перемещён в архив"
+		}
 		if err := m.messages.PostSystemMessage(r.Context(), channelID, scope.WorkspaceID, userID, "system_channel_event", body); err != nil {
 			m.logger.Warn("channel.update: PostSystemMessage failed", slog.String("err", err.Error()))
 		}
@@ -555,10 +596,10 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 	var v channelView
 	var getCat *uuid.UUID
 	err := m.db.QueryRow(r.Context(),
-		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id
+		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, '')
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &getCat)
+	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &getCat, &v.ArchivedAt, &v.NameColor)
 	if getCat != nil {
 		s := getCat.String()
 		v.CategoryID = &s
