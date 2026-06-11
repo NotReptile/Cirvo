@@ -77,6 +77,10 @@ type updateRequest struct {
 	NameGradient *string `json:"nameGradient"`
 	BadgeEmoji   *string `json:"badgeEmoji"`
 	BadgeLabel   *string `json:"badgeLabel"`
+	// Wave 7 (I.15–I.16): id CSS-пресетов. Набор знает клиент, бэк хранит
+	// произвольную строку ≤32 — неизвестный id клиент игнорирует.
+	AvatarDecoration *string `json:"avatarDecoration"`
+	ProfileEffect    *string `json:"profileEffect"`
 }
 
 type avatarRequest struct {
@@ -105,6 +109,9 @@ type profileView struct {
 	NameGradient string `json:"nameGradient,omitempty"`
 	BadgeEmoji   string `json:"badgeEmoji,omitempty"`
 	BadgeLabel   string `json:"badgeLabel,omitempty"`
+	// Wave 7 (I.15–I.16): id CSS-пресетов рамки аватара и эффекта баннера.
+	AvatarDecoration string `json:"avatarDecoration,omitempty"`
+	ProfileEffect    string `json:"profileEffect,omitempty"`
 }
 
 type meView struct {
@@ -309,7 +316,8 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.DisplayName == nil && req.Bio == nil && req.BannerColor == nil &&
-		req.ProfileTheme == nil && req.NameGradient == nil && req.BadgeEmoji == nil && req.BadgeLabel == nil {
+		req.ProfileTheme == nil && req.NameGradient == nil && req.BadgeEmoji == nil && req.BadgeLabel == nil &&
+		req.AvatarDecoration == nil && req.ProfileEffect == nil {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nothing to update")
 		return
 	}
@@ -387,6 +395,26 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		setParts = append(setParts, "badge_label = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	if req.AvatarDecoration != nil {
+		trimmed := strings.TrimSpace(*req.AvatarDecoration)
+		if len(trimmed) > 32 {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "avatarDecoration too long")
+			return
+		}
+		setParts = append(setParts, "avatar_decoration = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	if req.ProfileEffect != nil {
+		trimmed := strings.TrimSpace(*req.ProfileEffect)
+		if len(trimmed) > 32 {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "profileEffect too long")
+			return
+		}
+		setParts = append(setParts, "profile_effect = nullif($"+strconv.Itoa(idx)+"::text, '')")
 		args = append(args, trimmed)
 		idx++
 	}
@@ -680,16 +708,20 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 		nameGradient *string
 		badgeEmoji   *string
 		badgeLabel   *string
+		avatarDeco   *string
+		profEffect   *string
 	)
 	if err := m.db.QueryRow(ctx,
 		`select email, username, display_name, avatar_media_id, presence_mode, custom_status,
 		        bio, banner_color, banner_media_id,
-		        profile_theme, name_gradient, badge_emoji, badge_label
+		        profile_theme, name_gradient, badge_emoji, badge_label,
+		        avatar_decoration, profile_effect
 		 from users where id = $1`,
 		userID,
 	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus,
 		&bio, &bannerColor, &bannerID,
-		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel); err != nil {
+		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel,
+		&avatarDeco, &profEffect); err != nil {
 		return meView{}, err
 	}
 	view := meView{
@@ -698,6 +730,7 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 		UpdatedAt:   updatedAt,
 	}
 	applyOptionalStyle(&view.profileView, profileTheme, nameGradient, badgeEmoji, badgeLabel)
+	applyOptionalDeco(&view.profileView, avatarDeco, profEffect)
 	if display != nil {
 		view.DisplayName = *display
 	}
@@ -736,6 +769,15 @@ func applyOptionalStyle(v *profileView, theme, gradient, emoji, label *string) {
 	}
 }
 
+func applyOptionalDeco(v *profileView, deco, effect *string) {
+	if deco != nil {
+		v.AvatarDecoration = *deco
+	}
+	if effect != nil {
+		v.ProfileEffect = *effect
+	}
+}
+
 func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	viewerID := authctx.MustUserID(r.Context())
 	targetID, ok := parseUUID(r, "userId")
@@ -756,18 +798,22 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		nameGradient *string
 		badgeEmoji   *string
 		badgeLabel   *string
+		avatarDeco   *string
+		profEffect   *string
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select username, display_name, avatar_media_id,
 		        `+effectivePresenceModeExpr("u")+`,
 		        `+effectiveCustomStatusExpr("u")+`,
 		        u.bio, u.banner_color, u.banner_media_id,
-		        u.profile_theme, u.name_gradient, u.badge_emoji, u.badge_label
+		        u.profile_theme, u.name_gradient, u.badge_emoji, u.badge_label,
+		        u.avatar_decoration, u.profile_effect
 		 from users u where u.id = $1`,
 		targetID,
 	).Scan(&username, &display, &avatarID, &presenceMode, &customStatus,
 		&bio, &bannerColor, &bannerID,
-		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel)
+		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel,
+		&avatarDeco, &profEffect)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -778,6 +824,7 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 	view := profileView{ID: targetID.String(), Username: username, PresenceMode: presenceMode}
 	applyOptionalStyle(&view, profileTheme, nameGradient, badgeEmoji, badgeLabel)
+	applyOptionalDeco(&view, avatarDeco, profEffect)
 	// Если запрашивают самого себя — это редкий путь (фронт обычно зовёт
 	// /users/me), но всё равно показываем реальный режим (invisible маска
 	// смысла не имеет для самого себя).

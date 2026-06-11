@@ -638,6 +638,10 @@ type memberView struct {
 	BadgeEmoji   string `json:"badgeEmoji,omitempty"`
 	BadgeLabel   string `json:"badgeLabel,omitempty"`
 	ProfileTheme string `json:"profileTheme,omitempty"`
+	// I.15: рамка аватара видна в чате/сайдбаре; I.16 эффект — только в
+	// попапе (его несёт profileTheme-источник: extras либо member).
+	AvatarDecoration string `json:"avatarDecoration,omitempty"`
+	ProfileEffect    string `json:"profileEffect,omitempty"`
 }
 
 func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
@@ -670,7 +674,8 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		        end as effective_mode,
 		        case when u.presence_mode = 'invisible' then null else u.custom_status end as effective_status,
 		        u.avatar_media_id, u.bio, u.banner_color, u.banner_media_id,
-		        u.name_gradient, u.badge_emoji, u.badge_label, u.profile_theme
+		        u.name_gradient, u.badge_emoji, u.badge_label, u.profile_theme,
+		        u.avatar_decoration, u.profile_effect
 		 from workspace_members wm
 		 join users u on u.id = wm.user_id
 		 where wm.workspace_id = $1
@@ -701,9 +706,11 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 			badgeEmoji   *string
 			badgeLabel   *string
 			profileTheme *string
+			avatarDeco   *string
+			profEffect   *string
 		)
 		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &effMode, &effStatus, &avatarID, &bio, &bannerColor, &bannerID,
-			&nameGradient, &badgeEmoji, &badgeLabel, &profileTheme); err != nil {
+			&nameGradient, &badgeEmoji, &badgeLabel, &profileTheme, &avatarDeco, &profEffect); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -744,6 +751,12 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		}
 		if profileTheme != nil {
 			view.ProfileTheme = *profileTheme
+		}
+		if avatarDeco != nil {
+			view.AvatarDecoration = *avatarDeco
+		}
+		if profEffect != nil {
+			view.ProfileEffect = *profEffect
 		}
 		items = append(items, view)
 	}

@@ -2642,6 +2642,100 @@ input[type="color"] {
   padding: 12px 8px;
 }
 
+/* Wave 7 (I.15): рамки аватара — чистый CSS, без ассетов. Кольцо рисует
+   ::after с z-index:-1 (за фоном/картинкой аватара видна только зона
+   -3px..0). Свечения — box-shadow с анимацией. Масштабируются на любой
+   размер аватара (28px сайдбар … 96px настройки). */
+.avatar-pic[class*="avatar-deco-"] { z-index: 0; }
+.avatar-pic[class*="avatar-deco-"]::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  z-index: -1;
+}
+.avatar-deco-gold::after {
+  background: linear-gradient(135deg, #f5d76e, #b8860b, #ffe9a8, #d4af37);
+}
+.avatar-deco-neon::after { background: #00f0ff; }
+.avatar-deco-neon { box-shadow: 0 0 8px 2px rgba(0, 240, 255, 0.55); animation: deco-neon-pulse 2.2s ease-in-out infinite; }
+@keyframes deco-neon-pulse {
+  0%, 100% { box-shadow: 0 0 6px 1px rgba(0, 240, 255, 0.4); }
+  50% { box-shadow: 0 0 12px 3px rgba(0, 240, 255, 0.75); }
+}
+.avatar-deco-rainbow::after {
+  background: conic-gradient(#ff5252, #ffb142, #fffa65, #32ff7e, #18dcff, #7d5fff, #ff5252);
+  animation: deco-rainbow-spin 4s linear infinite;
+}
+@keyframes deco-rainbow-spin {
+  to { transform: rotate(360deg); }
+}
+.avatar-deco-frost::after { background: linear-gradient(160deg, #b9f2ff, #4aa8d8, #e8fbff); }
+.avatar-deco-frost { box-shadow: 0 0 7px 1px rgba(150, 220, 255, 0.45); }
+.avatar-deco-ember::after { background: linear-gradient(20deg, #ff6b35, #c0392b, #ffb142); }
+.avatar-deco-ember { box-shadow: 0 0 8px 2px rgba(255, 107, 53, 0.45); animation: deco-ember-flicker 1.6s ease-in-out infinite; }
+@keyframes deco-ember-flicker {
+  0%, 100% { box-shadow: 0 0 6px 1px rgba(255, 107, 53, 0.35); }
+  40% { box-shadow: 0 0 11px 3px rgba(255, 140, 60, 0.65); }
+  60% { box-shadow: 0 0 8px 2px rgba(255, 90, 40, 0.5); }
+}
+
+/* Wave 7 (I.16): эффекты профиля — анимированный оверлей на баннере попапа. */
+.user-profile-banner { position: relative; overflow: hidden; }
+.profile-effect {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.profile-effect-sparkles {
+  background-image:
+    radial-gradient(2px 2px at 18% 32%, #fff 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 64% 18%, #ffe9a8 50%, transparent 51%),
+    radial-gradient(2.2px 2.2px at 82% 58%, #fff 50%, transparent 51%),
+    radial-gradient(1.4px 1.4px at 38% 72%, #b9f2ff 50%, transparent 51%),
+    radial-gradient(1.8px 1.8px at 52% 44%, #fff 50%, transparent 51%);
+  animation: fx-sparkle 2.8s ease-in-out infinite;
+}
+@keyframes fx-sparkle {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+.profile-effect-pulse {
+  background: radial-gradient(ellipse at center, rgba(255, 255, 255, 0.28), transparent 65%);
+  animation: fx-pulse 2.4s ease-in-out infinite;
+}
+@keyframes fx-pulse {
+  0%, 100% { opacity: 0.15; transform: scale(0.96); }
+  50% { opacity: 0.8; transform: scale(1.04); }
+}
+.profile-effect-rain {
+  background: repeating-linear-gradient(
+    105deg,
+    transparent 0 7px,
+    rgba(190, 220, 255, 0.32) 7px 8px
+  );
+  background-size: 200% 200%;
+  animation: fx-rain 0.9s linear infinite;
+}
+@keyframes fx-rain {
+  from { background-position: 0 0; }
+  to { background-position: -28px 56px; }
+}
+.profile-effect-aurora {
+  background: linear-gradient(115deg, rgba(50, 255, 126, 0.3), rgba(24, 220, 255, 0.3), rgba(125, 95, 255, 0.3), rgba(50, 255, 126, 0.3));
+  background-size: 300% 300%;
+  animation: fx-aurora 6s ease-in-out infinite;
+}
+@keyframes fx-aurora {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Wave 7 (I.15): мини-превью рамки в настройках. */
+.profile-style-deco-preview {
+  margin-left: 4px;
+}
+
 /* Wave 7 (I.19): эмодзи-бейдж после имени (чат, сайдбар, попап профиля). */
 .profile-badge {
   display: inline-block;

@@ -156,6 +156,9 @@ interface Me {
   nameGradient?: string;
   badgeEmoji?: string;
   badgeLabel?: string;
+  // Wave 7 (I.15–I.16): id CSS-пресетов рамки аватара и эффекта баннера.
+  avatarDecoration?: string;
+  profileEffect?: string;
 }
 
 // I.6: ответ GET /users/{id} (profile.handleGetUser). Лениво подтягивается
@@ -175,6 +178,8 @@ interface UserProfileData {
   nameGradient?: string;
   badgeEmoji?: string;
   badgeLabel?: string;
+  avatarDecoration?: string;
+  profileEffect?: string;
 }
 
 interface Workspace {
@@ -320,6 +325,8 @@ interface Member {
   nameGradient?: string;
   badgeEmoji?: string;
   badgeLabel?: string;
+  avatarDecoration?: string;
+  profileEffect?: string;
 }
 
 interface AuditEntry {
@@ -3481,6 +3488,31 @@ interface AvatarOpts {
   sizePx: number;
   className?: string;
   online?: boolean | null;
+  // Wave 7 (I.15): id пресета рамки (AVATAR_DECORATIONS).
+  decoration?: string;
+}
+
+// Wave 7 (I.15–I.16): CSS-пресеты рамок аватара и эффектов баннера.
+// Без файлов-ассетов — всё рисуют keyframes в styles.css. Неизвестный id
+// (например, из будущей версии) молча игнорируется.
+const AVATAR_DECORATIONS: Array<{ id: string; label: string }> = [
+  { id: "gold", label: "Золотое кольцо" },
+  { id: "neon", label: "Неоновое свечение" },
+  { id: "rainbow", label: "Радуга" },
+  { id: "frost", label: "Иней" },
+  { id: "ember", label: "Уголёк" }
+];
+
+const PROFILE_EFFECTS: Array<{ id: string; label: string }> = [
+  { id: "sparkles", label: "Искры" },
+  { id: "pulse", label: "Пульс" },
+  { id: "rain", label: "Дождь" },
+  { id: "aurora", label: "Северное сияние" }
+];
+
+function decorationClass(id: string | undefined | null): string {
+  if (!id) return "";
+  return AVATAR_DECORATIONS.some((d) => d.id === id) ? ` avatar-deco-${id}` : "";
 }
 
 function renderAvatar(opts: AvatarOpts): string {
@@ -3488,7 +3520,7 @@ function renderAvatar(opts: AvatarOpts): string {
   const dot = opts.online === undefined || opts.online === null
     ? ""
     : `<span class="avatar-dot${opts.online ? " on" : " off"}"></span>`;
-  const cls = `avatar-pic ${opts.className ?? ""}`.trim();
+  const cls = `avatar-pic ${opts.className ?? ""}`.trim() + decorationClass(opts.decoration);
   const style = `width:${opts.sizePx}px;height:${opts.sizePx}px;font-size:${Math.round(opts.sizePx * 0.45)}px;`;
   if (opts.avatarMediaId) {
     return `<span class="${cls} has-media" data-avatar-media="${escapeHtml(opts.avatarMediaId)}" style="${style}"><span class="avatar-letter">${escapeHtml(letter)}</span>${dot}</span>`;
@@ -3521,7 +3553,8 @@ function renderMemberSidebar(): string {
           ${renderAvatar({
             avatarMediaId: m.avatarMediaId,
             fallbackText: name,
-            sizePx: 28
+            sizePx: 28,
+            decoration: m.avatarDecoration
           })}
           <span class="presence-dot ${presenceDotClass(effMode)}"></span>
         </span>
@@ -5420,7 +5453,8 @@ function renderMessage(m: Message, grouped: boolean = false): string {
     avatarMediaId: authorAvatarId,
     fallbackText: authorName,
     sizePx: 40,
-    className: "message-avatar"
+    className: "message-avatar",
+    decoration: m.authorId === state.me?.id ? state.me?.avatarDecoration : authorMember?.avatarDecoration
   });
 
   if (isEditing) {
@@ -5680,18 +5714,25 @@ function renderUserProfilePopup(): string {
   const nameGradient = extras?.nameGradient ?? member?.nameGradient;
   const badgeEmoji = extras?.badgeEmoji ?? member?.badgeEmoji;
   const badgeLabel = extras?.badgeLabel ?? member?.badgeLabel;
+  const avatarDecoration = extras?.avatarDecoration ?? member?.avatarDecoration;
+  const profileEffect = extras?.profileEffect ?? member?.profileEffect;
   const theme = parseGradient(profileTheme);
   const bannerStyle = bannerMediaId ? "" : bannerColor ? `background: ${escapeHtml(bannerColor)};` : theme ? `background: linear-gradient(135deg, ${theme[0]}, ${theme[1]});` : "";
   const bannerAttrs = bannerMediaId ? ` data-banner-media="${escapeHtml(bannerMediaId)}"` : "";
   const cardStyle = theme ? ` style="background: linear-gradient(180deg, ${theme[0]}22, ${theme[1]}22);"` : "";
+  // I.16: анимированный оверлей поверх баннера. Известные id → div с
+  // CSS-анимацией, прочее игнорим.
+  const effectOverlay = profileEffect && PROFILE_EFFECTS.some((e) => e.id === profileEffect)
+    ? `<div class="profile-effect profile-effect-${profileEffect}" aria-hidden="true"></div>`
+    : "";
   return `
     <div class="modal-backdrop" data-modal-close>
       <div class="modal user-profile-popup" role="dialog">
-        <div class="user-profile-banner" style="${bannerStyle}"${bannerAttrs}></div>
+        <div class="user-profile-banner" style="${bannerStyle}"${bannerAttrs}>${effectOverlay}</div>
         <button class="user-profile-close" data-modal-close title="Закрыть">✕</button>
         <div class="user-profile-avatar-row">
           <div class="user-profile-avatar-wrap">
-            ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 80, className: "user-profile-avatar" })}
+            ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 80, className: "user-profile-avatar", decoration: avatarDecoration })}
             ${presenceMode ? `<span class="user-profile-dot ${presenceDotClass(presenceMode)}"></span>` : ""}
           </div>
         </div>
@@ -5764,7 +5805,9 @@ function openUserProfile(userId: string): void {
       profileTheme: cached.profileTheme,
       nameGradient: cached.nameGradient,
       badgeEmoji: cached.badgeEmoji,
-      badgeLabel: cached.badgeLabel
+      badgeLabel: cached.badgeLabel,
+      avatarDecoration: cached.avatarDecoration,
+      profileEffect: cached.profileEffect
     } as UserProfileData;
   }
   render();
@@ -8611,7 +8654,8 @@ function renderSettingsProfileTab(): string {
           avatarMediaId: me.avatarMediaId,
           fallbackText: previewDisplayName,
           sizePx: 96,
-          className: "profile-card-avatar"
+          className: "profile-card-avatar",
+          decoration: profileStyleDraft ? (profileStyleDraft.decoration || undefined) : me.avatarDecoration
         })}
         <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="Сменить аватар">
           ${icon("pencil", { size: 14 })}
@@ -8692,6 +8736,9 @@ interface ProfileStyleDraft {
   gradB: string;
   badgeEmoji: string;
   badgeLabel: string;
+  // I.15–I.16: id пресета либо "" (без рамки/эффекта).
+  decoration: string;
+  effect: string;
 }
 
 let profileStyleDraft: ProfileStyleDraft | null = null;
@@ -8708,7 +8755,9 @@ function styleDraftFromMe(me: Me): ProfileStyleDraft {
     gradA: grad?.[0] ?? "#5865f2",
     gradB: grad?.[1] ?? "#eb459e",
     badgeEmoji: me.badgeEmoji ?? "",
-    badgeLabel: me.badgeLabel ?? ""
+    badgeLabel: me.badgeLabel ?? "",
+    decoration: me.avatarDecoration ?? "",
+    effect: me.profileEffect ?? ""
   };
 }
 
@@ -8751,6 +8800,22 @@ function renderProfileStyleSection(me: Me, previewName: string): string {
         <input type="text" id="ps-badge-emoji" maxlength="8" placeholder="🦄" value="${escapeHtml(sd.badgeEmoji)}" class="profile-style-emoji" />
         <input type="text" id="ps-badge-label" maxlength="48" placeholder="Подпись при наведении" value="${escapeHtml(sd.badgeLabel)}" class="profile-style-badge-label" />
       </div>
+      <div class="profile-style-row">
+        <span class="profile-style-label">Рамка аватара</span>
+        <select id="ps-decoration" class="perm-select">
+          <option value="">Без рамки</option>
+          ${AVATAR_DECORATIONS.map((d) => `<option value="${d.id}" ${sd.decoration === d.id ? "selected" : ""}>${escapeHtml(d.label)}</option>`).join("")}
+        </select>
+        <span class="profile-style-deco-preview avatar-pic${sd.decoration ? ` avatar-deco-${escapeHtml(sd.decoration)}` : ""}" style="width:28px;height:28px;font-size:13px;"><span class="avatar-letter">${escapeHtml((me.displayName || me.username || "?").charAt(0).toUpperCase())}</span></span>
+      </div>
+      <div class="profile-style-row">
+        <span class="profile-style-label">Эффект профиля</span>
+        <select id="ps-effect" class="perm-select">
+          <option value="">Без эффекта</option>
+          ${PROFILE_EFFECTS.map((e) => `<option value="${e.id}" ${sd.effect === e.id ? "selected" : ""}>${escapeHtml(e.label)}</option>`).join("")}
+        </select>
+        <small class="settings-hint" style="margin:0">Анимация поверх баннера карточки профиля.</small>
+      </div>
       <div class="admin-actions">
         <button id="ps-style-save" class="primary" ${profileStyleSaving ? "disabled" : ""}>
           ${profileStyleSaving ? "Сохранение…" : "Сохранить стиль"}
@@ -8770,20 +8835,32 @@ async function saveProfileStyle(): Promise<void> {
       profileTheme: sd.themeOn ? `${sd.themeA},${sd.themeB}` : "",
       nameGradient: sd.gradOn ? `${sd.gradA},${sd.gradB}` : "",
       badgeEmoji: sd.badgeEmoji.trim(),
-      badgeLabel: sd.badgeLabel.trim()
+      badgeLabel: sd.badgeLabel.trim(),
+      avatarDecoration: sd.decoration,
+      profileEffect: sd.effect
     });
     state.me = {
       ...state.me,
       profileTheme: updated.profileTheme,
       nameGradient: updated.nameGradient,
       badgeEmoji: updated.badgeEmoji,
-      badgeLabel: updated.badgeLabel
+      badgeLabel: updated.badgeLabel,
+      avatarDecoration: updated.avatarDecoration,
+      profileEffect: updated.profileEffect
     };
     // Своё имя в чате/сайдбаре рисуется из state.members — обновим локально,
     // не дожидаясь user.updated/refetch'а.
     state.members = state.members.map((m) =>
       m.userId === state.me?.id
-        ? { ...m, profileTheme: updated.profileTheme, nameGradient: updated.nameGradient, badgeEmoji: updated.badgeEmoji, badgeLabel: updated.badgeLabel }
+        ? {
+            ...m,
+            profileTheme: updated.profileTheme,
+            nameGradient: updated.nameGradient,
+            badgeEmoji: updated.badgeEmoji,
+            badgeLabel: updated.badgeLabel,
+            avatarDecoration: updated.avatarDecoration,
+            profileEffect: updated.profileEffect
+          }
         : m
     );
     profileStyleDraft = null;
@@ -8889,6 +8966,15 @@ function attachSettingsHandlers(): void {
   });
   rootEl.querySelector<HTMLInputElement>("#ps-badge-label")?.addEventListener("input", (e) => {
     ensureStyleDraft().badgeLabel = (e.currentTarget as HTMLInputElement).value;
+  });
+  // I.15–I.16: селекты рамки/эффекта. render() — чтобы обновить превью
+  // рамки рядом с селектом и на большом аватаре сверху.
+  rootEl.querySelector<HTMLSelectElement>("#ps-decoration")?.addEventListener("change", (e) => {
+    ensureStyleDraft().decoration = (e.currentTarget as HTMLSelectElement).value;
+    render();
+  });
+  rootEl.querySelector<HTMLSelectElement>("#ps-effect")?.addEventListener("change", (e) => {
+    ensureStyleDraft().effect = (e.currentTarget as HTMLSelectElement).value;
   });
   rootEl.querySelector<HTMLButtonElement>("#ps-style-save")?.addEventListener("click", () => {
     void saveProfileStyle();
