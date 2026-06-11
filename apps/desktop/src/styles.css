@@ -2642,6 +2642,48 @@ input[type="color"] {
   padding: 12px 8px;
 }
 
+/* Wave 7 (I.19): эмодзи-бейдж после имени (чат, сайдбар, попап профиля). */
+.profile-badge {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 0.9em;
+  cursor: default;
+  vertical-align: baseline;
+}
+
+/* Wave 7: секция «Стиль профиля» в настройках. */
+.profile-style-section .profile-style-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.profile-style-section input[type="color"] {
+  width: 36px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+.profile-style-section input[type="color"]:disabled { opacity: 0.4; cursor: default; }
+.profile-style-label {
+  font-size: 13px;
+  color: var(--text);
+  min-width: 130px;
+}
+.profile-style-section .settings-check { min-width: 142px; }
+.profile-style-emoji { width: 64px; text-align: center; }
+.profile-style-badge-label { flex: 1; max-width: 280px; }
+.profile-style-preview {
+  margin-left: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
 /* Onboarding (first launch, production shell only) */
 .onboarding-screen {
   display: grid;

@@ -632,6 +632,12 @@ type memberView struct {
 	Bio           string `json:"bio,omitempty"`
 	BannerColor   string `json:"bannerColor,omitempty"`
 	BannerMediaID string `json:"bannerMediaId,omitempty"`
+	// Wave 7: стиль профиля — нужен в списке участников, чтобы градиент
+	// имени и бейдж рендерились в чате/сайдбаре без GET /users/{id}.
+	NameGradient string `json:"nameGradient,omitempty"`
+	BadgeEmoji   string `json:"badgeEmoji,omitempty"`
+	BadgeLabel   string `json:"badgeLabel,omitempty"`
+	ProfileTheme string `json:"profileTheme,omitempty"`
 }
 
 func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
@@ -663,7 +669,8 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		          else u.presence_mode
 		        end as effective_mode,
 		        case when u.presence_mode = 'invisible' then null else u.custom_status end as effective_status,
-		        u.avatar_media_id, u.bio, u.banner_color, u.banner_media_id
+		        u.avatar_media_id, u.bio, u.banner_color, u.banner_media_id,
+		        u.name_gradient, u.badge_emoji, u.badge_label, u.profile_theme
 		 from workspace_members wm
 		 join users u on u.id = wm.user_id
 		 where wm.workspace_id = $1
@@ -690,8 +697,13 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 			bio          *string
 			bannerColor  *string
 			bannerID     *uuid.UUID
+			nameGradient *string
+			badgeEmoji   *string
+			badgeLabel   *string
+			profileTheme *string
 		)
-		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &effMode, &effStatus, &avatarID, &bio, &bannerColor, &bannerID); err != nil {
+		if err := rows.Scan(&id, &username, &displayName, &role, &joinedAt, &effMode, &effStatus, &avatarID, &bio, &bannerColor, &bannerID,
+			&nameGradient, &badgeEmoji, &badgeLabel, &profileTheme); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -720,6 +732,18 @@ func (m *Module) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		}
 		if bannerID != nil {
 			view.BannerMediaID = bannerID.String()
+		}
+		if nameGradient != nil {
+			view.NameGradient = *nameGradient
+		}
+		if badgeEmoji != nil {
+			view.BadgeEmoji = *badgeEmoji
+		}
+		if badgeLabel != nil {
+			view.BadgeLabel = *badgeLabel
+		}
+		if profileTheme != nil {
+			view.ProfileTheme = *profileTheme
 		}
 		items = append(items, view)
 	}

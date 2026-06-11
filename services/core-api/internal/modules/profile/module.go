@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +28,13 @@ const (
 	maxCustomStatus = 64
 	maxBio          = 600
 	maxBannerColor  = 16
+	maxBadgeEmoji   = 32
+	maxBadgeLabel   = 48
 )
+
+// gradientPattern — формат profile_theme / name_gradient: ровно два
+// hex-цвета через запятую ("#1e1f22,#5865f2"). Пустая строка = сброс.
+var gradientPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6},#[0-9a-fA-F]{6}$`)
 
 // presenceModes — допустимые режимы для users.presence_mode. Семантика:
 // online/idle/dnd видны другим как соответствующий цветной dot; invisible
@@ -65,6 +72,11 @@ type updateRequest struct {
 	DisplayName *string `json:"displayName"`
 	Bio         *string `json:"bio"`
 	BannerColor *string `json:"bannerColor"`
+	// Wave 7 (I.17–I.19): стиль профиля. "" = сброс к дефолту.
+	ProfileTheme *string `json:"profileTheme"`
+	NameGradient *string `json:"nameGradient"`
+	BadgeEmoji   *string `json:"badgeEmoji"`
+	BadgeLabel   *string `json:"badgeLabel"`
 }
 
 type avatarRequest struct {
@@ -88,6 +100,11 @@ type profileView struct {
 	Bio           string `json:"bio,omitempty"`
 	BannerColor   string `json:"bannerColor,omitempty"`
 	BannerMediaID string `json:"bannerMediaId,omitempty"`
+	// Wave 7: стиль профиля ("#hex,#hex" для theme/gradient).
+	ProfileTheme string `json:"profileTheme,omitempty"`
+	NameGradient string `json:"nameGradient,omitempty"`
+	BadgeEmoji   string `json:"badgeEmoji,omitempty"`
+	BadgeLabel   string `json:"badgeLabel,omitempty"`
 }
 
 type meView struct {
@@ -291,7 +308,8 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
 		return
 	}
-	if req.DisplayName == nil && req.Bio == nil && req.BannerColor == nil {
+	if req.DisplayName == nil && req.Bio == nil && req.BannerColor == nil &&
+		req.ProfileTheme == nil && req.NameGradient == nil && req.BadgeEmoji == nil && req.BadgeLabel == nil {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nothing to update")
 		return
 	}
@@ -328,6 +346,47 @@ func (m *Module) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		setParts = append(setParts, "banner_color = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	// Wave 7: стиль профиля. theme/gradient — строгий формат "#hex,#hex".
+	if req.ProfileTheme != nil {
+		trimmed := strings.TrimSpace(*req.ProfileTheme)
+		if trimmed != "" && !gradientPattern.MatchString(trimmed) {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "profileTheme must be \"#rrggbb,#rrggbb\"")
+			return
+		}
+		setParts = append(setParts, "profile_theme = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, strings.ToLower(trimmed))
+		idx++
+	}
+	if req.NameGradient != nil {
+		trimmed := strings.TrimSpace(*req.NameGradient)
+		if trimmed != "" && !gradientPattern.MatchString(trimmed) {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "nameGradient must be \"#rrggbb,#rrggbb\"")
+			return
+		}
+		setParts = append(setParts, "name_gradient = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, strings.ToLower(trimmed))
+		idx++
+	}
+	if req.BadgeEmoji != nil {
+		trimmed := strings.TrimSpace(*req.BadgeEmoji)
+		if len(trimmed) > maxBadgeEmoji {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "badgeEmoji too long")
+			return
+		}
+		setParts = append(setParts, "badge_emoji = nullif($"+strconv.Itoa(idx)+"::text, '')")
+		args = append(args, trimmed)
+		idx++
+	}
+	if req.BadgeLabel != nil {
+		trimmed := strings.TrimSpace(*req.BadgeLabel)
+		if len(trimmed) > maxBadgeLabel {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "badgeLabel too long")
+			return
+		}
+		setParts = append(setParts, "badge_label = nullif($"+strconv.Itoa(idx)+"::text, '')")
 		args = append(args, trimmed)
 		idx++
 	}
@@ -617,14 +676,20 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 		bio          *string
 		bannerColor  *string
 		bannerID     *uuid.UUID
+		profileTheme *string
+		nameGradient *string
+		badgeEmoji   *string
+		badgeLabel   *string
 	)
 	if err := m.db.QueryRow(ctx,
 		`select email, username, display_name, avatar_media_id, presence_mode, custom_status,
-		        bio, banner_color, banner_media_id
+		        bio, banner_color, banner_media_id,
+		        profile_theme, name_gradient, badge_emoji, badge_label
 		 from users where id = $1`,
 		userID,
 	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus,
-		&bio, &bannerColor, &bannerID); err != nil {
+		&bio, &bannerColor, &bannerID,
+		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel); err != nil {
 		return meView{}, err
 	}
 	view := meView{
@@ -632,6 +697,7 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 		Email:       email,
 		UpdatedAt:   updatedAt,
 	}
+	applyOptionalStyle(&view.profileView, profileTheme, nameGradient, badgeEmoji, badgeLabel)
 	if display != nil {
 		view.DisplayName = *display
 	}
@@ -653,6 +719,23 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 	return view, nil
 }
 
+// applyOptionalStyle — общий маппинг nullable стиль-колонок в view
+// (loadMeView + handleGetUser).
+func applyOptionalStyle(v *profileView, theme, gradient, emoji, label *string) {
+	if theme != nil {
+		v.ProfileTheme = *theme
+	}
+	if gradient != nil {
+		v.NameGradient = *gradient
+	}
+	if emoji != nil {
+		v.BadgeEmoji = *emoji
+	}
+	if label != nil {
+		v.BadgeLabel = *label
+	}
+}
+
 func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	viewerID := authctx.MustUserID(r.Context())
 	targetID, ok := parseUUID(r, "userId")
@@ -669,16 +752,22 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		bio          *string
 		bannerColor  *string
 		bannerID     *uuid.UUID
+		profileTheme *string
+		nameGradient *string
+		badgeEmoji   *string
+		badgeLabel   *string
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select username, display_name, avatar_media_id,
 		        `+effectivePresenceModeExpr("u")+`,
 		        `+effectiveCustomStatusExpr("u")+`,
-		        u.bio, u.banner_color, u.banner_media_id
+		        u.bio, u.banner_color, u.banner_media_id,
+		        u.profile_theme, u.name_gradient, u.badge_emoji, u.badge_label
 		 from users u where u.id = $1`,
 		targetID,
 	).Scan(&username, &display, &avatarID, &presenceMode, &customStatus,
-		&bio, &bannerColor, &bannerID)
+		&bio, &bannerColor, &bannerID,
+		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -688,6 +777,7 @@ func (m *Module) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view := profileView{ID: targetID.String(), Username: username, PresenceMode: presenceMode}
+	applyOptionalStyle(&view, profileTheme, nameGradient, badgeEmoji, badgeLabel)
 	// Если запрашивают самого себя — это редкий путь (фронт обычно зовёт
 	// /users/me), но всё равно показываем реальный режим (invisible маска
 	// смысла не имеет для самого себя).

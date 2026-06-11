@@ -151,6 +151,11 @@ interface Me {
   bio?: string;
   bannerColor?: string;
   bannerMediaId?: string;
+  // Wave 7 (I.17–I.19): стиль профиля. theme/gradient — "#hex,#hex".
+  profileTheme?: string;
+  nameGradient?: string;
+  badgeEmoji?: string;
+  badgeLabel?: string;
 }
 
 // I.6: ответ GET /users/{id} (profile.handleGetUser). Лениво подтягивается
@@ -166,6 +171,10 @@ interface UserProfileData {
   bio?: string;
   bannerColor?: string;
   bannerMediaId?: string;
+  profileTheme?: string;
+  nameGradient?: string;
+  badgeEmoji?: string;
+  badgeLabel?: string;
 }
 
 interface Workspace {
@@ -305,6 +314,12 @@ interface Member {
   bio?: string;
   bannerColor?: string;
   bannerMediaId?: string;
+  // Wave 7: стиль профиля — градиент имени и бейдж рендерятся прямо в
+  // чате/сайдбаре, тема — в popup'е.
+  profileTheme?: string;
+  nameGradient?: string;
+  badgeEmoji?: string;
+  badgeLabel?: string;
 }
 
 interface AuditEntry {
@@ -3492,8 +3507,10 @@ function renderMemberSidebar(): string {
   });
   const renderItem = (m: Member) => {
     const name = m.displayName || m.username;
+    // Wave 7: градиент имени (личная кастомизация) приоритетнее role-цвета.
+    const grad = nameGradientStyle(m.nameGradient);
     const color = getUserColor(m.userId, m.role);
-    const style = color ? ` style="color:${color};"` : "";
+    const style = grad || (color ? ` style="color:${color};"` : "");
     const effMode = m.presenceMode ?? (m.online ? "online" : "offline");
     const subline = m.customStatus
       ? `<span class="member-sidebar-status">${escapeHtml(m.customStatus)}</span>`
@@ -3509,7 +3526,7 @@ function renderMemberSidebar(): string {
           <span class="presence-dot ${presenceDotClass(effMode)}"></span>
         </span>
         <span class="member-sidebar-body">
-          <span class="member-sidebar-name"${style}>${escapeHtml(name)}</span>
+          <span class="member-sidebar-name"${style}>${escapeHtml(name)}</span>${badgeHtml(m.badgeEmoji, m.badgeLabel)}
           ${subline}
         </span>
       </li>
@@ -3893,16 +3910,46 @@ function describeAuditEntry(e: AuditEntry): AuditDescription {
   return { icon: "•", actor, verb: e.action, target, raw: true };
 }
 
-// Возвращает inline-style="color:..." если у участника есть role-цвет
+// Wave 7: "#rrggbb,#rrggbb" → пара цветов либо null (битый/пустой формат).
+function parseGradient(raw: string | undefined | null): [string, string] | null {
+  if (!raw) return null;
+  const m = /^(#[0-9a-fA-F]{6}),(#[0-9a-fA-F]{6})$/.exec(raw.trim());
+  return m ? [m[1], m[2]] : null;
+}
+
+// Wave 7 (I.18): inline-style градиентного текста для имени. Пусто если
+// градиент не задан.
+function nameGradientStyle(raw: string | undefined | null): string {
+  const g = parseGradient(raw);
+  if (!g) return "";
+  return ` style="background:linear-gradient(90deg,${g[0]},${g[1]});-webkit-background-clip:text;background-clip:text;color:transparent;"`;
+}
+
+// Wave 7 (I.19): эмодзи-бейдж после имени, label — в tooltip.
+function badgeHtml(emoji?: string, label?: string): string {
+  if (!emoji) return "";
+  return `<span class="profile-badge"${label ? ` title="${escapeHtml(label)}"` : ""}>${escapeHtml(emoji)}</span>`;
+}
+
+// Возвращает inline-style для имени участника: градиент профиля (I.18,
+// высший приоритет — это личная кастомизация), иначе role-цвет
 // (union-резолвер по всем ролям юзера, см. getUserColor / Wave 5).
 // Иначе пустая строка — наследует дефолтный --text.
 function authorColorStyle(userId: string): string {
-  // I.5: цвета ролей можно выключить в Settings → Внешний вид.
-  if (!getAppearance().roleColors) return "";
   const m = state.members.find((x) => x.userId === userId);
   if (!m) return "";
+  const grad = nameGradientStyle(m.nameGradient);
+  if (grad) return grad;
+  // I.5: цвета ролей можно выключить в Settings → Внешний вид.
+  if (!getAppearance().roleColors) return "";
   const color = getUserColor(userId, m.role);
   return color ? ` style="color:${color};"` : "";
+}
+
+// Бейдж участника по userId (для чата/сайдбара).
+function authorBadge(userId: string): string {
+  const m = state.members.find((x) => x.userId === userId);
+  return m ? badgeHtml(m.badgeEmoji, m.badgeLabel) : "";
 }
 
 function describePeer(userId: string | null): string {
@@ -5382,7 +5429,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
         ${avatarHtml}
         <div class="message-content">
           <div class="message-meta">
-            <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>
+            <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}
             <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
           </div>
           <form class="edit-form" data-edit-id="${m.id}">
@@ -5412,7 +5459,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
         </span>
       </div>`
     : `<div class="message-meta">
-        <span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${isMine ? ` <span class="author-mine">· вы</span>` : ""}
+        <span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}${isMine ? ` <span class="author-mine">· вы</span>` : ""}
         <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? " · изменено" : ""}</span>
         <span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="Реакция">${icon("smile")}</button>
@@ -5628,8 +5675,15 @@ function renderUserProfilePopup(): string {
   const bannerMediaId = extras?.bannerMediaId;
   const bannerColor = extras?.bannerColor;
   const inCall = state.callSnapshot !== null;
-  const bannerStyle = bannerMediaId ? "" : bannerColor ? `background: ${escapeHtml(bannerColor)};` : "";
+  // Wave 7: стиль профиля. member-данные — fallback для self/без-GET кейсов.
+  const profileTheme = extras?.profileTheme ?? member?.profileTheme;
+  const nameGradient = extras?.nameGradient ?? member?.nameGradient;
+  const badgeEmoji = extras?.badgeEmoji ?? member?.badgeEmoji;
+  const badgeLabel = extras?.badgeLabel ?? member?.badgeLabel;
+  const theme = parseGradient(profileTheme);
+  const bannerStyle = bannerMediaId ? "" : bannerColor ? `background: ${escapeHtml(bannerColor)};` : theme ? `background: linear-gradient(135deg, ${theme[0]}, ${theme[1]});` : "";
   const bannerAttrs = bannerMediaId ? ` data-banner-media="${escapeHtml(bannerMediaId)}"` : "";
+  const cardStyle = theme ? ` style="background: linear-gradient(180deg, ${theme[0]}22, ${theme[1]}22);"` : "";
   return `
     <div class="modal-backdrop" data-modal-close>
       <div class="modal user-profile-popup" role="dialog">
@@ -5641,8 +5695,8 @@ function renderUserProfilePopup(): string {
             ${presenceMode ? `<span class="user-profile-dot ${presenceDotClass(presenceMode)}"></span>` : ""}
           </div>
         </div>
-        <div class="user-profile-card">
-          <div class="user-profile-name">${escapeHtml(name)}</div>
+        <div class="user-profile-card"${cardStyle}>
+          <div class="user-profile-name"><span${nameGradientStyle(nameGradient)}>${escapeHtml(name)}</span>${badgeHtml(badgeEmoji, badgeLabel)}</div>
           ${username ? `<div class="user-profile-username">@${escapeHtml(username)}</div>` : ""}
           ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
           ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(role)}</span></div>` : ""}
@@ -5706,7 +5760,11 @@ function openUserProfile(userId: string): void {
       bannerColor: cached.bannerColor,
       bannerMediaId: cached.bannerMediaId,
       presenceMode: cached.presenceMode,
-      customStatus: cached.customStatus
+      customStatus: cached.customStatus,
+      profileTheme: cached.profileTheme,
+      nameGradient: cached.nameGradient,
+      badgeEmoji: cached.badgeEmoji,
+      badgeLabel: cached.badgeLabel
     } as UserProfileData;
   }
   render();
@@ -8618,7 +8676,124 @@ function renderSettingsProfileTab(): string {
         body: renderProfileEditPassword()
       })}
     </div>
+    ${renderProfileStyleSection(me, previewDisplayName)}
   `;
+}
+
+// Wave 7 (I.17–I.19): секция «Стиль профиля». Draft живёт в module-level
+// profileStyleDraft (а не state) — input'ы пишут в него без render(),
+// чтобы не терять фокус; сбрасывается при закрытии настроек и после save.
+interface ProfileStyleDraft {
+  themeOn: boolean;
+  themeA: string;
+  themeB: string;
+  gradOn: boolean;
+  gradA: string;
+  gradB: string;
+  badgeEmoji: string;
+  badgeLabel: string;
+}
+
+let profileStyleDraft: ProfileStyleDraft | null = null;
+let profileStyleSaving = false;
+
+function styleDraftFromMe(me: Me): ProfileStyleDraft {
+  const theme = parseGradient(me.profileTheme);
+  const grad = parseGradient(me.nameGradient);
+  return {
+    themeOn: !!theme,
+    themeA: theme?.[0] ?? "#1e1f22",
+    themeB: theme?.[1] ?? "#5865f2",
+    gradOn: !!grad,
+    gradA: grad?.[0] ?? "#5865f2",
+    gradB: grad?.[1] ?? "#eb459e",
+    badgeEmoji: me.badgeEmoji ?? "",
+    badgeLabel: me.badgeLabel ?? ""
+  };
+}
+
+function ensureStyleDraft(): ProfileStyleDraft {
+  if (!profileStyleDraft && state.me) profileStyleDraft = styleDraftFromMe(state.me);
+  return profileStyleDraft ?? styleDraftFromMe({ badgeEmoji: "", badgeLabel: "" } as Me);
+}
+
+function renderProfileStyleSection(me: Me, previewName: string): string {
+  const sd = profileStyleDraft ?? styleDraftFromMe(me);
+  const gradPreviewStyle = sd.gradOn
+    ? ` style="background:linear-gradient(90deg,${escapeHtml(sd.gradA)},${escapeHtml(sd.gradB)});-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:600;"`
+    : ` style="font-weight:600;"`;
+  return `
+    <div class="settings-section profile-style-section">
+      <h3>Стиль профиля</h3>
+      <small class="settings-hint">
+        Тема красит карточку профиля, градиент — имя в чате и списке участников,
+        бейдж — эмодзи рядом с именем (подпись видна при наведении).
+      </small>
+      <div class="profile-style-row">
+        <label class="settings-check">
+          <input type="checkbox" id="ps-theme-on" ${sd.themeOn ? "checked" : ""} />
+          <span>Тема карточки</span>
+        </label>
+        <input type="color" id="ps-theme-a" value="${escapeHtml(sd.themeA)}" ${sd.themeOn ? "" : "disabled"} />
+        <input type="color" id="ps-theme-b" value="${escapeHtml(sd.themeB)}" ${sd.themeOn ? "" : "disabled"} />
+      </div>
+      <div class="profile-style-row">
+        <label class="settings-check">
+          <input type="checkbox" id="ps-grad-on" ${sd.gradOn ? "checked" : ""} />
+          <span>Градиент имени</span>
+        </label>
+        <input type="color" id="ps-grad-a" value="${escapeHtml(sd.gradA)}" ${sd.gradOn ? "" : "disabled"} />
+        <input type="color" id="ps-grad-b" value="${escapeHtml(sd.gradB)}" ${sd.gradOn ? "" : "disabled"} />
+        <span id="ps-grad-preview" class="profile-style-preview"${gradPreviewStyle}>${escapeHtml(previewName)}</span>
+      </div>
+      <div class="profile-style-row">
+        <span class="profile-style-label">Бейдж</span>
+        <input type="text" id="ps-badge-emoji" maxlength="8" placeholder="🦄" value="${escapeHtml(sd.badgeEmoji)}" class="profile-style-emoji" />
+        <input type="text" id="ps-badge-label" maxlength="48" placeholder="Подпись при наведении" value="${escapeHtml(sd.badgeLabel)}" class="profile-style-badge-label" />
+      </div>
+      <div class="admin-actions">
+        <button id="ps-style-save" class="primary" ${profileStyleSaving ? "disabled" : ""}>
+          ${profileStyleSaving ? "Сохранение…" : "Сохранить стиль"}
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+async function saveProfileStyle(): Promise<void> {
+  const sd = profileStyleDraft ?? (state.me ? styleDraftFromMe(state.me) : null);
+  if (!sd || !state.me) return;
+  profileStyleSaving = true;
+  render();
+  try {
+    const updated = await httpClient.put<Me>("/api/v1/users/me", {
+      profileTheme: sd.themeOn ? `${sd.themeA},${sd.themeB}` : "",
+      nameGradient: sd.gradOn ? `${sd.gradA},${sd.gradB}` : "",
+      badgeEmoji: sd.badgeEmoji.trim(),
+      badgeLabel: sd.badgeLabel.trim()
+    });
+    state.me = {
+      ...state.me,
+      profileTheme: updated.profileTheme,
+      nameGradient: updated.nameGradient,
+      badgeEmoji: updated.badgeEmoji,
+      badgeLabel: updated.badgeLabel
+    };
+    // Своё имя в чате/сайдбаре рисуется из state.members — обновим локально,
+    // не дожидаясь user.updated/refetch'а.
+    state.members = state.members.map((m) =>
+      m.userId === state.me?.id
+        ? { ...m, profileTheme: updated.profileTheme, nameGradient: updated.nameGradient, badgeEmoji: updated.badgeEmoji, badgeLabel: updated.badgeLabel }
+        : m
+    );
+    profileStyleDraft = null;
+    setTransientStatus("Стиль профиля сохранён");
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    profileStyleSaving = false;
+    render();
+  }
 }
 
 function renderProfileEditBio(): string {
@@ -8670,8 +8845,54 @@ function attachSettingsHandlers(): void {
   if (state.modal !== "settings") {
     _sessions = null;
     _sessionsError = null;
+    profileStyleDraft = null;
     return;
   }
+  // Wave 7: «Стиль профиля». Чекбоксы триггерят render() (надо включить/
+  // выключить color-input'ы), цвета/текст пишут в draft без render(),
+  // превью градиента обновляется прямым DOM-стилем.
+  rootEl.querySelector<HTMLInputElement>("#ps-theme-on")?.addEventListener("change", (e) => {
+    ensureStyleDraft().themeOn = (e.currentTarget as HTMLInputElement).checked;
+    render();
+  });
+  rootEl.querySelector<HTMLInputElement>("#ps-grad-on")?.addEventListener("change", (e) => {
+    ensureStyleDraft().gradOn = (e.currentTarget as HTMLInputElement).checked;
+    render();
+  });
+  const updateGradPreview = (): void => {
+    const sd = ensureStyleDraft();
+    const prev = rootEl.querySelector<HTMLSpanElement>("#ps-grad-preview");
+    if (!prev) return;
+    if (sd.gradOn) {
+      prev.style.background = `linear-gradient(90deg,${sd.gradA},${sd.gradB})`;
+      prev.style.webkitBackgroundClip = "text";
+      prev.style.backgroundClip = "text";
+      prev.style.color = "transparent";
+    }
+  };
+  rootEl.querySelector<HTMLInputElement>("#ps-theme-a")?.addEventListener("input", (e) => {
+    ensureStyleDraft().themeA = (e.currentTarget as HTMLInputElement).value;
+  });
+  rootEl.querySelector<HTMLInputElement>("#ps-theme-b")?.addEventListener("input", (e) => {
+    ensureStyleDraft().themeB = (e.currentTarget as HTMLInputElement).value;
+  });
+  rootEl.querySelector<HTMLInputElement>("#ps-grad-a")?.addEventListener("input", (e) => {
+    ensureStyleDraft().gradA = (e.currentTarget as HTMLInputElement).value;
+    updateGradPreview();
+  });
+  rootEl.querySelector<HTMLInputElement>("#ps-grad-b")?.addEventListener("input", (e) => {
+    ensureStyleDraft().gradB = (e.currentTarget as HTMLInputElement).value;
+    updateGradPreview();
+  });
+  rootEl.querySelector<HTMLInputElement>("#ps-badge-emoji")?.addEventListener("input", (e) => {
+    ensureStyleDraft().badgeEmoji = (e.currentTarget as HTMLInputElement).value;
+  });
+  rootEl.querySelector<HTMLInputElement>("#ps-badge-label")?.addEventListener("input", (e) => {
+    ensureStyleDraft().badgeLabel = (e.currentTarget as HTMLInputElement).value;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#ps-style-save")?.addEventListener("click", () => {
+    void saveProfileStyle();
+  });
   rootEl.querySelectorAll<HTMLButtonElement>("[data-settings-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const tab = btn.dataset.settingsTab as SettingsTab | undefined;
