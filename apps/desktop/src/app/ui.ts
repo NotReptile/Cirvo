@@ -7862,91 +7862,92 @@ function maybeCaptureKey(ev: KeyboardEvent): boolean {
 // обновились с новым `grouped`/`roleColors` режимом.
 function renderSettingsAppearanceTab(): string {
   const s = getAppearance();
+  // Wave 6: map-параметр нарочно не `t` — не шейдить функцию перевода.
   const themeOpts: { id: ThemeMode; label: string; sub: string }[] = [
-    { id: "dark", label: "Тёмная", sub: "Стандартная RuCord-тема." },
-    { id: "light", label: "Светлая", sub: "Светлый интерфейс для дневного света." },
-    { id: "auto", label: "Авто", sub: "По системной настройке (prefers-color-scheme)." }
+    { id: "dark", label: t("ap.theme.dark"), sub: t("ap.theme.dark.sub") },
+    { id: "light", label: t("ap.theme.light"), sub: t("ap.theme.light.sub") },
+    { id: "auto", label: t("ap.theme.auto"), sub: t("ap.theme.auto.sub") }
   ];
   const themeCards = themeOpts
-    .map((t) => `
-      <label class="vs-denoiser-option ${s.theme === t.id ? "active" : ""}">
-        <input type="radio" name="ap-theme" value="${t.id}" ${s.theme === t.id ? "checked" : ""} />
+    .map((opt) => `
+      <label class="vs-denoiser-option ${s.theme === opt.id ? "active" : ""}">
+        <input type="radio" name="ap-theme" value="${opt.id}" ${s.theme === opt.id ? "checked" : ""} />
         <div class="vs-denoiser-option-body">
           <div class="vs-denoiser-option-head">
-            <span class="vs-denoiser-option-label">${escapeHtml(t.label)}</span>
+            <span class="vs-denoiser-option-label">${escapeHtml(opt.label)}</span>
           </div>
-          <div class="vs-denoiser-option-sub">${escapeHtml(t.sub)}</div>
+          <div class="vs-denoiser-option-sub">${escapeHtml(opt.sub)}</div>
         </div>
       </label>
     `).join("");
 
   const densityOpts: { id: Density; label: string; sub: string }[] = [
-    { id: "cozy", label: "Уютный", sub: "Дефолтные отступы и аватары 40px." },
-    { id: "compact", label: "Компактный", sub: "Тоньше: меньше отступы, аватары 32px, шрифт 13px." }
+    { id: "cozy", label: t("ap.density.cozy"), sub: t("ap.density.cozy.sub") },
+    { id: "compact", label: t("ap.density.compact"), sub: t("ap.density.compact.sub") }
   ];
   const densityCards = densityOpts
-    .map((d) => `
-      <label class="vs-denoiser-option ${s.density === d.id ? "active" : ""}">
-        <input type="radio" name="ap-density" value="${d.id}" ${s.density === d.id ? "checked" : ""} />
+    .map((opt) => `
+      <label class="vs-denoiser-option ${s.density === opt.id ? "active" : ""}">
+        <input type="radio" name="ap-density" value="${opt.id}" ${s.density === opt.id ? "checked" : ""} />
         <div class="vs-denoiser-option-body">
           <div class="vs-denoiser-option-head">
-            <span class="vs-denoiser-option-label">${escapeHtml(d.label)}</span>
+            <span class="vs-denoiser-option-label">${escapeHtml(opt.label)}</span>
           </div>
-          <div class="vs-denoiser-option-sub">${escapeHtml(d.sub)}</div>
+          <div class="vs-denoiser-option-sub">${escapeHtml(opt.sub)}</div>
         </div>
       </label>
     `).join("");
 
   const accentValue = s.accent || "#5865f2";
-  const accentDisplay = s.accent || "по умолчанию";
+  const accentDisplay = s.accent || t("ap.accent.default");
 
   return `
     <div class="settings-section">
-      <h3>Тема</h3>
+      <h3>${t("ap.theme.title")}</h3>
       <div class="vs-denoiser-list">${themeCards}</div>
     </div>
 
     <div class="settings-section">
-      <h3>Акцентный цвет</h3>
+      <h3>${t("ap.accent.title")}</h3>
       <div class="settings-row">
-        <label for="ap-accent">Цвет</label>
+        <label for="ap-accent">${t("ap.accent.label")}</label>
         <div class="settings-slider-wrap" style="gap: 12px;">
           <input id="ap-accent" type="color" value="${escapeHtml(accentValue)}" />
           <span id="ap-accent-val" class="settings-slider-val" style="min-width: 120px;">${escapeHtml(accentDisplay)}</span>
-          <button id="ap-accent-reset" class="ghost" title="Сбросить на дефолт">${icon("x", { size: 14 })}</button>
+          <button id="ap-accent-reset" class="ghost" title="${t("ap.accent.reset")}">${icon("x", { size: 14 })}</button>
         </div>
-        <small class="settings-hint">Применяется к кнопкам, выделению, ссылкам. Hover-цвет выводится автоматически.</small>
+        <small class="settings-hint">${t("ap.accent.hint")}</small>
       </div>
     </div>
 
     <div class="settings-section">
-      <h3>Плотность</h3>
+      <h3>${t("ap.density.title")}</h3>
       <div class="vs-denoiser-list">${densityCards}</div>
     </div>
 
     <div class="settings-section">
-      <h3>Сообщения</h3>
+      <h3>${t("ap.messages.title")}</h3>
       <label class="settings-check">
         <input type="checkbox" id="ap-group" ${s.groupMessages ? "checked" : ""} />
-        <span>Склеивать подряд идущие сообщения одного автора</span>
+        <span>${t("ap.messages.group")}</span>
       </label>
       <label class="settings-check">
         <input type="checkbox" id="ap-role-colors" ${s.roleColors ? "checked" : ""} />
-        <span>Подсвечивать имя автора цветом роли</span>
+        <span>${t("ap.messages.rolecolors")}</span>
       </label>
     </div>
 
     <div class="settings-section">
-      <h3>Анимированные аватары</h3>
+      <h3>${t("ap.gif.title")}</h3>
       <div class="settings-row" style="display:flex; gap:8px; align-items:center;">
         <select id="ap-gif-avatars" class="settings-select">
-          <option value="always" ${s.gifAvatars === "always" ? "selected" : ""}>Проигрывать всегда</option>
-          <option value="hover" ${s.gifAvatars === "hover" ? "selected" : ""}>Только при наведении</option>
-          <option value="never" ${s.gifAvatars === "never" ? "selected" : ""}>Никогда (статичный кадр)</option>
+          <option value="always" ${s.gifAvatars === "always" ? "selected" : ""}>${t("ap.gif.always")}</option>
+          <option value="hover" ${s.gifAvatars === "hover" ? "selected" : ""}>${t("ap.gif.hover")}</option>
+          <option value="never" ${s.gifAvatars === "never" ? "selected" : ""}>${t("ap.gif.never")}</option>
         </select>
       </div>
       <small class="settings-hint">
-        Анимированные баннеры профиля проигрываются всегда.
+        ${t("ap.gif.hint")}
       </small>
     </div>
   `;
@@ -8004,52 +8005,51 @@ function renderSettingsNotificationsTab(): string {
   const permission = typeof Notification !== "undefined" ? Notification.permission : "default";
   const permissionLabel =
     permission === "granted"
-      ? `<span class="settings-hint" style="color:#43b581">Разрешение выдано.</span>`
+      ? `<span class="settings-hint" style="color:#43b581">${t("nt.perm.granted")}</span>`
       : permission === "denied"
-        ? `<span class="settings-hint" style="color:#d6453a">Заблокировано в браузере. Разрешите вручную в настройках сайта.</span>`
-        : `<button id="notif-request-permission" class="primary">Запросить разрешение</button>`;
+        ? `<span class="settings-hint" style="color:#d6453a">${t("nt.perm.denied")}</span>`
+        : `<button id="notif-request-permission" class="primary">${t("nt.perm.request")}</button>`;
 
   return `
     <div class="settings-section">
-      <h3>Уведомления на рабочем столе</h3>
+      <h3>${t("nt.desktop.title")}</h3>
       <label class="settings-check">
         <input type="checkbox" id="notif-desktop" ${s.desktopEnabled ? "checked" : ""} />
-        <span>Показывать всплывающие уведомления, когда RuCord свёрнут</span>
+        <span>${t("nt.desktop.toggle")}</span>
       </label>
       <small class="settings-hint">
-        Когда окно активно, появляется только бейдж и счётчик — система не отвлекает.
+        ${t("nt.desktop.hint")}
       </small>
       <div class="settings-row" style="margin-top: 8px;">${permissionLabel}</div>
     </div>
 
     <div class="settings-section">
-      <h3>Звук</h3>
+      <h3>${t("nt.sound.title")}</h3>
       <label class="settings-check">
         <input type="checkbox" id="notif-sound" ${s.soundEnabled ? "checked" : ""} />
-        <span>Проигрывать звук при упоминании, ответе и входящем звонке</span>
+        <span>${t("nt.sound.toggle")}</span>
       </label>
       <div class="settings-row" style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
         <select id="notif-sound-kind" class="settings-select">
           ${(Object.keys(SOUND_LABELS) as NotificationSoundKind[])
-            .map((k) => `<option value="${k}"${s.sound === k ? " selected" : ""}>${SOUND_LABELS[k]}</option>`)
+            .map((k) => `<option value="${k}"${s.sound === k ? " selected" : ""}>${t(`sound.${k}`)}</option>`)
             .join("")}
         </select>
-        <button id="notif-sound-test" class="primary">Прослушать</button>
+        <button id="notif-sound-test" class="primary">${t("nt.sound.test")}</button>
       </div>
       <small class="settings-hint">
-        Все звуки синтезируются на лету — без аудиофайлов.
+        ${t("nt.sound.hint")}
       </small>
     </div>
 
     <div class="settings-section">
-      <h3>Подавление</h3>
+      <h3>${t("nt.suppress.title")}</h3>
       <label class="settings-check">
         <input type="checkbox" id="notif-mute-everyone" ${s.muteEveryone ? "checked" : ""} />
-        <span>Не уведомлять про @everyone и @here</span>
+        <span>${t("nt.suppress.everyone")}</span>
       </label>
       <small class="settings-hint">
-        Сами упоминания в чате всё равно подсветятся; глушится только всплывающее
-        уведомление и звук.
+        ${t("nt.suppress.hint")}
       </small>
     </div>
   `;
@@ -8165,51 +8165,51 @@ function renderSettingsPrivacyTab(): string {
   ensureSessionsLoaded();
   const list = _sessions ?? [];
   const sessionsBlock = _sessionsLoading
-    ? `<div class="settings-hint">Загрузка сессий…</div>`
+    ? `<div class="settings-hint">${t("pv.sessions.loading")}</div>`
     : _sessionsError
       ? `<div class="modal-error">${escapeHtml(_sessionsError)}</div>`
       : list.length === 0
-        ? `<div class="settings-hint">Активных сессий нет.</div>`
+        ? `<div class="settings-hint">${t("pv.sessions.none")}</div>`
         : `<ul class="sessions-list">
             ${list.map((s) => `
               <li class="sessions-item${s.current ? " current" : ""}">
                 <div class="sessions-item-info">
                   <div class="sessions-item-label">
-                    ${escapeHtml(s.deviceLabel || "Устройство")}
-                    ${s.current ? `<span class="sessions-current-badge">текущая</span>` : ""}
+                    ${escapeHtml(s.deviceLabel || t("pv.sessions.device"))}
+                    ${s.current ? `<span class="sessions-current-badge">${t("pv.sessions.current")}</span>` : ""}
                   </div>
                   ${s.userAgent ? `<div class="sessions-item-ua">${escapeHtml(s.userAgent)}</div>` : ""}
                   <div class="sessions-item-meta">
-                    Создана ${formatTimeSmart(s.createdAt)} · последний вход ${formatTimeSmart(s.lastSeenAt)}
+                    ${t("pv.sessions.meta", { created: formatTimeSmart(s.createdAt), seen: formatTimeSmart(s.lastSeenAt) })}
                   </div>
                 </div>
                 ${s.current
                   ? ""
-                  : `<button class="danger session-revoke" data-session-id="${escapeHtml(s.id)}">Завершить</button>`}
+                  : `<button class="danger session-revoke" data-session-id="${escapeHtml(s.id)}">${t("pv.sessions.revoke")}</button>`}
               </li>
             `).join("")}
           </ul>`;
   return `
     <div class="settings-section">
-      <h3>Активные сеансы</h3>
+      <h3>${t("pv.sessions.title")}</h3>
       <small class="settings-hint">
-        Все устройства, на которых ты сейчас залогинен. Завершить текущий сеанс — через «Выйти из аккаунта».
+        ${t("pv.sessions.hint")}
       </small>
       ${sessionsBlock}
     </div>
     <div class="settings-section">
-      <h3>Выйти со всех устройств</h3>
+      <h3>${t("pv.logoutall.title")}</h3>
       <small class="settings-hint">
-        Отзовёт refresh-токены всех сессий кроме текущей. Полезно если ты потерял девайс или сменил пароль.
+        ${t("pv.logoutall.hint")}
       </small>
       <div class="admin-actions">
-        <button id="privacy-logout-all" class="danger">Выйти со всех устройств</button>
+        <button id="privacy-logout-all" class="danger">${t("pv.logoutall.title")}</button>
       </div>
     </div>
     <div class="settings-section">
-      <h3>Экспорт данных</h3>
+      <h3>${t("pv.export.title")}</h3>
       <small class="settings-hint">
-        Загрузка JSON со своим профилем, сообщениями и аватарами. Скоро.
+        ${t("pv.export.hint")}
       </small>
     </div>
   `;
