@@ -3650,19 +3650,19 @@ function renderChannelMenu(): string {
     <div class="channel-menu-backdrop" data-channel-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
       <div class="channel-menu-header">${channelPrefix(ch)} ${escapeHtml(ch.name)}</div>
-      ${hasUnread ? `<button class="channel-menu-item" data-channel-action="mark-read" data-id="${ch.id}">Пометить как прочитанное</button>` : ""}
-      ${canModerate ? `<button class="channel-menu-item" data-channel-action="invite" data-id="${ch.id}">Пригласить</button>` : ""}
+      ${hasUnread ? `<button class="channel-menu-item" data-channel-action="mark-read" data-id="${ch.id}">${t("menu.markread")}</button>` : ""}
+      ${canModerate ? `<button class="channel-menu-item" data-channel-action="invite" data-id="${ch.id}">${t("menu.invite")}</button>` : ""}
       <div class="channel-menu-separator"></div>
-      <div class="channel-menu-subheader">Уведомления</div>
-      ${notifItem("", `Как на сервере (${inheritedLevel === "all" ? "все" : inheritedLevel === "mentions" ? "@упоминания" : "ничего"})`)}
-      ${notifItem("all", "Все сообщения")}
-      ${notifItem("mentions", "Только @упоминания")}
-      ${notifItem("none", "Ничего (mute)")}
+      <div class="channel-menu-subheader">${t("modal.notifications")}</div>
+      ${notifItem("", t("menu.notif_inherit", { lvl: t(`notif.short.${inheritedLevel}`) }))}
+      ${notifItem("all", t("notif.all"))}
+      ${notifItem("mentions", t("notif.mentions"))}
+      ${notifItem("none", t("notif.none"))}
       <div class="channel-menu-separator"></div>
-      ${canManage ? `<button class="channel-menu-item" data-channel-action="rename" data-id="${ch.id}">Переименовать</button>` : ""}
-      ${canManage ? `<button class="channel-menu-item" data-channel-action="clone" data-id="${ch.id}">Клонировать канал</button>` : ""}
-      <button class="channel-menu-item" data-channel-action="copy-id" data-id="${ch.id}">Скопировать ID</button>
-      ${canManage ? `<div class="channel-menu-separator"></div><button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">Удалить канал</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-channel-action="rename" data-id="${ch.id}">${t("menu.rename")}</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-channel-action="clone" data-id="${ch.id}">${t("menu.clone")}</button>` : ""}
+      <button class="channel-menu-item" data-channel-action="copy-id" data-id="${ch.id}">${t("menu.copyid")}</button>
+      ${canManage ? `<div class="channel-menu-separator"></div><button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">${t("menu.delete_channel")}</button>` : ""}
     </div>
   `;
 }
@@ -3680,20 +3680,20 @@ function renderWorkspaceMenu(): string {
     <div class="channel-menu-backdrop" data-workspace-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
       <div class="channel-menu-header">${escapeHtml(ws.name)}</div>
-      ${canManage ? `<button class="channel-menu-item" data-workspace-action="upload-icon" data-id="${ws.id}">${ws.avatarMediaId ? "Сменить иконку" : "Загрузить иконку"}</button>` : ""}
-      ${canManage && ws.avatarMediaId ? `<button class="channel-menu-item" data-workspace-action="remove-icon" data-id="${ws.id}">Удалить иконку</button>` : ""}
-      ${canManage ? `<button class="channel-menu-item" data-workspace-action="manage-roles" data-id="${ws.id}">Настроить роли…</button>` : ""}
-      ${canManage ? `<button class="channel-menu-item" data-workspace-action="welcome-channel" data-id="${ws.id}">Канал приветствия…</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-workspace-action="upload-icon" data-id="${ws.id}">${ws.avatarMediaId ? t("menu.icon.change") : t("menu.icon.upload")}</button>` : ""}
+      ${canManage && ws.avatarMediaId ? `<button class="channel-menu-item" data-workspace-action="remove-icon" data-id="${ws.id}">${t("menu.icon.remove")}</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-workspace-action="manage-roles" data-id="${ws.id}">${t("menu.manage_roles")}</button>` : ""}
+      ${canManage ? `<button class="channel-menu-item" data-workspace-action="welcome-channel" data-id="${ws.id}">${t("menu.welcome_channel")}</button>` : ""}
       <div class="channel-menu-separator"></div>
-      <div class="channel-menu-subheader">Уведомления сервера</div>
+      <div class="channel-menu-subheader">${t("menu.ws_notifications")}</div>
       ${(() => {
         const cur = state.notifPrefs.workspaces[ws.id] ?? "";
         const item = (lvl: string, label: string) =>
           `<button class="channel-menu-item notif-level${cur === lvl ? " checked" : ""}" data-workspace-action="notif" data-id="${ws.id}" data-level="${lvl}">${cur === lvl ? "✓" : "·"} ${label}</button>`;
-        return item("", "Все сообщения") + item("mentions", "Только @упоминания") + item("none", "Ничего (mute)");
+        return item("", t("notif.all")) + item("mentions", t("notif.mentions")) + item("none", t("notif.none"));
       })()}
       <div class="channel-menu-separator"></div>
-      <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">Скопировать ID</button>
+      <button class="channel-menu-item" data-workspace-action="copy-id" data-id="${ws.id}">${t("menu.copyid")}</button>
     </div>
   `;
 }
@@ -3710,8 +3710,8 @@ function renderCategoryMenu(): string {
     <div class="channel-menu-backdrop" data-category-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
       <div class="channel-menu-header">${escapeHtml(cat.name)}</div>
-      ${canManage ? `<button class="channel-menu-item" data-category-action="permissions" data-id="${cat.id}">Права категории…</button>` : ""}
-      <button class="channel-menu-item" data-category-action="copy-id" data-id="${cat.id}">Скопировать ID</button>
+      ${canManage ? `<button class="channel-menu-item" data-category-action="permissions" data-id="${cat.id}">${t("menu.cat_perms")}</button>` : ""}
+      <button class="channel-menu-item" data-category-action="copy-id" data-id="${cat.id}">${t("menu.copyid")}</button>
     </div>
   `;
 }
@@ -3736,21 +3736,21 @@ function renderMemberMenu(): string {
         const has = r.memberUserIds.includes(m.userId) || m.role === r.code;
         const isPrimary = m.role === r.code; // primary снимается только сменой роли
         const dot = r.color ? `<span class="role-color-dot" style="background:${r.color};"></span>` : "";
-        return `<button class="channel-menu-item notif-level${has ? " checked" : ""}" data-member-action="toggle-role" data-id="${m.userId}" data-role-id="${r.id}" ${isPrimary && has ? "disabled title=\"Основная роль — меняется в списке участников\"" : ""}>${has ? "✓" : "·"} ${dot}${escapeHtml(r.name)}</button>`;
+        return `<button class="channel-menu-item notif-level${has ? " checked" : ""}" data-member-action="toggle-role" data-id="${m.userId}" data-role-id="${r.id}" ${isPrimary && has ? `disabled title="${t("menu.primary_role_hint")}"` : ""}>${has ? "✓" : "·"} ${dot}${escapeHtml(r.name)}</button>`;
       })
       .join("");
     return `<div class="channel-menu-separator"></div>
-      <div class="channel-menu-subheader">Роли</div>
+      <div class="channel-menu-subheader">${t("modal.roles")}</div>
       ${items}`;
   })();
   return `
     <div class="channel-menu-backdrop" data-member-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
       <div class="channel-menu-header">${escapeHtml(name)}</div>
-      <button class="channel-menu-item" data-member-action="profile" data-id="${m.userId}">Профиль</button>
-      ${isSelf ? "" : `<button class="channel-menu-item" data-member-action="dm" data-id="${m.userId}">Написать сообщение</button>`}
-      ${isSelf ? "" : `<button class="channel-menu-item" data-member-action="call" data-id="${m.userId}">Позвонить</button>`}
-      <button class="channel-menu-item" data-member-action="copy-id" data-id="${m.userId}">Скопировать ID</button>
+      <button class="channel-menu-item" data-member-action="profile" data-id="${m.userId}">${t("menu.profile")}</button>
+      ${isSelf ? "" : `<button class="channel-menu-item" data-member-action="dm" data-id="${m.userId}">${t("menu.dm")}</button>`}
+      ${isSelf ? "" : `<button class="channel-menu-item" data-member-action="call" data-id="${m.userId}">${t("menu.call")}</button>`}
+      <button class="channel-menu-item" data-member-action="copy-id" data-id="${m.userId}">${t("menu.copyid")}</button>
       ${rolesSection}
     </div>
   `;
@@ -4282,28 +4282,28 @@ function renderFriendsSection(): string {
 
   const rows = list.length === 0
     ? `<div class="friends-empty">${
-        tab === "pending" ? "Нет заявок" :
-        tab === "blocked" ? "Никто не заблокирован" :
-        tab === "online" ? "Никого нет в сети" :
-        "Пока нет друзей — добавь по username выше"}</div>`
+        tab === "pending" ? t("friends.empty.pending") :
+        tab === "blocked" ? t("friends.empty.blocked") :
+        tab === "online" ? t("friends.empty.online") :
+        t("friends.empty.all")}</div>`
     : `<ul class="friends-list">${list.map((f) => {
         const name = f.displayName || f.username;
         const effMode = f.presenceMode ?? (f.online ? "online" : "offline");
         const sub =
-          f.status === "pending_in" ? "Входящая заявка" :
-          f.status === "pending_out" ? "Исходящая заявка" :
-          f.status === "blocked" ? "Заблокирован" :
+          f.status === "pending_in" ? t("friends.sub.pending_in") :
+          f.status === "pending_out" ? t("friends.sub.pending_out") :
+          f.status === "blocked" ? t("friends.sub.blocked") :
           f.customStatus || "@" + f.username;
         const actions =
           f.status === "pending_in"
-            ? `<button class="friends-act ok" data-friend-accept="${f.userId}" title="Принять">✓</button>
-               <button class="friends-act danger" data-friend-remove="${f.userId}" title="Отклонить">✕</button>`
+            ? `<button class="friends-act ok" data-friend-accept="${f.userId}" title="${t("friends.accept")}">✓</button>
+               <button class="friends-act danger" data-friend-remove="${f.userId}" title="${t("friends.decline")}">✕</button>`
             : f.status === "pending_out"
-              ? `<button class="friends-act danger" data-friend-remove="${f.userId}" title="Отменить заявку">✕</button>`
+              ? `<button class="friends-act danger" data-friend-remove="${f.userId}" title="${t("friends.cancel_request")}">✕</button>`
               : f.status === "blocked"
-                ? `<button class="friends-act" data-friend-unblock="${f.userId}">Разблокировать</button>`
-                : `<button class="friends-act" data-friend-msg="${f.userId}" title="Написать">${icon("reply", { size: 16 })}</button>
-                   <button class="friends-act danger" data-friend-remove-confirm="${f.userId}" title="Удалить из друзей">✕</button>`;
+                ? `<button class="friends-act" data-friend-unblock="${f.userId}">${t("friends.unblock")}</button>`
+                : `<button class="friends-act" data-friend-msg="${f.userId}" title="${t("friends.message")}">${icon("reply", { size: 16 })}</button>
+                   <button class="friends-act danger" data-friend-remove-confirm="${f.userId}" title="${t("friends.remove")}">✕</button>`;
         return `
           <li class="friends-row" data-friend-profile="${f.userId}">
             <span class="dm-home-avatar">
@@ -4321,18 +4321,18 @@ function renderFriendsSection(): string {
   return `
     <section class="friends-section">
       <form id="friend-add-form" class="dm-home-find">
-        <input id="friend-add-input" name="username" placeholder="Добавить друга по username" autocomplete="off" maxlength="64" />
-        <button type="submit">Отправить заявку</button>
+        <input id="friend-add-input" name="username" placeholder="${t("friends.add_placeholder")}" autocomplete="off" maxlength="64" />
+        <button type="submit">${t("friends.send_request")}</button>
       </form>
       ${state.friendAddError ? `<div class="dm-home-error">${escapeHtml(state.friendAddError)}</div>` : ""}
       ${state.friendAddOk ? `<div class="friends-ok">${escapeHtml(state.friendAddOk)}</div>` : ""}
       <div class="friends-tabs">
-        ${tabBtn("all", "Все")}
-        ${tabBtn("online", "В сети")}
-        ${tabBtn("pending", "Ожидание", pendingIn.length)}
-        ${tabBtn("blocked", "Заблокированные")}
+        ${tabBtn("all", t("friends.tab.all"))}
+        ${tabBtn("online", t("members.online"))}
+        ${tabBtn("pending", t("friends.tab.pending"), pendingIn.length)}
+        ${tabBtn("blocked", t("friends.tab.blocked"))}
       </div>
-      ${state.friendsLoading && state.friends.length === 0 ? `<div class="friends-empty">Загрузка…</div>` : rows}
+      ${state.friendsLoading && state.friends.length === 0 ? `<div class="friends-empty">${t("common.loading")}</div>` : rows}
     </section>
   `;
 }
@@ -4347,7 +4347,7 @@ function renderDMHome(): string {
     return bt.localeCompare(at);
   });
   const cards = sorted.length === 0
-    ? `<div class="dm-home-empty">Нет начатых бесед. Введи username сверху, чтобы начать первую.</div>`
+    ? `<div class="dm-home-empty">${t("dm.home.empty")}</div>`
     : `<ul class="dm-home-list">
         ${sorted.map((d) => {
           const name = d.peer.displayName || d.peer.username;
@@ -4370,20 +4370,20 @@ function renderDMHome(): string {
   return `
     <div class="dm-home">
       <header class="dm-home-header">
-        <h2>Личные сообщения</h2>
+        <h2>${t("dm.home.title")}</h2>
         <form id="dm-find-form" class="dm-home-find">
           <input id="dm-find-input"
                  name="query"
-                 placeholder="Найти или начать беседу — введи username"
+                 placeholder="${t("dm.home.find_placeholder")}"
                  autocomplete="off"
                  maxlength="64"
                  value="${escapeHtml(state.dmFindQuery)}" />
-          <button type="submit" ${state.dmOpening ? "disabled" : ""}>${state.dmOpening ? "…" : "Открыть"}</button>
+          <button type="submit" ${state.dmOpening ? "disabled" : ""}>${state.dmOpening ? "…" : t("dm.home.open")}</button>
         </form>
         ${errBlock}
       </header>
       ${renderFriendsSection()}
-      <h3 class="dm-home-subtitle">Беседы</h3>
+      <h3 class="dm-home-subtitle">${t("dm.home.conversations")}</h3>
       ${cards}
     </div>
   `;
@@ -4410,13 +4410,13 @@ function renderDMChannelView(dm: DMItem): string {
         </div>
       </div>
       <div class="channel-header-actions">
-        <button id="dm-call" class="ghost" data-user-id="${escapeHtml(dm.peer.userId)}" title="Позвонить" aria-label="Позвонить">${icon("phone")}</button>
+        <button id="dm-call" class="ghost" data-user-id="${escapeHtml(dm.peer.userId)}" title="${t("menu.call")}" aria-label="${t("menu.call")}">${icon("phone")}</button>
         <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="${t("header.pins")}" aria-label="${t("header.pins")}">${icon("pin")}</button>
       </div>
       ${state.pinsPopupOpen && state.channelPinsChannelId === dm.channelId ? renderPinsPopup() : ""}
     </header>
     <div id="drop-zone" class="drop-zone" hidden>
-      <div class="drop-zone-inner">📎 Отпусти, чтобы прикрепить файлы</div>
+      <div class="drop-zone-inner">${t("chat.dropzone")}</div>
     </div>
     <div id="sticky-date" class="sticky-date" hidden></div>
     <div id="message-list" class="message-list">
@@ -4429,17 +4429,17 @@ function renderDMChannelView(dm: DMItem): string {
     <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
-      <label class="attach-btn" title="Прикрепить файлы (до ${MAX_ATTACHMENTS})">
+      <label class="attach-btn" title="${t("chat.composer.attach", { max: MAX_ATTACHMENTS })}">
         ${icon("paperclip")}
         <input type="file" id="attach-input" multiple hidden />
       </label>
       <input
         name="body"
         autocomplete="off"
-        placeholder="Сообщение для ${escapeHtml(name)}"
+        placeholder="${t("dm.composer.message_for", { name: escapeHtml(name) })}"
         value="${escapeHtml(loadDraft(dm.channelId))}"
       />
-      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="Эмодзи">${icon("smile")}</button>
+      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="${t("chat.composer.emoji")}">${icon("smile")}</button>
       <button type="submit">${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
@@ -7168,8 +7168,8 @@ function renderRoleMembersAssignment(role: WorkspaceRole): string {
 function renderNotificationsModal(): string {
   const items = state.notifications;
   const body = (() => {
-    if (state.notificationsLoading) return `<div class="search-empty">Загрузка…</div>`;
-    if (items.length === 0) return `<div class="search-empty">Нет уведомлений</div>`;
+    if (state.notificationsLoading) return `<div class="search-empty">${t("common.loading")}</div>`;
+    if (items.length === 0) return `<div class="search-empty">${t("notifmodal.empty")}</div>`;
     return `<ul class="notif-list">
       ${items.map(renderNotificationItem).join("")}
     </ul>`;
@@ -7181,7 +7181,7 @@ function renderNotificationsModal(): string {
           <h3>${t("modal.notifications")}</h3>
           <div class="modal-header-actions">
             ${state.notificationsUnread > 0
-              ? `<button id="notif-mark-all" class="ghost">Прочитано всё</button>`
+              ? `<button id="notif-mark-all" class="ghost">${t("notifmodal.markall")}</button>`
               : ""}
             <button class="ghost modal-close-btn" data-modal-close>✕</button>
           </div>
@@ -7219,9 +7219,9 @@ function renderSearchModal(): string {
   const { query, loading, hits, error } = state.search;
   const body = (() => {
     if (error) return `<div class="search-empty error">${escapeHtml(error)}</div>`;
-    if (loading) return `<div class="search-empty">Ищу…</div>`;
-    if (query.trim().length < 2) return `<div class="search-empty">Введите минимум 2 символа</div>`;
-    if (hits.length === 0) return `<div class="search-empty">Ничего не найдено</div>`;
+    if (loading) return `<div class="search-empty">${t("search.searching")}</div>`;
+    if (query.trim().length < 2) return `<div class="search-empty">${t("search.minchars")}</div>`;
+    if (hits.length === 0) return `<div class="search-empty">${t("search.none")}</div>`;
     return `<ul class="search-results">
       ${hits.map(renderSearchHit).join("")}
     </ul>`;
@@ -7235,7 +7235,7 @@ function renderSearchModal(): string {
         </div>
         <div class="modal-body">
           <input id="search-input" class="search-input" type="text" autocomplete="off"
-                 placeholder="Поиск по сообщениям…" value="${escapeHtml(query)}" />
+                 placeholder="${t("search.placeholder")}" value="${escapeHtml(query)}" />
           ${body}
         </div>
       </div>
