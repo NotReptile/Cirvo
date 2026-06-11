@@ -6269,7 +6269,7 @@ function attachProfileEditHandlers(): void {
     state.profileEdit.draftBio = bioInput.value;
     // Обновляем счётчик символов без render() (текстарея сохраняет фокус).
     const hint = bioInput.parentElement?.querySelector<HTMLElement>(".profile-field-hint");
-    if (hint) hint.textContent = `${600 - bioInput.value.length} симв.`;
+    if (hint) hint.textContent = t("pf.bio.chars", { n: 600 - bioInput.value.length });
     // I.6(b): live-preview bio в profile-card-head через renderBody.
     const previewBio = rootEl.querySelector<HTMLDivElement>(".profile-card-bio-preview");
     if (previewBio) previewBio.innerHTML = renderBody(bioInput.value);
@@ -7509,30 +7509,34 @@ interface SettingsSearchEntry {
   keywords?: string[];
 }
 
-const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
-  { tab: "profile", label: "Профиль", keywords: ["аватар", "имя", "никнейм", "почта", "пароль", "биография", "баннер"] },
-  { tab: "voice", label: "Голос", keywords: ["микрофон", "громкость", "вход", "audio", "input"] },
-  { tab: "voice", label: "Камера", keywords: ["видео", "разрешение", "720p", "1080p", "webcam"] },
-  { tab: "voice", label: "Режим рации (push-to-talk)", keywords: ["ptt", "рация", "зажать", "talkie"] },
-  { tab: "voice", label: "Шумоподавление", keywords: ["denoiser", "rucord", "ns", "noise", "шум"] },
-  { tab: "voice", label: "Расширенные", keywords: ["ec", "agc", "эхо", "autogain", "усиление"] },
-  { tab: "hotkeys", label: "Голос", keywords: ["mute", "deafen", "горячие клавиши", "хоткей", "shortcut"] },
-  { tab: "hotkeys", label: "Каналы", keywords: ["unread", "переход", "пометить прочитанным", "alt"] },
-  { tab: "hotkeys", label: "Сообщения", keywords: ["редактировать"] },
-  { tab: "hotkeys", label: "Общие", keywords: ["quick switcher", "поиск", "ctrl k", "ctrl f"] },
-  { tab: "privacy", label: "Активные сеансы", keywords: ["сессии", "sessions", "устройства", "devices", "logout"] },
-  { tab: "privacy", label: "Выйти со всех устройств", keywords: ["logout", "logout-all", "revoke"] },
-  { tab: "notifications", label: "Уведомления на рабочем столе", keywords: ["desktop", "popup", "разрешение", "permission"] },
-  { tab: "notifications", label: "Звук", keywords: ["sound", "beep", "звук", "тишина"] },
-  { tab: "notifications", label: "Подавление", keywords: ["everyone", "here", "mute", "глушить"] },
-  { tab: "appearance", label: "Тема", keywords: ["dark", "light", "тёмная", "светлая", "auto"] },
-  { tab: "appearance", label: "Акцентный цвет", keywords: ["accent", "color", "цвет"] },
-  { tab: "appearance", label: "Плотность", keywords: ["density", "cozy", "compact", "уютная", "компактная"] },
-  { tab: "appearance", label: "Сообщения", keywords: ["группировка", "role", "цвет ролей", "group"] },
-  { tab: "appearance", label: "Анимированные аватары", keywords: ["gif", "apng", "анимация", "hover", "наведение"] },
-  { tab: "language", label: "Язык интерфейса", keywords: ["locale", "language", "russian", "english", "ru", "en", "перевод"] },
-  { tab: "language", label: "Формат времени", keywords: ["12-часовой", "24-часовой", "am", "pm", "часы", "time format"] }
-];
+// Wave 6: функция, а не const — label'ы должны совпадать с переведёнными
+// h3-заголовками секций (по ним работает scrollIntoView после перехода).
+function settingsSearchIndex(): SettingsSearchEntry[] {
+  return [
+    { tab: "profile", label: t("settings.tab.profile"), keywords: ["аватар", "имя", "никнейм", "почта", "пароль", "биография", "баннер", "avatar", "password", "email", "bio", "banner"] },
+    { tab: "voice", label: t("vs.voice.title"), keywords: ["микрофон", "громкость", "вход", "audio", "input", "microphone"] },
+    { tab: "voice", label: t("vs.cam.title"), keywords: ["видео", "разрешение", "720p", "1080p", "webcam", "video"] },
+    { tab: "voice", label: t("vs.ptt.title"), keywords: ["ptt", "рация", "зажать", "talkie", "push"] },
+    { tab: "voice", label: t("vs.denoise.title"), keywords: ["denoiser", "rucord", "ns", "noise", "шум"] },
+    { tab: "voice", label: t("vs.advanced.title"), keywords: ["ec", "agc", "эхо", "autogain", "усиление", "echo"] },
+    { tab: "hotkeys", label: t("hk.cat.voice"), keywords: ["mute", "deafen", "горячие клавиши", "хоткей", "shortcut"] },
+    { tab: "hotkeys", label: t("hk.cat.channels"), keywords: ["unread", "переход", "пометить прочитанным", "alt"] },
+    { tab: "hotkeys", label: t("hk.cat.messages"), keywords: ["редактировать", "edit"] },
+    { tab: "hotkeys", label: t("hk.cat.general"), keywords: ["quick switcher", "поиск", "ctrl k", "ctrl f"] },
+    { tab: "privacy", label: t("pv.sessions.title"), keywords: ["сессии", "sessions", "устройства", "devices", "logout"] },
+    { tab: "privacy", label: t("pv.logoutall.title"), keywords: ["logout", "logout-all", "revoke"] },
+    { tab: "notifications", label: t("nt.desktop.title"), keywords: ["desktop", "popup", "разрешение", "permission"] },
+    { tab: "notifications", label: t("nt.sound.title"), keywords: ["sound", "beep", "звук", "тишина"] },
+    { tab: "notifications", label: t("nt.suppress.title"), keywords: ["everyone", "here", "mute", "глушить"] },
+    { tab: "appearance", label: t("ap.theme.title"), keywords: ["dark", "light", "тёмная", "светлая", "auto"] },
+    { tab: "appearance", label: t("ap.accent.title"), keywords: ["accent", "color", "цвет"] },
+    { tab: "appearance", label: t("ap.density.title"), keywords: ["density", "cozy", "compact", "уютная", "компактная"] },
+    { tab: "appearance", label: t("ap.messages.title"), keywords: ["группировка", "role", "цвет ролей", "group"] },
+    { tab: "appearance", label: t("ap.gif.title"), keywords: ["gif", "apng", "анимация", "hover", "наведение"] },
+    { tab: "language", label: t("settings.language.title"), keywords: ["locale", "language", "russian", "english", "ru", "en", "перевод"] },
+    { tab: "language", label: t("settings.timeformat.title"), keywords: ["12-часовой", "24-часовой", "am", "pm", "часы", "time format"] }
+  ];
+}
 
 function findSettingsTab(id: SettingsTab): SettingsTabDef {
   for (const group of settingsTabGroups()) {
@@ -7631,9 +7635,9 @@ function renderSettingsTabContent(tab: SettingsTab): string {
   const todoHint = def.todo ? ` · ${def.todo}` : "";
   return `
     <div class="settings-stub">
-      <div class="settings-stub-title">Скоро${escapeHtml(todoHint)}</div>
+      <div class="settings-stub-title">${t("settings.stub.title")}${escapeHtml(todoHint)}</div>
       <div class="settings-stub-text">
-        Этот раздел появится позже. Сейчас доступна только вкладка «Профиль».
+        ${t("settings.stub.text")}
       </div>
     </div>
   `;
@@ -7644,12 +7648,22 @@ function renderSettingsTabContent(tab: SettingsTab): string {
 // chord. Esc отменяет capture.
 let _capturingActionId: ActionId | null = null;
 
-const HOTKEY_CATEGORY_LABELS: Record<ActionDef["category"], string> = {
-  voice: "Голос и видео",
-  channels: "Каналы",
-  messages: "Сообщения",
-  general: "Общие"
-};
+// Wave 6: лейблы хоткеев. Сами defs живут в hotkeys.ts (самодостаточный
+// модуль без i18n-зависимости) — переводим на рендере: t("hk.<id>") с
+// fallback'ом на def.label, если ключа в словаре нет (новые action'ы
+// не сломаются до добавления перевода).
+function hkLabel(def: ActionDef): string {
+  const key = `hk.${def.id}`;
+  const s = t(key);
+  return s === key ? def.label : s;
+}
+
+function hkDesc(def: ActionDef): string {
+  if (!def.description) return "";
+  const key = `hk.${def.id}.desc`;
+  const s = t(key);
+  return s === key ? def.description : s;
+}
 
 function renderSettingsHotkeysTab(): string {
   const actions = getHotkeyActions();
@@ -7675,7 +7689,7 @@ function renderSettingsHotkeysTab(): string {
       const rows = list.map((a) => renderHotkeyRow(a, conflictMap)).join("");
       return `
         <div class="settings-section">
-          <h3>${escapeHtml(HOTKEY_CATEGORY_LABELS[cat])}</h3>
+          <h3>${escapeHtml(t(`hk.cat.${cat}`))}</h3>
           <div class="hotkeys-list">${rows}</div>
         </div>
       `;
@@ -7686,24 +7700,22 @@ function renderSettingsHotkeysTab(): string {
   // видно, почему хоткеи не работают в свёрнутом окне.
   const globalBanner = (() => {
     if (!isGlobalSupported()) {
-      return `<div class="settings-hint settings-hint-warn">Глобальные хоткеи недоступны в этой среде — работают только когда окно RuCord в фокусе.</div>`;
+      return `<div class="settings-hint settings-hint-warn">${t("hk.global.unsupported")}</div>`;
     }
     const failed = getHotkeyActions().filter((a) => getGlobalStatus(a.id) === "failed");
     const bare = getHotkeyActions().filter((a) => getGlobalStatus(a.id) === "bare");
     const parts: string[] = [];
     if (bare.length > 0) {
-      parts.push(`<div class="settings-hint settings-hint-warn">Одиночная клавиша без модификатора не работает глобально (только когда окно в фокусе): ${escapeHtml(bare.map((a) => a.label).join(", "))}. Добавь Ctrl/Shift/Alt или используй F-клавишу (F1–F24).</div>`);
+      parts.push(`<div class="settings-hint settings-hint-warn">${t("hk.global.bare", { list: escapeHtml(bare.map(hkLabel).join(", ")) })}</div>`);
     }
     if (failed.length > 0) {
-      parts.push(`<div class="settings-hint settings-hint-warn">Не удалось зарегистрировать глобально (работают только в фокусе): ${escapeHtml(failed.map((a) => a.label).join(", "))}. Обычно причина — конфликт с другой программой. Попробуй другую комбинацию.</div>`);
+      parts.push(`<div class="settings-hint settings-hint-warn">${t("hk.global.failed", { list: escapeHtml(failed.map(hkLabel).join(", ")) })}</div>`);
     }
     return parts.join("");
   })();
   return `
     <div class="settings-hint" style="margin-bottom: 16px;">
-      Кликни на клавишу, чтобы переназначить. Esc отменяет ввод, Delete/Backspace очищает привязку.
-      Тумблер слева — включить/выключить. Push-to-talk работает даже когда фокус в инпуте.
-      Значок 🌐 — хоткей зарегистрирован глобально (срабатывает даже когда окно свёрнуто).
+      ${t("hk.intro")}
     </div>
     ${globalBanner}
     ${sections}
@@ -7714,13 +7726,13 @@ function renderSettingsHotkeysTab(): string {
 function globalStatusBadge(id: ActionId): string {
   const st: GlobalStatus = getGlobalStatus(id);
   if (st === "registered") {
-    return `<span class="hotkeys-global ok" title="Работает глобально (даже когда окно свёрнуто)">🌐</span>`;
+    return `<span class="hotkeys-global ok" title="${t("hk.badge.ok")}">🌐</span>`;
   }
   if (st === "failed") {
-    return `<span class="hotkeys-global fail" title="Не зарегистрировано глобально — работает только когда окно в фокусе">🌐✕</span>`;
+    return `<span class="hotkeys-global fail" title="${t("hk.badge.fail")}">🌐✕</span>`;
   }
   if (st === "bare") {
-    return `<span class="hotkeys-global fail" title="Одиночная клавиша не работает глобально — добавь Ctrl/Shift/Alt или F-клавишу">🌐✕</span>`;
+    return `<span class="hotkeys-global fail" title="${t("hk.badge.bare")}">🌐✕</span>`;
   }
   return "";
 }
@@ -7728,31 +7740,32 @@ function globalStatusBadge(id: ActionId): string {
 function renderHotkeyRow(def: ActionDef, conflicts: Map<string, ActionDef[]>): string {
   const b = getHotkeyBinding(def.id);
   const isCapturing = _capturingActionId === def.id;
-  const chordLabel = isCapturing ? "Нажми клавиши…" : formatChord(b.chord);
+  const chordLabel = isCapturing ? t("hk.capture") : formatChord(b.chord);
   // K.3: ищем тех, кто тоже сидит на этом chord'е. Если список >1 —
   // подсвечиваем warning + tooltip с именами других.
   const sig = b.chord ? formatChord(b.chord) : "";
   const others = sig ? (conflicts.get(sig) ?? []).filter((a) => a.id !== def.id) : [];
   const conflictBadge = others.length > 0
-    ? `<span class="hotkeys-conflict" title="Конфликт с: ${escapeHtml(others.map((o) => o.label).join(", "))}">⚠</span>`
+    ? `<span class="hotkeys-conflict" title="${t("hk.conflict", { list: escapeHtml(others.map(hkLabel).join(", ")) })}">⚠</span>`
     : "";
+  const desc = hkDesc(def);
   return `
     <div class="hotkeys-row ${b.enabled ? "" : "disabled"} ${others.length > 0 ? "has-conflict" : ""}" data-hotkey-row="${def.id}">
-      <label class="hotkeys-toggle" title="${b.enabled ? "Выключить" : "Включить"}">
+      <label class="hotkeys-toggle" title="${b.enabled ? t("hk.toggle.off") : t("hk.toggle.on")}">
         <input type="checkbox" data-hotkey-toggle="${def.id}" ${b.enabled ? "checked" : ""} />
         <span class="hotkeys-toggle-track"></span>
       </label>
       <div class="hotkeys-info">
-        <div class="hotkeys-label">${escapeHtml(def.label)} ${conflictBadge} ${globalStatusBadge(def.id)}</div>
-        ${def.description ? `<div class="hotkeys-desc">${escapeHtml(def.description)}</div>` : ""}
+        <div class="hotkeys-label">${escapeHtml(hkLabel(def))} ${conflictBadge} ${globalStatusBadge(def.id)}</div>
+        ${desc ? `<div class="hotkeys-desc">${escapeHtml(desc)}</div>` : ""}
       </div>
       <button class="hotkeys-chord ${isCapturing ? "capturing" : ""}" data-hotkey-capture="${def.id}">
         ${escapeHtml(chordLabel)}
       </button>
-      <button class="ghost hotkeys-reset" data-hotkey-reset="${def.id}" title="Сбросить на дефолт">
+      <button class="ghost hotkeys-reset" data-hotkey-reset="${def.id}" title="${t("hk.reset")}">
         ${icon("x", { size: 14 })}
       </button>
-      <button class="ghost hotkeys-clear" data-hotkey-clear="${def.id}" title="Снять привязку" ${b.chord ? "" : "disabled"}>
+      <button class="ghost hotkeys-clear" data-hotkey-clear="${def.id}" title="${t("hk.clear")}" ${b.chord ? "" : "disabled"}>
         ${icon("trash", { size: 14 })}
       </button>
     </div>
@@ -8352,34 +8365,34 @@ function renderSettingsVoiceTab(): string {
 
   return `
     <div class="settings-section">
-      <h3>Голос</h3>
+      <h3>${t("vs.voice.title")}</h3>
       <div class="settings-row">
-        <label for="vs-audio-in">Микрофон</label>
+        <label for="vs-audio-in">${t("vs.mic")}</label>
         <select id="vs-audio-in" class="settings-select">
-          <option value="">Системный по умолчанию</option>
+          <option value="">${t("vs.sysdefault.m")}</option>
           ${audioInOptions}
         </select>
       </div>
       <div class="settings-row">
-        <label for="vs-audio-out">Динамики</label>
+        <label for="vs-audio-out">${t("vs.speakers")}</label>
         <select id="vs-audio-out" class="settings-select" ${sinkSupported ? "" : "disabled"}>
-          <option value="">Системный по умолчанию</option>
+          <option value="">${t("vs.sysdefault.m")}</option>
           ${audioOutOptions}
         </select>
         ${sinkSupported
           ? ""
-          : `<small class="settings-hint">Браузер не поддерживает выбор output-device.</small>`}
+          : `<small class="settings-hint">${t("vs.nosink")}</small>`}
       </div>
       <div class="settings-row settings-row-slider">
-        <label for="vs-mic-gain">Громкость микрофона</label>
+        <label for="vs-mic-gain">${t("vs.micgain")}</label>
         <div class="settings-slider-wrap">
           <input id="vs-mic-gain" type="range" min="0" max="200" step="1" value="${Math.round(s.micGain * 100)}" />
           <span id="vs-mic-gain-val" class="settings-slider-val">${Math.round(s.micGain * 100)}%</span>
         </div>
-        <small class="settings-hint">Выше 100% — программный boost (GainNode), применится в новых звонках.</small>
+        <small class="settings-hint">${t("vs.micgain.hint")}</small>
       </div>
       <div class="settings-row settings-row-slider">
-        <label for="vs-out-vol">Громкость динамика</label>
+        <label for="vs-out-vol">${t("vs.outvol")}</label>
         <div class="settings-slider-wrap">
           <input id="vs-out-vol" type="range" min="0" max="100" step="1" value="${Math.round(s.outputVolume * 100)}" />
           <span id="vs-out-vol-val" class="settings-slider-val">${Math.round(s.outputVolume * 100)}%</span>
@@ -8387,28 +8400,28 @@ function renderSettingsVoiceTab(): string {
       </div>
       <div class="settings-row">
         <button id="vs-test-mic" class="${micTesting ? "danger" : "primary"}">
-          ${micTesting ? "Остановить тест" : "Проверить микрофон"}
+          ${micTesting ? t("vs.mictest.stop") : t("vs.mictest.start")}
         </button>
         <div class="vs-meter ${micTesting ? "active" : ""}">
           <div id="vs-meter-fill" class="vs-meter-fill"></div>
         </div>
       </div>
       ${needPerm && !micTesting
-        ? `<small class="settings-hint">Запустите тест микрофона, чтобы браузер выдал имена устройств.</small>`
+        ? `<small class="settings-hint">${t("vs.needperm")}</small>`
         : ""}
     </div>
 
     <div class="settings-section">
-      <h3>Камера</h3>
+      <h3>${t("vs.cam.title")}</h3>
       <div class="settings-row">
-        <label for="vs-video-in">Устройство</label>
+        <label for="vs-video-in">${t("vs.cam.device")}</label>
         <select id="vs-video-in" class="settings-select">
-          <option value="">Системное по умолчанию</option>
+          <option value="">${t("vs.sysdefault.n")}</option>
           ${videoInOptions}
         </select>
       </div>
       <div class="settings-row">
-        <label>Разрешение</label>
+        <label>${t("vs.cam.res")}</label>
         <div class="settings-radio-group">
           ${(["360p", "720p", "1080p"] as CameraResolution[])
             .map(
@@ -8421,50 +8434,49 @@ function renderSettingsVoiceTab(): string {
             )
             .join("")}
         </div>
-        <small class="settings-hint">1080p тяжело тянет mesh с 5+ участниками.</small>
+        <small class="settings-hint">${t("vs.cam.res.hint")}</small>
       </div>
       <div class="settings-row">
         <button id="vs-test-cam" class="${camTesting ? "danger" : "primary"}">
-          ${camTesting ? "Выключить превью" : "Включить превью"}
+          ${camTesting ? t("vs.camtest.stop") : t("vs.camtest.start")}
         </button>
       </div>
       <video id="vs-cam-preview" class="vs-cam-preview" autoplay muted playsinline ${camTesting ? "" : "hidden"}></video>
     </div>
 
     <div class="settings-section">
-      <h3>Режим рации (push-to-talk)</h3>
+      <h3>${t("vs.ptt.title")}</h3>
       <label class="settings-check">
         <input type="checkbox" id="vs-ptt-enable" ${s.pushToTalk ? "checked" : ""} />
-        <span>Включить режим рации</span>
+        <span>${t("vs.ptt.enable")}</span>
       </label>
       <small class="settings-hint">
-        Микрофон выключен по умолчанию; передача голоса — пока зажат биндинг
-        «Push-to-talk» из <a href="#" data-settings-tab="hotkeys">горячих клавиш</a>.
+        ${t("vs.ptt.hint", { link: `<a href="#" data-settings-tab="hotkeys">${t("vs.ptt.hotkeys_link")}</a>` })}
       </small>
       <div class="settings-row settings-row-slider" ${s.pushToTalk ? "" : 'style="opacity:0.5;pointer-events:none"'}>
-        <label for="vs-ptt-delay">Задержка отпускания</label>
+        <label for="vs-ptt-delay">${t("vs.ptt.delay")}</label>
         <div class="settings-slider-wrap">
           <input id="vs-ptt-delay" type="range" min="0" max="2000" step="50" value="${s.pttReleaseDelay}" />
-          <span id="vs-ptt-delay-val" class="settings-slider-val">${s.pttReleaseDelay} мс</span>
+          <span id="vs-ptt-delay-val" class="settings-slider-val">${t("vs.ptt.delay.ms", { v: s.pttReleaseDelay })}</span>
         </div>
-        <small class="settings-hint">Сколько держать микрофон открытым после отпускания клавиши — чтобы речь не обрывалась на микропаузах.</small>
+        <small class="settings-hint">${t("vs.ptt.delay.hint")}</small>
       </div>
     </div>
 
     <div class="settings-section">
-      <h3>Шумоподавление</h3>
+      <h3>${t("vs.denoise.title")}</h3>
       ${renderDenoiserBlock(s)}
     </div>
 
     <div class="settings-section">
-      <h3>Расширенные</h3>
+      <h3>${t("vs.advanced.title")}</h3>
       <label class="settings-check">
         <input type="checkbox" id="vs-ec" ${s.echoCancellation ? "checked" : ""} />
-        <span>Эхоподавление</span>
+        <span>${t("vs.ec")}</span>
       </label>
       <label class="settings-check">
         <input type="checkbox" id="vs-agc" ${s.autoGainControl ? "checked" : ""} />
-        <span>Автоматическая регулировка усиления</span>
+        <span>${t("vs.agc")}</span>
       </label>
     </div>
   `;
@@ -8485,17 +8497,17 @@ function renderSettingsVoiceTab(): string {
 // browser-NS не принимает intensity-параметр.
 function renderDenoiserBlock(s: VoiceSettings): string {
   const modes: { id: DenoiserMode; label: string; sub: string }[] = [
-    { id: "off", label: "Выключено", sub: "Голос без обработки." },
-    { id: "browser", label: "Браузер (стандартный)", sub: "Нативный WebRTC NS — чистит вентилятор/клавиатуру/эхо." },
-    { id: "rucord", label: "RuCord (улучшенный)", sub: "Собственная ML-модель. Скоро." },
-    { id: "rucord-aggressive", label: "RuCord (агрессивный)", sub: "Для сложных шумов (кафе, улица). Скоро." }
+    { id: "off", label: t("vs.dn.off"), sub: t("vs.dn.off.sub") },
+    { id: "browser", label: t("vs.dn.browser"), sub: t("vs.dn.browser.sub") },
+    { id: "rucord", label: t("vs.dn.rucord"), sub: t("vs.dn.rucord.sub") },
+    { id: "rucord-aggressive", label: t("vs.dn.aggr"), sub: t("vs.dn.aggr.sub") }
   ];
   const intensityActive = s.denoiserMode === "rucord" || s.denoiserMode === "rucord-aggressive";
   const radios = modes
     .map((m) => {
       const checked = s.denoiserMode === m.id ? "checked" : "";
       const pending = (m.id === "rucord" || m.id === "rucord-aggressive")
-        ? `<span class="vs-denoiser-pending">не готово</span>`
+        ? `<span class="vs-denoiser-pending">${t("vs.dn.pending")}</span>`
         : "";
       return `
         <label class="vs-denoiser-option ${s.denoiserMode === m.id ? "active" : ""}">
@@ -8514,16 +8526,14 @@ function renderDenoiserBlock(s: VoiceSettings): string {
   return `
     <div class="vs-denoiser-list">${radios}</div>
     <div class="settings-row settings-row-slider">
-      <label for="vs-denoiser-intensity">Интенсивность</label>
+      <label for="vs-denoiser-intensity">${t("vs.dn.intensity")}</label>
       <div class="settings-slider-wrap">
         <input id="vs-denoiser-intensity" type="range" min="0" max="100" step="1"
                value="${s.denoiserIntensity}" ${intensityActive ? "" : "disabled"} />
         <span id="vs-denoiser-intensity-val" class="settings-slider-val">${s.denoiserIntensity}%</span>
       </div>
       <small class="settings-hint">
-        ${intensityActive
-          ? "Применится когда модели RuCord будут готовы. Сейчас используется браузерный NS."
-          : "Доступно только для режимов RuCord."}
+        ${intensityActive ? t("vs.dn.intensity.active") : t("vs.dn.intensity.inactive")}
       </small>
     </div>
   `;
@@ -8532,7 +8542,7 @@ function renderDenoiserBlock(s: VoiceSettings): string {
 function renderDeviceOptions(devices: MediaDeviceInfo[], selectedId: string | null): string {
   return devices
     .map((d, i) => {
-      const label = d.label || `Устройство ${i + 1}`;
+      const label = d.label || t("vs.device_n", { n: i + 1 });
       const selected = d.deviceId === selectedId ? " selected" : "";
       return `<option value="${escapeHtml(d.deviceId)}"${selected}>${escapeHtml(label)}</option>`;
     })
@@ -8646,7 +8656,7 @@ function attachSettingsVoiceHandlers(): void {
   pttDelay?.addEventListener("input", () => {
     const ms = Number(pttDelay.value) | 0;
     const label = rootEl.querySelector<HTMLSpanElement>("#vs-ptt-delay-val");
-    if (label) label.textContent = `${ms} мс`;
+    if (label) label.textContent = t("vs.ptt.delay.ms", { v: ms });
     updateVoiceSettings({ pttReleaseDelay: ms });
   });
   // I.3: denoiser-режим (radio-кнопки) + intensity-слайдер.
@@ -8719,11 +8729,11 @@ function renderSettingsProfileTab(): string {
     <div class="profile-card-head">
       <div class="profile-banner-area" style="${bannerStyle}"${bannerAttrs}>
         <div class="profile-banner-actions">
-          <button id="profile-banner-upload" class="ghost profile-banner-btn" title="Загрузить баннер">
+          <button id="profile-banner-upload" class="ghost profile-banner-btn" title="${t("pf.banner.upload")}">
             ${icon("pencil", { size: 14 })}
           </button>
           ${me.bannerMediaId
-            ? `<button id="profile-banner-remove" class="ghost profile-banner-btn" title="Удалить баннер">${icon("trash", { size: 14 })}</button>`
+            ? `<button id="profile-banner-remove" class="ghost profile-banner-btn" title="${t("pf.banner.remove")}">${icon("trash", { size: 14 })}</button>`
             : ""}
         </div>
       </div>
@@ -8736,11 +8746,11 @@ function renderSettingsProfileTab(): string {
           className: "profile-card-avatar",
           decoration: profileStyleDraft ? (profileStyleDraft.decoration || undefined) : me.avatarDecoration
         })}
-        <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="Сменить аватар">
+        <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="${t("pf.avatar.change")}">
           ${icon("pencil", { size: 14 })}
         </button>
         ${me.avatarMediaId
-          ? `<button id="profile-avatar-remove" class="profile-card-avatar-remove" title="Удалить аватар">${icon("trash", { size: 12 })}</button>`
+          ? `<button id="profile-avatar-remove" class="profile-card-avatar-remove" title="${t("pf.avatar.remove")}">${icon("trash", { size: 12 })}</button>`
           : ""}
       </div>
       <div class="profile-card-name">
@@ -8753,46 +8763,46 @@ function renderSettingsProfileTab(): string {
     </div>
     <div class="profile-card-fields">
       ${renderProfileField({
-        label: "Отображаемое имя",
+        label: t("pf.displayname"),
         value: me.displayName || "—",
         field: "displayName",
         editing: editing === "displayName",
         body: renderProfileEditDisplayName(me.displayName ?? "")
       })}
       ${renderProfileField({
-        label: "Биография",
+        label: t("pf.bio"),
         value: me.bio || "—",
         field: "bio",
         editing: editing === "bio",
         body: renderProfileEditBio()
       })}
       ${renderProfileField({
-        label: "Цвет баннера",
-        value: me.bannerColor || "по умолчанию",
+        label: t("pf.bannercolor"),
+        value: me.bannerColor || t("ap.accent.default"),
         field: "bannerColor",
         editing: editing === "bannerColor",
         body: renderProfileEditBannerColor()
       })}
       ${renderProfileField({
-        label: "Имя пользователя",
+        label: t("pf.username"),
         value: "@" + me.username,
         field: "username",
         editing: false,
         disabled: true,
-        disabledHint: "Username нельзя сменить — стабильный идентификатор для упоминаний @user.",
+        disabledHint: t("pf.username.hint"),
         body: ""
       })}
       ${renderProfileField({
-        label: "Электронная почта",
+        label: t("pf.email"),
         value: me.email,
         field: "email",
         editing: false,
         disabled: true,
-        disabledHint: "Смена email требует подтверждения по почте — не реализовано (F.6).",
+        disabledHint: t("pf.email.hint"),
         body: ""
       })}
       ${renderProfileField({
-        label: "Пароль",
+        label: t("pf.password"),
         value: "••••••••",
         field: "password",
         editing: editing === "password",
@@ -8813,30 +8823,30 @@ let widgetsSaving = false;
 
 function renderProfileWidgetsSection(): string {
   const rows = widgetsDraft === null
-    ? `<div class="settings-hint">Загрузка…</div>`
+    ? `<div class="settings-hint">${t("common.loading")}</div>`
     : widgetsDraft.length === 0
-      ? `<div class="settings-hint" style="margin:8px 0">Пока нет виджетов — добавь ссылку на GitHub, Twitch, Steam или что угодно.</div>`
+      ? `<div class="settings-hint" style="margin:8px 0">${t("pw.empty")}</div>`
       : widgetsDraft.map((w, i) => `
           <div class="widget-edit-row">
             <span class="profile-widget-icon">${widgetIcon(w.url)}</span>
-            <input type="text" maxlength="48" placeholder="Название" value="${escapeHtml(w.label)}" data-widget-label="${i}" class="widget-edit-label" />
+            <input type="text" maxlength="48" placeholder="${t("pw.name.ph")}" value="${escapeHtml(w.label)}" data-widget-label="${i}" class="widget-edit-label" />
             <input type="text" maxlength="300" placeholder="https://…" value="${escapeHtml(w.url)}" data-widget-url="${i}" class="widget-edit-url" />
-            <button class="ghost" data-widget-up="${i}" title="Выше" ${i === 0 ? "disabled" : ""}>↑</button>
-            <button class="ghost" data-widget-down="${i}" title="Ниже" ${i === (widgetsDraft?.length ?? 0) - 1 ? "disabled" : ""}>↓</button>
-            <button class="ghost danger" data-widget-remove="${i}" title="Удалить">✕</button>
+            <button class="ghost" data-widget-up="${i}" title="${t("pw.up")}" ${i === 0 ? "disabled" : ""}>↑</button>
+            <button class="ghost" data-widget-down="${i}" title="${t("pw.down")}" ${i === (widgetsDraft?.length ?? 0) - 1 ? "disabled" : ""}>↓</button>
+            <button class="ghost danger" data-widget-remove="${i}" title="${t("common.delete")}">✕</button>
           </div>
         `).join("");
   const canAdd = (widgetsDraft?.length ?? 0) < 8;
   return `
     <div class="settings-section profile-widgets-section">
-      <h3>Виджеты профиля</h3>
+      <h3>${t("pw.title")}</h3>
       <small class="settings-hint">
-        Ссылки в карточке профиля (до 8). Иконка подбирается по домену автоматически.
+        ${t("pw.hint")}
       </small>
       ${rows}
       <div class="admin-actions">
-        ${canAdd && widgetsDraft !== null ? `<button id="pw-add" class="ghost">+ Добавить ссылку</button>` : ""}
-        ${widgetsDraft !== null ? `<button id="pw-save" class="primary" ${widgetsSaving ? "disabled" : ""}>${widgetsSaving ? "Сохранение…" : "Сохранить виджеты"}</button>` : ""}
+        ${canAdd && widgetsDraft !== null ? `<button id="pw-add" class="ghost">${t("pw.add")}</button>` : ""}
+        ${widgetsDraft !== null ? `<button id="pw-save" class="primary" ${widgetsSaving ? "disabled" : ""}>${widgetsSaving ? t("common.saving") : t("pw.save")}</button>` : ""}
       </div>
     </div>
   `;
@@ -8925,15 +8935,14 @@ function renderProfileStyleSection(me: Me, previewName: string): string {
     : ` style="font-weight:600;"`;
   return `
     <div class="settings-section profile-style-section">
-      <h3>Стиль профиля</h3>
+      <h3>${t("ps.title")}</h3>
       <small class="settings-hint">
-        Тема красит карточку профиля, градиент — имя в чате и списке участников,
-        бейдж — эмодзи рядом с именем (подпись видна при наведении).
+        ${t("ps.hint")}
       </small>
       <div class="profile-style-row">
         <label class="settings-check">
           <input type="checkbox" id="ps-theme-on" ${sd.themeOn ? "checked" : ""} />
-          <span>Тема карточки</span>
+          <span>${t("ps.theme")}</span>
         </label>
         <input type="color" id="ps-theme-a" value="${escapeHtml(sd.themeA)}" ${sd.themeOn ? "" : "disabled"} />
         <input type="color" id="ps-theme-b" value="${escapeHtml(sd.themeB)}" ${sd.themeOn ? "" : "disabled"} />
@@ -8941,36 +8950,36 @@ function renderProfileStyleSection(me: Me, previewName: string): string {
       <div class="profile-style-row">
         <label class="settings-check">
           <input type="checkbox" id="ps-grad-on" ${sd.gradOn ? "checked" : ""} />
-          <span>Градиент имени</span>
+          <span>${t("ps.grad")}</span>
         </label>
         <input type="color" id="ps-grad-a" value="${escapeHtml(sd.gradA)}" ${sd.gradOn ? "" : "disabled"} />
         <input type="color" id="ps-grad-b" value="${escapeHtml(sd.gradB)}" ${sd.gradOn ? "" : "disabled"} />
         <span id="ps-grad-preview" class="profile-style-preview"${gradPreviewStyle}>${escapeHtml(previewName)}</span>
       </div>
       <div class="profile-style-row">
-        <span class="profile-style-label">Бейдж</span>
+        <span class="profile-style-label">${t("ps.badge")}</span>
         <input type="text" id="ps-badge-emoji" maxlength="8" placeholder="🦄" value="${escapeHtml(sd.badgeEmoji)}" class="profile-style-emoji" />
-        <input type="text" id="ps-badge-label" maxlength="48" placeholder="Подпись при наведении" value="${escapeHtml(sd.badgeLabel)}" class="profile-style-badge-label" />
+        <input type="text" id="ps-badge-label" maxlength="48" placeholder="${t("ps.badge.label.ph")}" value="${escapeHtml(sd.badgeLabel)}" class="profile-style-badge-label" />
       </div>
       <div class="profile-style-row">
-        <span class="profile-style-label">Рамка аватара</span>
+        <span class="profile-style-label">${t("ps.deco")}</span>
         <select id="ps-decoration" class="perm-select">
-          <option value="">Без рамки</option>
-          ${AVATAR_DECORATIONS.map((d) => `<option value="${d.id}" ${sd.decoration === d.id ? "selected" : ""}>${escapeHtml(d.label)}</option>`).join("")}
+          <option value="">${t("ps.deco.none")}</option>
+          ${AVATAR_DECORATIONS.map((d) => `<option value="${d.id}" ${sd.decoration === d.id ? "selected" : ""}>${escapeHtml(t(`deco.${d.id}`))}</option>`).join("")}
         </select>
         <span class="profile-style-deco-preview avatar-pic${sd.decoration ? ` avatar-deco-${escapeHtml(sd.decoration)}` : ""}" style="width:28px;height:28px;font-size:13px;"><span class="avatar-letter">${escapeHtml((me.displayName || me.username || "?").charAt(0).toUpperCase())}</span></span>
       </div>
       <div class="profile-style-row">
-        <span class="profile-style-label">Эффект профиля</span>
+        <span class="profile-style-label">${t("ps.fx")}</span>
         <select id="ps-effect" class="perm-select">
-          <option value="">Без эффекта</option>
-          ${PROFILE_EFFECTS.map((e) => `<option value="${e.id}" ${sd.effect === e.id ? "selected" : ""}>${escapeHtml(e.label)}</option>`).join("")}
+          <option value="">${t("ps.fx.none")}</option>
+          ${PROFILE_EFFECTS.map((e) => `<option value="${e.id}" ${sd.effect === e.id ? "selected" : ""}>${escapeHtml(t(`fx.${e.id}`))}</option>`).join("")}
         </select>
-        <small class="settings-hint" style="margin:0">Анимация поверх баннера карточки профиля.</small>
+        <small class="settings-hint" style="margin:0">${t("ps.fx.hint")}</small>
       </div>
       <div class="admin-actions">
         <button id="ps-style-save" class="primary" ${profileStyleSaving ? "disabled" : ""}>
-          ${profileStyleSaving ? "Сохранение…" : "Сохранить стиль"}
+          ${profileStyleSaving ? t("common.saving") : t("ps.save")}
         </button>
       </div>
     </div>
@@ -9031,13 +9040,13 @@ function renderProfileEditBio(): string {
   const remaining = 600 - pe.draftBio.length;
   return `
     <textarea id="profile-bio-input" maxlength="600" rows="4"
-              placeholder="Расскажи о себе…">${escapeHtml(pe.draftBio)}</textarea>
-    <div class="profile-field-hint" style="text-align:right;">${remaining} симв.</div>
+              placeholder="${t("pf.bio.ph")}">${escapeHtml(pe.draftBio)}</textarea>
+    <div class="profile-field-hint" style="text-align:right;">${t("pf.bio.chars", { n: remaining })}</div>
     ${errBlock}
     <div class="profile-field-actions">
-      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button class="ghost" data-profile-cancel>${t("common.cancel")}</button>
       <button id="profile-bio-save" class="primary" ${pe.saving ? "disabled" : ""}>
-        ${pe.saving ? "Сохранение…" : "Сохранить"}
+        ${pe.saving ? t("common.saving") : t("common.save")}
       </button>
     </div>
   `;
@@ -9050,15 +9059,15 @@ function renderProfileEditBannerColor(): string {
   return `
     <div class="settings-slider-wrap" style="gap:12px; align-items:center;">
       <input id="profile-banner-color-input" type="color" value="${escapeHtml(colorValue)}" />
-      <span id="profile-banner-color-val" class="settings-slider-val" style="min-width:120px;">${escapeHtml(pe.draftBannerColor || "по умолчанию")}</span>
-      <button id="profile-banner-color-clear" class="ghost" title="Очистить">${icon("x", { size: 14 })}</button>
+      <span id="profile-banner-color-val" class="settings-slider-val" style="min-width:120px;">${escapeHtml(pe.draftBannerColor || t("ap.accent.default"))}</span>
+      <button id="profile-banner-color-clear" class="ghost" title="${t("pf.clear")}">${icon("x", { size: 14 })}</button>
     </div>
-    <small class="profile-field-hint">Применяется когда нет загруженной картинки баннера.</small>
+    <small class="profile-field-hint">${t("pf.bannercolor.hint")}</small>
     ${errBlock}
     <div class="profile-field-actions">
-      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button class="ghost" data-profile-cancel>${t("common.cancel")}</button>
       <button id="profile-banner-color-save" class="primary" ${pe.saving ? "disabled" : ""}>
-        ${pe.saving ? "Сохранение…" : "Сохранить"}
+        ${pe.saving ? t("common.saving") : t("common.save")}
       </button>
     </div>
   `;
@@ -9266,13 +9275,13 @@ function attachSettingsSearchHandler(): void {
       results.innerHTML = "";
       return;
     }
-    const matches = SETTINGS_SEARCH_INDEX.filter((e) => {
+    const matches = settingsSearchIndex().filter((e) => {
       const hay = (e.label + " " + (e.keywords ?? []).join(" ")).toLowerCase();
       return hay.includes(q);
     });
     if (matches.length === 0) {
       results.hidden = false;
-      results.innerHTML = `<div class="settings-search-empty">Ничего не найдено</div>`;
+      results.innerHTML = `<div class="settings-search-empty">${t("search.none")}</div>`;
       return;
     }
     results.hidden = false;
@@ -9385,8 +9394,8 @@ function renderProfileField(opts: ProfileFieldOpts): string {
     `;
   }
   const action = opts.disabled
-    ? `<span class="profile-field-disabled" title="${escapeHtml(opts.disabledHint ?? "")}">недоступно</span>`
-    : `<button class="ghost profile-field-edit" data-profile-edit="${opts.field}">Изменить</button>`;
+    ? `<span class="profile-field-disabled" title="${escapeHtml(opts.disabledHint ?? "")}">${t("pf.na")}</span>`
+    : `<button class="ghost profile-field-edit" data-profile-edit="${opts.field}">${t("pf.edit")}</button>`;
   return `
     <div class="profile-field" data-profile-field="${opts.field}">
       <div class="profile-field-info">
@@ -9404,13 +9413,13 @@ function renderProfileEditDisplayName(currentValue: string): string {
   const errBlock = pe.error ? `<div class="modal-error">${escapeHtml(pe.error)}</div>` : "";
   return `
     <input id="profile-display-input" type="text" maxlength="64"
-           placeholder="${escapeHtml(currentValue || "Как тебя видят другие")}"
+           placeholder="${escapeHtml(currentValue || t("pf.displayname.ph"))}"
            value="${escapeHtml(pe.draftDisplayName)}" />
     ${errBlock}
     <div class="profile-field-actions">
-      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button class="ghost" data-profile-cancel>${t("common.cancel")}</button>
       <button id="profile-display-save" class="primary" ${pe.saving ? "disabled" : ""}>
-        ${pe.saving ? "Сохранение…" : "Сохранить"}
+        ${pe.saving ? t("common.saving") : t("common.save")}
       </button>
     </div>
   `;
@@ -9423,24 +9432,24 @@ function renderProfileEditPassword(): string {
   return `
     <div class="profile-pw-grid">
       <label>
-        <span class="profile-pw-label">Текущий пароль</span>
+        <span class="profile-pw-label">${t("pf.pw.current")}</span>
         <input id="profile-pw-current" type="password" autocomplete="current-password" value="${escapeHtml(pe.currentPassword)}" />
       </label>
       <label>
-        <span class="profile-pw-label">Новый пароль (мин. 8)</span>
+        <span class="profile-pw-label">${t("pf.pw.new")}</span>
         <input id="profile-pw-new" type="password" autocomplete="new-password" minlength="8" value="${escapeHtml(pe.newPassword)}" />
       </label>
       <label>
-        <span class="profile-pw-label">Подтверждение</span>
+        <span class="profile-pw-label">${t("pf.pw.confirm")}</span>
         <input id="profile-pw-confirm" type="password" autocomplete="new-password" minlength="8" value="${escapeHtml(pe.confirmPassword)}" />
       </label>
     </div>
     ${errBlock}
     ${okBlock}
     <div class="profile-field-actions">
-      <button class="ghost" data-profile-cancel>Отмена</button>
+      <button class="ghost" data-profile-cancel>${t("common.cancel")}</button>
       <button id="profile-pw-save" class="primary" ${pe.saving ? "disabled" : ""}>
-        ${pe.saving ? "Сохранение…" : "Сохранить пароль"}
+        ${pe.saving ? t("common.saving") : t("pf.pw.save")}
       </button>
     </div>
   `;
@@ -9461,9 +9470,9 @@ function renderMembersModal(): string {
         <div class="modal-body">
           ${
             state.membersLoading
-              ? `<div class="invites-empty">Загрузка…</div>`
+              ? `<div class="invites-empty">${t("common.loading")}</div>`
               : `<table class="members-table">
-                  <thead><tr><th>Пользователь</th><th>Роль</th><th></th></tr></thead>
+                  <thead><tr><th>${t("members.table.user")}</th><th>${t("members.table.role")}</th><th></th></tr></thead>
                   <tbody>
                     ${state.members
                       .map((m) => renderMemberRow(m, ws.ownerId, canManageRole, canKick))
