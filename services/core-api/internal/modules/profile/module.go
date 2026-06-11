@@ -63,6 +63,9 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("PUT /api/v1/users/me/banner", m.handleUpdateBanner)
 	router.Protected("DELETE /api/v1/users/me/banner", m.handleRemoveBanner)
 	router.Protected("GET /api/v1/users/{userId}", m.handleGetUser)
+	// Wave 7 (I.13): виджеты профиля (см. widgets.go).
+	router.Protected("GET /api/v1/users/{userId}/widgets", m.handleListWidgets)
+	router.Protected("PUT /api/v1/users/me/widgets", m.handleUpdateWidgets)
 }
 
 // I.6: updateRequest принимает pointer-поля — nil=не трогать, "" в строке=сбросить.

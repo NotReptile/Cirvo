@@ -182,6 +182,15 @@ interface UserProfileData {
   profileEffect?: string;
 }
 
+// Wave 7 (I.13): виджет профиля — пока только ссылки. id присваивает бэк,
+// при сохранении (полная замена) не отправляется.
+interface ProfileWidget {
+  id?: string;
+  kind: "link";
+  label: string;
+  url: string;
+}
+
 interface Workspace {
   id: string;
   slug: string;
@@ -752,6 +761,8 @@ interface AppState {
   userProfileTarget: string | null;
   // I.6: лениво загруженные расширенные поля профиля для user-profile-popup.
   userProfileData: UserProfileData | null;
+  // Wave 7 (I.13): виджеты открытого в попапе профиля (лениво, GET /widgets).
+  userProfileWidgets: ProfileWidget[] | null;
   // Wave 4: персистентные уровни уведомлений (G.9.e). Явные значения с
   // бэка; эффективный уровень канала = канал ← воркспейс ← 'all'.
   // 'none' = бывший клиентский mute, теперь переживает refresh и девайсы.
@@ -963,6 +974,7 @@ const state: AppState = {
   memberSidebarOpen: true,
   userProfileTarget: null,
   userProfileData: null,
+  userProfileWidgets: null,
   notifPrefs: { channels: {}, workspaces: {} },
   screenShareQuality: loadScreenShareQuality(),
   dmMode: false,
@@ -5742,6 +5754,7 @@ function renderUserProfilePopup(): string {
           ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
           ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(role)}</span></div>` : ""}
           ${bio ? `<div class="user-profile-bio">${renderBody(bio)}</div>` : ""}
+          ${renderProfileWidgets()}
           ${
             isSelf
               ? ""
@@ -5757,6 +5770,41 @@ function renderUserProfilePopup(): string {
           }
         </div>
       </div>
+    </div>
+  `;
+}
+
+// Wave 7 (I.13): иконка виджета-ссылки по домену. Эмодзи вместо SVG —
+// тот же «без ассетов» подход, что у звуков и рамок.
+function widgetIcon(rawURL: string): string {
+  let host = "";
+  try {
+    host = new URL(rawURL).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "🔗";
+  }
+  if (host === "github.com" || host.endsWith(".github.io")) return "🐙";
+  if (host === "twitch.tv" || host.endsWith(".twitch.tv")) return "📺";
+  if (host.includes("steamcommunity") || host.includes("steampowered")) return "🎮";
+  if (host === "youtube.com" || host === "youtu.be") return "▶️";
+  if (host === "t.me" || host === "telegram.org") return "✈️";
+  if (host === "discord.gg" || host === "discord.com") return "👾";
+  return "🔗";
+}
+
+// Блок виджетов в profile-popup. null = ещё грузится (не показываем),
+// пустой массив = виджетов нет.
+function renderProfileWidgets(): string {
+  const widgets = state.userProfileWidgets;
+  if (!widgets || widgets.length === 0) return "";
+  return `
+    <div class="user-profile-widgets">
+      ${widgets.map((w) => `
+        <a class="profile-widget" href="${escapeHtml(w.url)}" target="_blank" rel="noopener noreferrer nofollow" title="${escapeHtml(w.url)}">
+          <span class="profile-widget-icon">${widgetIcon(w.url)}</span>
+          <span class="profile-widget-label">${escapeHtml(w.label)}</span>
+        </a>
+      `).join("")}
     </div>
   `;
 }
@@ -5785,7 +5833,20 @@ function renderProfileFriendActions(userId: string): string {
 function openUserProfile(userId: string): void {
   state.userProfileTarget = userId;
   state.userProfileData = null;
+  state.userProfileWidgets = null;
   state.modal = "userProfile";
+  // Wave 7 (I.13): виджеты грузим для любого профиля, включая свой.
+  void (async () => {
+    try {
+      const data = await httpClient.get<{ items: ProfileWidget[] }>(`/api/v1/users/${userId}/widgets`);
+      if (state.userProfileTarget === userId) {
+        state.userProfileWidgets = data.items ?? [];
+        render();
+      }
+    } catch {
+      /* нет виджетов / сеть — блок просто не покажется */
+    }
+  })();
   // I.6(c): если юзер уже в state.members и у нас есть extended-поля
   // (bio/banner) — используем их сразу, popup открывается мгновенно.
   // GET всё равно дёргаем — данные могли устареть; но первичный рендер
@@ -8721,7 +8782,80 @@ function renderSettingsProfileTab(): string {
       })}
     </div>
     ${renderProfileStyleSection(me, previewDisplayName)}
+    ${renderProfileWidgetsSection()}
   `;
+}
+
+// Wave 7 (I.13): редактор виджетов профиля. Draft — module-level (как
+// profileStyleDraft): инпуты пишут без render(), кнопки порядка/удаления —
+// с render(). Сохранение — полная замена через PUT /users/me/widgets.
+let widgetsDraft: ProfileWidget[] | null = null;
+let widgetsLoading = false;
+let widgetsSaving = false;
+
+function renderProfileWidgetsSection(): string {
+  const rows = widgetsDraft === null
+    ? `<div class="settings-hint">Загрузка…</div>`
+    : widgetsDraft.length === 0
+      ? `<div class="settings-hint" style="margin:8px 0">Пока нет виджетов — добавь ссылку на GitHub, Twitch, Steam или что угодно.</div>`
+      : widgetsDraft.map((w, i) => `
+          <div class="widget-edit-row">
+            <span class="profile-widget-icon">${widgetIcon(w.url)}</span>
+            <input type="text" maxlength="48" placeholder="Название" value="${escapeHtml(w.label)}" data-widget-label="${i}" class="widget-edit-label" />
+            <input type="text" maxlength="300" placeholder="https://…" value="${escapeHtml(w.url)}" data-widget-url="${i}" class="widget-edit-url" />
+            <button class="ghost" data-widget-up="${i}" title="Выше" ${i === 0 ? "disabled" : ""}>↑</button>
+            <button class="ghost" data-widget-down="${i}" title="Ниже" ${i === (widgetsDraft?.length ?? 0) - 1 ? "disabled" : ""}>↓</button>
+            <button class="ghost danger" data-widget-remove="${i}" title="Удалить">✕</button>
+          </div>
+        `).join("");
+  const canAdd = (widgetsDraft?.length ?? 0) < 8;
+  return `
+    <div class="settings-section profile-widgets-section">
+      <h3>Виджеты профиля</h3>
+      <small class="settings-hint">
+        Ссылки в карточке профиля (до 8). Иконка подбирается по домену автоматически.
+      </small>
+      ${rows}
+      <div class="admin-actions">
+        ${canAdd && widgetsDraft !== null ? `<button id="pw-add" class="ghost">+ Добавить ссылку</button>` : ""}
+        ${widgetsDraft !== null ? `<button id="pw-save" class="primary" ${widgetsSaving ? "disabled" : ""}>${widgetsSaving ? "Сохранение…" : "Сохранить виджеты"}</button>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+async function loadMyWidgets(): Promise<void> {
+  if (widgetsLoading || !state.me) return;
+  widgetsLoading = true;
+  try {
+    const data = await httpClient.get<{ items: ProfileWidget[] }>(`/api/v1/users/${state.me.id}/widgets`);
+    widgetsDraft = data.items ?? [];
+  } catch {
+    widgetsDraft = [];
+  } finally {
+    widgetsLoading = false;
+    render();
+  }
+}
+
+async function saveMyWidgets(): Promise<void> {
+  if (!widgetsDraft) return;
+  // Пустые строки молча выкидываем — юзер добавил ряд и передумал.
+  const cleaned = widgetsDraft.filter((w) => w.label.trim() !== "" || w.url.trim() !== "");
+  widgetsSaving = true;
+  render();
+  try {
+    const data = await httpClient.put<{ items: ProfileWidget[] }>("/api/v1/users/me/widgets", {
+      widgets: cleaned.map((w) => ({ kind: w.kind, label: w.label.trim(), url: w.url.trim() }))
+    });
+    widgetsDraft = data.items ?? [];
+    setTransientStatus("Виджеты сохранены");
+  } catch (err) {
+    state.status = describeError(err);
+  } finally {
+    widgetsSaving = false;
+    render();
+  }
 }
 
 // Wave 7 (I.17–I.19): секция «Стиль профиля». Draft живёт в module-level
@@ -8923,8 +9057,58 @@ function attachSettingsHandlers(): void {
     _sessions = null;
     _sessionsError = null;
     profileStyleDraft = null;
+    widgetsDraft = null;
     return;
   }
+  // Wave 7 (I.13): редактор виджетов. Ленивая загрузка своих виджетов при
+  // первом рендере профиль-таба.
+  if (state.settings.tab === "profile" && widgetsDraft === null && !widgetsLoading) {
+    void loadMyWidgets();
+  }
+  rootEl.querySelectorAll<HTMLInputElement>("[data-widget-label]").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      const i = Number(inp.dataset.widgetLabel);
+      if (widgetsDraft?.[i]) widgetsDraft[i].label = inp.value;
+    });
+  });
+  rootEl.querySelectorAll<HTMLInputElement>("[data-widget-url]").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      const i = Number(inp.dataset.widgetUrl);
+      if (widgetsDraft?.[i]) widgetsDraft[i].url = inp.value;
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-widget-up]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.widgetUp);
+      if (!widgetsDraft || i <= 0) return;
+      [widgetsDraft[i - 1], widgetsDraft[i]] = [widgetsDraft[i], widgetsDraft[i - 1]];
+      render();
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-widget-down]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.widgetDown);
+      if (!widgetsDraft || i >= widgetsDraft.length - 1) return;
+      [widgetsDraft[i], widgetsDraft[i + 1]] = [widgetsDraft[i + 1], widgetsDraft[i]];
+      render();
+    });
+  });
+  rootEl.querySelectorAll<HTMLButtonElement>("[data-widget-remove]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const i = Number(btn.dataset.widgetRemove);
+      if (!widgetsDraft) return;
+      widgetsDraft.splice(i, 1);
+      render();
+    });
+  });
+  rootEl.querySelector<HTMLButtonElement>("#pw-add")?.addEventListener("click", () => {
+    if (!widgetsDraft || widgetsDraft.length >= 8) return;
+    widgetsDraft.push({ kind: "link", label: "", url: "" });
+    render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#pw-save")?.addEventListener("click", () => {
+    void saveMyWidgets();
+  });
   // Wave 7: «Стиль профиля». Чекбоксы триггерят render() (надо включить/
   // выключить color-input'ы), цвета/текст пишут в draft без render(),
   // превью градиента обновляется прямым DOM-стилем.

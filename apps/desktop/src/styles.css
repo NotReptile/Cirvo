@@ -2736,6 +2736,43 @@ input[type="color"] {
   margin-left: 4px;
 }
 
+/* Wave 7 (I.13): виджеты-ссылки в карточке профиля. */
+.user-profile-widgets {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+.profile-widget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+}
+.profile-widget:hover { background: rgba(255, 255, 255, 0.09); }
+.profile-widget-icon { flex-shrink: 0; }
+.profile-widget-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Wave 7 (I.13): редактор виджетов в настройках. */
+.widget-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.widget-edit-label { width: 140px; }
+.widget-edit-url { flex: 1; min-width: 0; }
+.widget-edit-row .ghost { padding: 4px 8px; }
+
 /* Wave 7 (I.19): эмодзи-бейдж после имени (чат, сайдбар, попап профиля). */
 .profile-badge {
   display: inline-block;
