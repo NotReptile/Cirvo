@@ -4620,18 +4620,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   font-size: 12px;
   color: var(--text-mute);
 }
-.vs-denoiser-pending {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-mute);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 6px;
-}
 
 /* I.4: Hotkeys tab. Список строк action'ов: toggle + label/desc +
    chord-кнопка (capture-mode подсвечена accent) + reset (✕). */

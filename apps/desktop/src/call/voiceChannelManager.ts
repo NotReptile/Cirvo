@@ -2,6 +2,7 @@ import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
 import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
+import { wrapMicStream, type MicPipeline } from "./denoiser";
 
 // Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
 // (не `call.*` — иначе 1-к-1 CallManager подхватывает mesh-offer как
@@ -125,6 +126,9 @@ export class VoiceChannelManager {
   private snapshot: VoiceSnapshot = { ...IDLE };
   private listeners = new Set<Listener>();
   private localStream: MediaStream | null = null;
+  // N.4: pipeline RuCord-шумодава. Владеет raw mic-стримом и AudioContext'ом;
+  // localStream выше — это pipeline.stream (для off/browser он же raw).
+  private micPipeline: MicPipeline | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
   private screenTrack: MediaStreamTrack | null = null;
   // K.5(c): системный аудио-track screen-share'а. Отдельный sender от mic'а.
@@ -595,6 +599,14 @@ export class VoiceChannelManager {
   }
 
   private tearDownLocal(): void {
+    // N.4: dispose до stop'а localStream — он гасит raw mic-треки и
+    // AudioContext (иначе после выхода остаётся висеть mic-индикатор:
+    // localStream.getTracks() для rucord-режимов содержит только
+    // обработанный track, а не сырой).
+    if (this.micPipeline) {
+      this.micPipeline.dispose();
+      this.micPipeline = null;
+    }
     if (this.localStream) {
       for (const t of this.localStream.getTracks()) t.stop();
       this.localStream = null;
@@ -625,10 +637,14 @@ export class VoiceChannelManager {
     // I.2: constraints из voiceSettings. По умолчанию ec/agc/ns включены
     // (нативный WebRTC-стек Chromium — NS3/AEC3/AGC2, бесплатно). Юзер
     // может выключить флаги в Settings → Голос и видео → Расширенные.
-    this.localStream = await navigator.mediaDevices.getUserMedia({
+    const raw = await navigator.mediaDevices.getUserMedia({
       audio: buildAudioConstraints(),
       video: false
     });
+    // N.4: rucord-режимы оборачивают микрофон в RNNoise-worklet; для
+    // off/browser pipeline прозрачный. При ошибке — fallback на raw внутри.
+    this.micPipeline = await wrapMicStream(raw);
+    this.localStream = this.micPipeline.stream;
   }
 
   private async onEvent(event: RealtimeEvent): Promise<void> {

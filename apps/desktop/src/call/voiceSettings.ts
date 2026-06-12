@@ -8,8 +8,9 @@
 export type CameraResolution = "360p" | "720p" | "1080p";
 
 // I.3: режимы шумоподавления. `off` — никакого NS; `browser` — нативный
-// WebRTC-стек Chromium (NS3); `rucord` / `rucord-aggressive` —
-// собственные ML-модели (планируются в N.*, пока fallback на browser).
+// WebRTC-стек Chromium (NS3); `rucord` — RNNoise через AudioWorklet
+// (denoiser.ts, интенсивность = dry/wet микс); `rucord-aggressive` —
+// нативный NS + RNNoise на 100% поверх.
 export type DenoiserMode = "off" | "browser" | "rucord" | "rucord-aggressive";
 
 export interface VoiceSettings {
@@ -104,17 +105,18 @@ export function subscribeVoiceSettings(fn: (s: VoiceSettings) => void): () => vo
   };
 }
 
-// Constraints для getUserMedia({audio}). Шумоподавление выводится из
-// denoiserMode: off → false, остальные → true (нативный браузерный NS
-// остаётся базой; rucord-режимы — поверх через AudioWorklet, когда
-// N.* реализован). Пока N.* не готов, rucord-режимы эквивалентны
-// browser'у на runtime.
+// Constraints для getUserMedia({audio}). Матрица NS по denoiserMode (N.2/N.4):
+//   off               → нативный NS выключен, RNNoise нет;
+//   browser           → только нативный NS Chromium (NS3);
+//   rucord            → нативный NS ВЫКЛЮЧЕН — RNNoise (denoiser.ts) должен
+//                       видеть сырой шум, иначе два NS подряд режут речь;
+//   rucord-aggressive → нативный NS + RNNoise 100% поверх (максимум подавления).
 export function buildAudioConstraints(): MediaTrackConstraints {
   const s = read();
   const c: MediaTrackConstraints = {
     echoCancellation: s.echoCancellation,
     autoGainControl: s.autoGainControl,
-    noiseSuppression: s.denoiserMode !== "off"
+    noiseSuppression: s.denoiserMode === "browser" || s.denoiserMode === "rucord-aggressive"
   };
   if (s.audioInputId) {
     c.deviceId = { exact: s.audioInputId };

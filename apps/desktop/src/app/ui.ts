@@ -8568,19 +8568,20 @@ function renderSettingsVoiceTab(): string {
   `;
 }
 
-// I.3: блок выбора режима шумоподавления. Опции:
+// I.3 + N.2/N.4: блок выбора режима шумоподавления. Опции:
 // - off               — никакого NS, голос идёт «как есть» (полезно для
 //                       музыкальных стримов / гитары — браузерный NS режет
 //                       обертоны).
 // - browser           — нативный WebRTC-стек Chromium (NS3). Дефолт.
 //                       Хорошо чистит вентилятор/клавиатуру/эхо.
-// - rucord            — собственная ML-модель RuCord. Сейчас runtime
-//                       fallback на browser (модели N.* не реализованы).
-// - rucord-aggressive — агрессивный режим RuCord, нацелен на сложные
-//                       шумы (кафе, улица, открытое окно). Тоже fallback.
+// - rucord            — RNNoise (ML) через AudioWorklet, denoiser.ts.
+//                       Слайдер интенсивности = dry/wet микс.
+// - rucord-aggressive — нативный NS + RNNoise на 100% поверх; для сложных
+//                       шумов (кафе, улица, открытое окно).
 //
-// Slider intensity 0-100 виден всегда, но активен только для rucord-режимов;
-// browser-NS не принимает intensity-параметр.
+// Slider intensity 0-100 виден всегда, но активен только для rucord:
+// browser-NS не принимает intensity, aggressive всегда работает на 100%.
+// Смена режима применяется со следующего звонка; интенсивность — на лету.
 function renderDenoiserBlock(s: VoiceSettings): string {
   const modes: { id: DenoiserMode; label: string; sub: string }[] = [
     { id: "off", label: t("vs.dn.off"), sub: t("vs.dn.off.sub") },
@@ -8588,20 +8589,16 @@ function renderDenoiserBlock(s: VoiceSettings): string {
     { id: "rucord", label: t("vs.dn.rucord"), sub: t("vs.dn.rucord.sub") },
     { id: "rucord-aggressive", label: t("vs.dn.aggr"), sub: t("vs.dn.aggr.sub") }
   ];
-  const intensityActive = s.denoiserMode === "rucord" || s.denoiserMode === "rucord-aggressive";
+  const intensityActive = s.denoiserMode === "rucord";
   const radios = modes
     .map((m) => {
       const checked = s.denoiserMode === m.id ? "checked" : "";
-      const pending = (m.id === "rucord" || m.id === "rucord-aggressive")
-        ? `<span class="vs-denoiser-pending">${t("vs.dn.pending")}</span>`
-        : "";
       return `
         <label class="vs-denoiser-option ${s.denoiserMode === m.id ? "active" : ""}">
           <input type="radio" name="vs-denoiser" value="${m.id}" ${checked} />
           <div class="vs-denoiser-option-body">
             <div class="vs-denoiser-option-head">
               <span class="vs-denoiser-option-label">${escapeHtml(m.label)}</span>
-              ${pending}
             </div>
             <div class="vs-denoiser-option-sub">${escapeHtml(m.sub)}</div>
           </div>

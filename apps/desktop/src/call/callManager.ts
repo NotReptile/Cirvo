@@ -2,6 +2,7 @@ import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
 import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
+import { wrapMicStream, type MicPipeline } from "./denoiser";
 
 export type CallState =
   | "idle"
@@ -76,6 +77,9 @@ export class CallManager {
   private listeners = new Set<Listener>();
   private pc: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
+  // N.4: pipeline RuCord-шумодава. Владеет raw mic-стримом и AudioContext'ом;
+  // localStream выше — это pipeline.stream (для off/browser он же raw).
+  private micPipeline: MicPipeline | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
   private screenTrack: MediaStreamTrack | null = null;
   // K.5(c): системный звук screen-share. Отдельный sender от mic'а.
@@ -414,10 +418,14 @@ export class CallManager {
   private async acquireLocalStream(): Promise<void> {
     if (this.localStream) return;
     // I.2: constraints из voiceSettings (deviceId + ec/agc/ns).
-    this.localStream = await navigator.mediaDevices.getUserMedia({
+    const raw = await navigator.mediaDevices.getUserMedia({
       audio: buildAudioConstraints(),
       video: false
     });
+    // N.4: rucord-режимы оборачивают микрофон в RNNoise-worklet; для
+    // off/browser pipeline прозрачный. При ошибке — fallback на raw внутри.
+    this.micPipeline = await wrapMicStream(raw);
+    this.localStream = this.micPipeline.stream;
   }
 
   private createPeerConnection(): void {
@@ -698,6 +706,13 @@ export class CallManager {
         /* ignore */
       }
       this.pc = null;
+    }
+    // N.4: dispose pipeline'а до stop'а localStream — гасит raw mic-треки
+    // и AudioContext (для rucord-режимов в localStream только обработанный
+    // track, сырой без dispose оставил бы mic-индикатор висеть).
+    if (this.micPipeline) {
+      this.micPipeline.dispose();
+      this.micPipeline = null;
     }
     if (this.localStream) {
       for (const track of this.localStream.getTracks()) {
