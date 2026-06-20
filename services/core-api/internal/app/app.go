@@ -67,7 +67,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		notification.NewModule(container.DB, container.Logger),
 		attachment.NewModule(container.DB, container.ObjectStore, container.Limiter, container.Settings, container.Logger),
 		invite.NewModule(container.DB, container.Limiter, messageMod, container.Logger),
-		voice.NewModule(container.DB, container.Publisher, container.Logger),
+		voice.NewModule(container.DB, container.Publisher, ice.SFUEnabled(), container.Logger),
 		audit.NewModule(container.DB),
 		ice.NewModule(),
 		servermod.NewModule(container.DB, container.Settings, container.ObjectStore, container.Logger),

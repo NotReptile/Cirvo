@@ -25,20 +25,30 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
-// meshLimit — потолок одновременных участников в одном voice-канале.
-// Каждый клиент держит N-1 peer connection'ов; выше ~5 это становится
-// неприемлемой нагрузкой на upstream. Когда появится SFU (F.2) — лимит
-// уйдёт в server_settings (D.1).
-const meshLimit = 5
+// meshLimit — потолок участников voice-канала в mesh-режиме. Каждый
+// клиент держит N-1 peer connection'ов; выше ~5 это неприемлемая
+// нагрузка на upstream. sfuLimit — потолок, когда развёрнут SFU (F.2):
+// клиент держит ровно 2 PC с сервером, fan-out на стороне SFU, поэтому
+// предел куда выше (защита от абьюза, не от нагрузки на клиента).
+const (
+	meshLimit = 5
+	sfuLimit  = 50
+)
 
 type Module struct {
 	db        *postgres.Pool
 	publisher *realtimebus.Publisher
 	logger    *slog.Logger
+	// limit — выбран в NewModule из sfuEnabled; mesh- или sfu-потолок.
+	limit int
 }
 
-func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, logger *slog.Logger) *Module {
-	return &Module{db: db, publisher: publisher, logger: logger}
+func NewModule(db *postgres.Pool, publisher *realtimebus.Publisher, sfuEnabled bool, logger *slog.Logger) *Module {
+	limit := meshLimit
+	if sfuEnabled {
+		limit = sfuLimit
+	}
+	return &Module{db: db, publisher: publisher, logger: logger, limit: limit}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -112,7 +122,7 @@ func (m *Module) handleJoin(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
-	if others >= meshLimit {
+	if others >= m.limit {
 		sharedhttp.WriteError(w, r, http.StatusConflict, sharedhttp.CodeConflict, "voice channel is full")
 		return
 	}

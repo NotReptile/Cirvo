@@ -1,5 +1,5 @@
 # Универсальный Dockerfile для Go-сервисов RuCord (core-api / realtime /
-# worker). Передаётся через `--build-arg SERVICE_NAME=...`; контекст билда
+# sfu / worker). Передаётся через `--build-arg SERVICE_NAME=...`; контекст билда
 # должен быть КОРНЕМ репозитория, чтобы go.work + libs/shared-go попали
 # в образ (у каждого сервиса в go.mod стоит replace на ../../libs/shared-go).
 #
@@ -21,6 +21,7 @@ COPY go.work go.work.sum ./
 COPY libs/shared-go/go.mod libs/shared-go/go.sum libs/shared-go/
 COPY services/core-api/go.mod services/core-api/go.sum services/core-api/
 COPY services/realtime/go.mod services/realtime/go.sum services/realtime/
+COPY services/sfu/go.mod services/sfu/go.sum services/sfu/
 COPY services/worker/go.mod services/worker/go.sum services/worker/
 
 # Прогреваем кеш модулей. На go.work стек умеет тянуть deps для всех

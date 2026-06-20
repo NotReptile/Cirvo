@@ -3,6 +3,7 @@ import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
 import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
 import { wrapMicStream, type MicPipeline } from "./denoiser";
+import { SfuSession } from "./sfuSession";
 
 // Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
 // (не `call.*` — иначе 1-к-1 CallManager подхватывает mesh-offer как
@@ -62,6 +63,8 @@ interface JoinResponse {
 
 interface IceServersResponse {
   iceServers: RTCIceServer[];
+  // F.2: непустой → деплой с SFU, медиа гоним через него вместо mesh.
+  sfuUrl?: string;
 }
 
 interface RelayPayload {
@@ -139,6 +142,12 @@ export class VoiceChannelManager {
   private pttGateOpen = true;
   private iceServers: RTCIceServer[] | null = null;
   private peers = new Map<string, PeerEntry>(); // key = peer sessionId
+  // F.2: SFU-режим. sfuUrl приходит из /api/v1/ice-servers; если он есть,
+  // медиа идёт через `sfu` (один pub + один sub PC), а mesh-peers пустует.
+  // Ростер и realtime-события (voice.joined/left/state) общие для обоих
+  // режимов — их ведёт этот менеджер, не транспорт.
+  private sfuUrl: string | null = null;
+  private sfu: SfuSession | null = null;
   private unsubscribe: (() => void) | null = null;
 
   // Streams для UI: локальное превью + remote-stream по sessionId.
@@ -148,6 +157,7 @@ export class VoiceChannelManager {
     return this.localStream;
   }
   getRemoteStream(sessionId: string): MediaStream | null {
+    if (this.sfu) return this.sfu.getRemoteStream(sessionId);
     return this.peers.get(sessionId)?.remoteStream ?? null;
   }
 
@@ -198,9 +208,15 @@ export class VoiceChannelManager {
         selfSessionId: resp.self.sessionId,
         participants: [resp.self, ...others]
       });
-      // Mы — caller для всех, кто уже был в канале.
-      for (const other of others) {
-        await this.dialPeer(other);
+      if (this.sfuUrl) {
+        // SFU-режим: один сокет к серверу, он сам форвардит треки всех
+        // участников. Дозвон peer'ам не нужен — ростер уже из resp.
+        await this.startSfu(channelId, resp.self.sessionId);
+      } else {
+        // Mesh: мы — caller для всех, кто уже был в канале.
+        for (const other of others) {
+          await this.dialPeer(other);
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "join failed";
@@ -306,16 +322,10 @@ export class VoiceChannelManager {
       if (this.localStream) {
         this.localStream.addTrack(track);
       }
-      // Для уже подключённых peer'ов: addTrack триггерит negotiation.
-      // У свеже-создаваемых через createPeer трек попадёт сразу через
-      // tracks-перебор в localStream.
-      for (const peer of this.peers.values()) {
-        try {
-          peer.pc.addTrack(track, this.localStream!);
-        } catch {
-          /* ignore — peer закрывается */
-        }
-      }
+      // Для уже подключённых peer'ов (mesh) / pub-PC (SFU): addTrack
+      // триггерит negotiation. У свеже-создаваемых mesh-peer'ов трек
+      // попадёт сразу через tracks-перебор в createPeer.
+      this.mediaAddTrack(track);
       this.update({ cameraOn: true, error: null });
       this.broadcastState();
       return true;
@@ -329,17 +339,7 @@ export class VoiceChannelManager {
     // Если параллельно идёт screen-share — он держит свой video sender,
     // его не трогаем. Иначе убираем video sender'ы.
     if (!this.screenTrack) {
-      for (const peer of this.peers.values()) {
-        for (const sender of peer.pc.getSenders()) {
-          if (sender.track && sender.track.kind === "video") {
-            try {
-              peer.pc.removeTrack(sender);
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-      }
+      this.mediaRemoveVideoSenders();
     } else {
       // Если camera была replaced screen'ом — sender держит screen'овский
       // трек, ничего делать не надо. cameraOn=false уже корректно.
@@ -400,29 +400,12 @@ export class VoiceChannelManager {
       if (this.localStream) {
         this.localStream.addTrack(track);
       }
-      for (const peer of this.peers.values()) {
-        if (hadCamera) {
-          const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
-          if (sender) {
-            try {
-              await sender.replaceTrack(track);
-            } catch {
-              /* ignore */
-            }
-            continue;
-          }
-        }
-        try {
-          peer.pc.addTrack(track, this.localStream!);
-        } catch {
-          /* ignore */
-        }
-      }
+      // hadCamera → screen занимает video-слот камеры (replaceTrack, без
+      // renegotiation); иначе — новый video sender (addTrack).
+      await this.mediaReplaceOrAddVideo(track, hadCamera);
       if (audioTrack) {
         if (this.localStream) this.localStream.addTrack(audioTrack);
-        for (const peer of this.peers.values()) {
-          try { peer.pc.addTrack(audioTrack, this.localStream!); } catch { /* ignore */ }
-        }
+        this.mediaAddTrack(audioTrack);
       }
       // Поднимаем cap по битрейту/FPS на video sender'е. По умолчанию
       // WebRTC держит ~1-2 Mbps — для статичного экрана норм, для
@@ -449,6 +432,43 @@ export class VoiceChannelManager {
       if (this.localStream) this.localStream.removeTrack(screenAudio);
       try { screenAudio.stop(); } catch { /* ignore */ }
     }
+    this.mediaRemoveVideoSenders();
+    if (screenAudio) this.mediaRemoveTrack(screenAudio);
+    // cpal-stream и WASAPI-loopback закрываем явно — track.stop() сам по
+    // себе не дёрнет Rust-side, потому что MediaStreamTrackGenerator не
+    // имеет внешней wire-up'ки с cpal.
+    void releaseScreenAudio();
+    this.update({ screenSharing: false });
+    this.broadcastState();
+    return false;
+  }
+
+  // ---- media transport (mesh peers ↔ SFU pub-PC) ---------------------------
+  // Камера/экран/screen-audio меняют набор ОТПРАВЛЯЕМЫХ треков. В mesh это
+  // выполняется на каждом peer-PC, в SFU — на единственном pub-PC. Эти
+  // helper'ы прячут разницу, чтобы toggleCamera/toggleScreenShare не
+  // ветвились на каждом шаге. localStream.addTrack/removeTrack делается
+  // вызывающим — он общий для обоих режимов.
+
+  private mediaAddTrack(track: MediaStreamTrack): void {
+    if (this.sfu) {
+      if (this.localStream) this.sfu.addTrack(track, this.localStream);
+      return;
+    }
+    for (const peer of this.peers.values()) {
+      try {
+        peer.pc.addTrack(track, this.localStream!);
+      } catch {
+        /* ignore — peer закрывается */
+      }
+    }
+  }
+
+  private mediaRemoveVideoSenders(): void {
+    if (this.sfu) {
+      this.sfu.removeVideoSenders();
+      return;
+    }
     for (const peer of this.peers.values()) {
       for (const sender of peer.pc.getSenders()) {
         if (sender.track && sender.track.kind === "video") {
@@ -458,18 +478,51 @@ export class VoiceChannelManager {
             /* ignore */
           }
         }
-        if (screenAudio && sender.track === screenAudio) {
-          try { peer.pc.removeTrack(sender); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  private mediaRemoveTrack(track: MediaStreamTrack): void {
+    if (this.sfu) {
+      this.sfu.removeTrackByRef(track);
+      return;
+    }
+    for (const peer of this.peers.values()) {
+      for (const sender of peer.pc.getSenders()) {
+        if (sender.track === track) {
+          try {
+            peer.pc.removeTrack(sender);
+          } catch {
+            /* ignore */
+          }
         }
       }
     }
-    // cpal-stream и WASAPI-loopback закрываем явно — track.stop() сам по
-    // себе не дёрнет Rust-side, потому что MediaStreamTrackGenerator не
-    // имеет внешней wire-up'ки с cpal.
-    void releaseScreenAudio();
-    this.update({ screenSharing: false });
-    this.broadcastState();
-    return false;
+  }
+
+  private async mediaReplaceOrAddVideo(track: MediaStreamTrack, preferReplace: boolean): Promise<void> {
+    if (this.sfu) {
+      if (this.localStream) await this.sfu.replaceOrAddVideo(track, this.localStream, preferReplace);
+      return;
+    }
+    for (const peer of this.peers.values()) {
+      if (preferReplace) {
+        const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
+        if (sender) {
+          try {
+            await sender.replaceTrack(track);
+          } catch {
+            /* ignore */
+          }
+          continue;
+        }
+      }
+      try {
+        peer.pc.addTrack(track, this.localStream!);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   // ---- internals -----------------------------------------------------------
@@ -599,6 +652,12 @@ export class VoiceChannelManager {
   }
 
   private tearDownLocal(): void {
+    // F.2: закрываем SFU-сессию (оба PC + сокет + remote-аудио) до
+    // освобождения localStream.
+    if (this.sfu) {
+      this.sfu.stop();
+      this.sfu = null;
+    }
     // N.4: dispose до stop'а localStream — он гасит raw mic-треки и
     // AudioContext (иначе после выхода остаётся висеть mic-индикатор:
     // localStream.getTracks() для rucord-режимов содержит только
@@ -627,8 +686,32 @@ export class VoiceChannelManager {
     try {
       const r = await this.http.get<IceServersResponse>("/api/v1/ice-servers");
       this.iceServers = r.iceServers ?? [];
+      this.sfuUrl = r.sfuUrl?.trim() ? r.sfuUrl.trim() : null;
     } catch {
       this.iceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
+      this.sfuUrl = null;
+    }
+  }
+
+  // F.2: поднять SFU-сессию. При ошибке (сокет не открылся / нет токена)
+  // звонок не валим — участник остаётся в ростере, но без медиа. Это
+  // деградация, а не падение: лучше «вижу участников, не слышу», чем
+  // выкинутый из канала юзер.
+  private async startSfu(channelId: string, _selfSessionId: string): Promise<void> {
+    const token = this.http.getTokens()?.accessToken;
+    if (!this.sfuUrl || !token || !this.localStream) return;
+    const session = new SfuSession({
+      wsUrl: this.sfuUrl,
+      accessToken: token,
+      channelId,
+      iceServers: this.iceServers ?? [],
+      onRemoteChange: () => this.emit()
+    });
+    this.sfu = session;
+    try {
+      await session.start(this.localStream);
+    } catch (err) {
+      this.update({ error: err instanceof Error ? err.message : "sfu connect failed" });
     }
   }
 
@@ -691,6 +774,10 @@ export class VoiceChannelManager {
   }
 
   private async applyScreenShareEncoding(quality: ScreenShareQuality): Promise<void> {
+    if (this.sfu) {
+      await this.sfu.applyVideoEncoding(quality);
+      return;
+    }
     for (const peer of this.peers.values()) {
       const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
       if (!sender) continue;
@@ -739,6 +826,13 @@ export class VoiceChannelManager {
   }
 
   private broadcastState(): void {
+    if (this.sfu) {
+      // SFU: peers пуст, шлём всем участникам канала кроме себя.
+      for (const p of this.snapshot.participants) {
+        if (p.sessionId !== this.snapshot.selfSessionId) this.sendStateTo(p.sessionId);
+      }
+      return;
+    }
     for (const sid of this.peers.keys()) {
       this.sendStateTo(sid);
     }
@@ -766,12 +860,21 @@ export class VoiceChannelManager {
     };
     const without = this.snapshot.participants.filter((x) => x.sessionId !== p.sessionId);
     this.update({ participants: [...without, next] });
-    // Новый участник сам сделает offer нам — ничего больше не делаем.
+    // Mesh: новый участник сам сделает offer нам — больше ничего. SFU:
+    // обмена offer'ами между клиентами нет, поэтому шлём новичку своё
+    // текущее screen/camera-состояние явно (иначе он не узнает, что мы
+    // уже шарим экран).
+    if (this.sfu) {
+      this.sendStateTo(p.sessionId);
+    }
   }
 
   private handleVoiceLeft(p: VoiceEventPayload | undefined): void {
     if (!p || p.channelId !== this.snapshot.channelId) return;
     this.destroyPeer(p.sessionId);
+    // F.2: в SFU-режиме peers пуст — remote-стрим ушедшего убираем у
+    // сессии по авторитетному roster-событию.
+    this.sfu?.dropRemote(p.sessionId);
     this.update({
       participants: this.snapshot.participants.filter((x) => x.sessionId !== p.sessionId)
     });

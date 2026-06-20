@@ -18,6 +18,11 @@ type Config struct {
 	TURNURL        string
 	TURNUsername   string
 	TURNCredential string
+	// SFUURL — WebSocket-адрес SFU-сигналинга (F.2), напр.
+	// wss://host/sfu/ws. Пусто = SFU не развёрнут, клиент работает в
+	// mesh-режиме (до 5 участников). Непусто = клиент гоняет медиа через
+	// SFU для всех voice-каналов, mesh-потолок снят (см. voice.meshLimit).
+	SFUURL string
 }
 
 type iceServer struct {
@@ -28,6 +33,9 @@ type iceServer struct {
 
 type response struct {
 	IceServers []iceServer `json:"iceServers"`
+	// SFUURL непустой → клиент использует SFU. omitempty, чтобы для
+	// mesh-деплоев старые клиенты не видели поля вообще.
+	SFUURL string `json:"sfuUrl,omitempty"`
 }
 
 func NewModule() *Module {
@@ -50,7 +58,7 @@ func (m *Module) handle(w http.ResponseWriter, _ *http.Request) {
 			Credential: m.config.TURNCredential,
 		})
 	}
-	sharedhttp.WriteJSON(w, http.StatusOK, response{IceServers: servers})
+	sharedhttp.WriteJSON(w, http.StatusOK, response{IceServers: servers, SFUURL: m.config.SFUURL})
 }
 
 func loadFromEnv() Config {
@@ -69,5 +77,11 @@ func loadFromEnv() Config {
 		TURNURL:        strings.TrimSpace(os.Getenv("ICE_TURN_URL")),
 		TURNUsername:   strings.TrimSpace(os.Getenv("ICE_TURN_USERNAME")),
 		TURNCredential: strings.TrimSpace(os.Getenv("ICE_TURN_CREDENTIAL")),
+		SFUURL:         strings.TrimSpace(os.Getenv("RUCORD_SFU_URL")),
 	}
+}
+
+// SFUEnabled сообщает, развёрнут ли SFU (для voice-лимита в app.go).
+func SFUEnabled() bool {
+	return strings.TrimSpace(os.Getenv("RUCORD_SFU_URL")) != ""
 }

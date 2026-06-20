@@ -4,5 +4,6 @@ use (
 	./libs/shared-go
 	./services/core-api
 	./services/realtime
+	./services/sfu
 	./services/worker
 )
