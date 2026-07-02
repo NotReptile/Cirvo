@@ -1,0 +1,42 @@
+# HTTP reverse proxy for static-IP testing.
+#
+# Use this when clients connect directly to the machine by public/static IP:
+#   http://<STATIC_IP>
+#
+# The Go services still run as host processes from VSCode tasks:
+#   core-api  -> host.docker.internal:8080
+#   realtime  -> host.docker.internal:8090
+
+:80 {
+	encode zstd gzip
+
+	handle /ws* {
+		reverse_proxy host.docker.internal:8090 {
+			transport http {
+				read_timeout 1h
+				write_timeout 1h
+			}
+		}
+	}
+
+	handle /healthz {
+		reverse_proxy host.docker.internal:8080
+	}
+
+	handle /readyz {
+		reverse_proxy host.docker.internal:8080
+	}
+
+	handle /api/* {
+		reverse_proxy host.docker.internal:8080
+	}
+
+	handle {
+		respond "LVC public IP proxy is running" 200
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

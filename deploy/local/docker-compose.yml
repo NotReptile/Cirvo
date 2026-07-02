@@ -54,6 +54,24 @@ services:
     volumes:
       - minio-data:/data
 
+  # HTTP reverse-proxy for static-IP testing from real remote clients.
+  # Start with profile `public-ip` and point clients to:
+  #   http://<STATIC_IP>
+  #
+  # It intentionally does not terminate TLS. For a private friends-only test
+  # this avoids requiring a domain; expose it only when you understand the
+  # network/firewall implications.
+  public-ip-proxy:
+    image: caddy:2
+    profiles: ["public-ip"]
+    ports:
+      - "80:80"
+    volumes:
+      - ./Caddyfile.public-ip:/etc/caddy/Caddyfile:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
   # TURN/STUN-сервер для WebRTC. Запускается под профилем `turn`:
   #   docker compose --profile turn up coturn
   # На локальной 1-к-1 разработке обычно не нужен (хватает host candidates +
