@@ -213,6 +213,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("voice_channel", testVoiceChannel)
 	t.Run("call_lifecycle", testCallLifecycle)
 	t.Run("message_reply", testMessageReply)
+	t.Run("message_thread", testMessageThread)
 	t.Run("message_mentions", testMessageMentions)
 	t.Run("unread_counts", testUnreadCounts)
 	t.Run("message_search", testMessageSearch)
@@ -776,6 +777,109 @@ func testMessageReply(t *testing.T) {
 	})
 	if code != http.StatusBadRequest {
 		t.Fatalf("reply to nonexistent: expected 400, got %d %s", code, string(raw))
+	}
+}
+
+// Wave 10: тред из сообщения. Создание, идемпотентность повторного POST,
+// постинг внутрь kind='thread' (регресс: гейт «channel does not accept
+// messages» не должен резать треды) и thread-агрегат в message list.
+func testMessageThread(t *testing.T) {
+	tk := registerFresh(t)
+	wsID := createWorkspace(t, tk.AccessToken)
+	chID := createTextChannel(t, tk.AccessToken, wsID)
+
+	code, raw := doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages", tk.AccessToken, map[string]any{
+		"body":            "корневое сообщение для треда",
+		"clientMessageId": uuid.NewString(),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("root message: %d %s", code, string(raw))
+	}
+	var root idView
+	mustJSON(t, raw, &root)
+
+	type threadView struct {
+		ID              string  `json:"id"`
+		Kind            string  `json:"kind"`
+		Name            string  `json:"name"`
+		ParentChannelID *string `json:"parentChannelId"`
+		RootMessageID   *string `json:"rootMessageId"`
+	}
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages/"+root.ID+"/thread", tk.AccessToken, map[string]any{})
+	if code != http.StatusCreated {
+		t.Fatalf("thread create: %d %s", code, string(raw))
+	}
+	var th threadView
+	mustJSON(t, raw, &th)
+	if th.Kind != "thread" || th.ParentChannelID == nil || *th.ParentChannelID != chID {
+		t.Fatalf("thread view: %+v", th)
+	}
+	if th.RootMessageID == nil || *th.RootMessageID != root.ID {
+		t.Fatalf("thread rootMessageId: %+v", th.RootMessageID)
+	}
+	if !strings.HasPrefix(th.Name, "корневое сообщение") {
+		t.Fatalf("thread title not derived from body: %q", th.Name)
+	}
+
+	// Повторный POST — идемпотентность: 200 и тот же id.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+chID+"/messages/"+root.ID+"/thread", tk.AccessToken, map[string]any{})
+	if code != http.StatusOK {
+		t.Fatalf("thread re-create: expected 200, got %d %s", code, string(raw))
+	}
+	var again threadView
+	mustJSON(t, raw, &again)
+	if again.ID != th.ID {
+		t.Fatalf("thread re-create: id mismatch %s vs %s", again.ID, th.ID)
+	}
+
+	// Сообщение внутрь треда — 201 (kind='thread' принимает сообщения).
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+th.ID+"/messages", tk.AccessToken, map[string]any{
+		"body":            "первый ответ в треде",
+		"clientMessageId": uuid.NewString(),
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("post into thread: %d %s", code, string(raw))
+	}
+
+	// Message list родителя: у корневого сообщения thread-агрегат c
+	// messageCount=1 (system-плашка контекста не считается user-ответом).
+	code, raw = doReq(t, http.MethodGet, "/api/v1/channels/"+chID+"/messages?limit=50", tk.AccessToken, nil)
+	if code != http.StatusOK {
+		t.Fatalf("list parent: %d %s", code, string(raw))
+	}
+	var list struct {
+		Items []struct {
+			ID     string `json:"id"`
+			Thread *struct {
+				ThreadID     string `json:"threadId"`
+				Title        string `json:"title"`
+				MessageCount int    `json:"messageCount"`
+			} `json:"thread"`
+		} `json:"items"`
+	}
+	mustJSON(t, raw, &list)
+	found := false
+	for _, it := range list.Items {
+		if it.ID != root.ID {
+			continue
+		}
+		found = true
+		if it.Thread == nil {
+			t.Fatalf("root message has no thread aggregate")
+		}
+		if it.Thread.ThreadID != th.ID || it.Thread.MessageCount != 1 {
+			t.Fatalf("thread aggregate: %+v", it.Thread)
+		}
+	}
+	if !found {
+		t.Fatalf("root message not in list")
+	}
+
+	// Тред на сообщение из чужого канала — 404.
+	otherCh := createTextChannel(t, tk.AccessToken, wsID)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/channels/"+otherCh+"/messages/"+root.ID+"/thread", tk.AccessToken, map[string]any{})
+	if code != http.StatusNotFound {
+		t.Fatalf("cross-channel thread: expected 404, got %d %s", code, string(raw))
 	}
 }
 

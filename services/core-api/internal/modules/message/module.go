@@ -108,7 +108,21 @@ const messageSelectColumns = `m.id, m.channel_id, m.author_user_id, m.body, m.ki
           (select jsonb_agg(user_id::text order by user_id)
            from message_mentions where message_id = m.id),
           '[]'::jsonb
-        ) as mentions`
+        ) as mentions,
+        (select jsonb_build_object(
+           'threadId', tc.id,
+           'title', tc.name,
+           'messageCount', coalesce(tagg.cnt, 0),
+           'lastActivityAt', coalesce(tagg.last_at, tc.created_at)
+         )
+         from channels tc
+         left join lateral (
+           select count(*) cnt, max(tm.created_at) last_at
+           from messages tm
+           where tm.channel_id = tc.id and tm.deleted_at is null and tm.kind = 'user'
+         ) tagg on true
+         where tc.root_message_id = m.id
+         limit 1) as thread`
 
 type Module struct {
 	db        *postgres.Pool
@@ -194,6 +208,10 @@ type messageView struct {
 	// Wave 4: 'everyone' | 'here', если автор имел право на массовый пинг.
 	// Клиент подсвечивает токен и считает сообщение mention'ом для всех.
 	MentionEveryone string `json:"mentionEveryone,omitempty"`
+	// Wave 10: тред, растущий из этого сообщения (channels.root_message_id).
+	// jsonb-passthrough {threadId, title, messageCount, lastActivityAt} —
+	// клиент рисует чип «N ответов». null = треда нет.
+	Thread json.RawMessage `json:"thread,omitempty"`
 }
 
 type createRequest struct {
@@ -305,7 +323,15 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "channel not visible")
 		return
 	}
-	if scope.Kind != "text" && scope.Kind != "dm" {
+	// Wave 9: форум — контейнер постов, сообщения живут только в тредах.
+	// Прямой POST в форум-канал — ошибка клиента.
+	if scope.Kind == "forum" {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "post messages inside a forum post, not the forum itself")
+		return
+	}
+	// Wave 10: kind='thread' (пост форума / тред сообщения) принимает
+	// сообщения наравне с text — вся message-инфраструктура общая.
+	if scope.Kind != "text" && scope.Kind != "dm" && scope.Kind != "thread" {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "channel does not accept messages")
 		return
 	}
@@ -363,18 +389,11 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Wave 9: форум — контейнер постов, сообщения живут только в тредах.
-	// Прямой POST в форум-канал — ошибка клиента.
-	if scope.Kind == "forum" {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "post messages inside a forum post, not the forum itself")
-		return
-	}
-
-	// J.3: slow-mode. Тянем только для text-каналов (DM не имеют slow-mode).
-	// Модераторы (MessageModerate) обходят — иначе они не смогут оперативно
-	// модерировать флуд в режиме slow-mode. Race между двумя сессиями
-	// одного юзера допустима (race-окно мс на ту же пуш-стрим).
-	if scope.Kind == "text" {
+	// J.3: slow-mode. Тянем только для text-каналов и тредов (DM не имеют
+	// slow-mode). Модераторы (MessageModerate) обходят — иначе они не смогут
+	// оперативно модерировать флуд в режиме slow-mode. Race между двумя
+	// сессиями одного юзера допустима (race-окно мс на ту же пуш-стрим).
+	if scope.Kind == "text" || scope.Kind == "thread" {
 		var slowSec int
 		var archivedAt *time.Time
 		err := m.db.QueryRow(r.Context(),
@@ -1382,10 +1401,11 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		attachmentsJSON  []byte
 		replyJSON        []byte
 		mentionsJSON     []byte
+		threadJSON       []byte
 		channelName      string
 		highlight        string
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &channelName, &highlight); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &threadJSON, &channelName, &highlight); err != nil {
 		return messageView{}, "", "", err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1424,6 +1444,7 @@ func scanSearchResult(rows pgx.Rows) (messageView, string, string, error) {
 		PinnedAt:        pinnedAt,
 		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
 		MentionEveryone: mentionEveryone,
+		Thread:          normalizeJSONB(threadJSON),
 	}, channelName, highlight, nil
 }
 
@@ -1547,8 +1568,9 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		attachmentsJSON   []byte
 		replyJSON         []byte
 		mentionsJSON      []byte
+		threadJSON        []byte
 	)
-	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := row.Scan(&mid, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &threadJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1587,6 +1609,7 @@ func (m *Module) loadMessageView(ctx context.Context, id, viewerID uuid.UUID) (m
 		PinnedAt:        pinnedAt,
 		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
 		MentionEveryone: mentionEveryone,
+		Thread:          normalizeJSONB(threadJSON),
 	}, nil
 }
 
@@ -1670,8 +1693,9 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		attachmentsJSON  []byte
 		replyJSON        []byte
 		mentionsJSON     []byte
+		threadJSON       []byte
 	)
-	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON); err != nil {
+	if err := rows.Scan(&id, &chID, &authID, &body, &kind, &cmid, &created, &edited, &isPinned, &pinnedAt, &linkPreviewsJSON, &mentionEveryone, &reactionsJSON, &attachmentsJSON, &replyJSON, &mentionsJSON, &threadJSON); err != nil {
 		return messageView{}, err
 	}
 	reactions := map[string]reactionAgg{}
@@ -1710,6 +1734,7 @@ func scanMessageWithReactions(rows pgx.Rows) (messageView, error) {
 		PinnedAt:        pinnedAt,
 		LinkPreviews:    normalizeJSONB(linkPreviewsJSON),
 		MentionEveryone: mentionEveryone,
+		Thread:          normalizeJSONB(threadJSON),
 	}, nil
 }
 

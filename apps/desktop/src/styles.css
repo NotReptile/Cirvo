@@ -761,6 +761,37 @@ input[type="color"] {
   white-space: nowrap;
 }
 .thread-parent:hover { color: var(--text); }
+/* Wave 10: чип «Тред: N ответов» под сообщением text-канала. */
+.thread-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 10px;
+  max-width: 480px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-mute);
+  font-size: 12px;
+  cursor: pointer;
+}
+.thread-chip:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.thread-chip-title {
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-chip-count { white-space: nowrap; }
+.thread-chip-activity {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Popup управления громкостью remote-участника (ПКМ на чужом voice-tile). */
 .voice-volume-menu {

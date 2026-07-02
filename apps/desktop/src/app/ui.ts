@@ -224,6 +224,9 @@ interface Channel {
   // Wave 9 (форум): kind='thread' — пост форума, поле указывает на
   // родительский kind='forum' канал. Треды скрыты из sidebar.
   parentChannelId?: string | null;
+  // Wave 10 (треды): kind='thread' с якорем на сообщение text-канала —
+  // id корневого сообщения (чип «N ответов» вешается на него).
+  rootMessageId?: string | null;
 }
 
 // Wave 9: карточка поста в форум-вью (GET /channels/{id}/forum/posts).
@@ -281,6 +284,15 @@ interface ReplySnippet {
   deleted?: boolean;
 }
 
+// Wave 10: тред, растущий из сообщения (jsonb-агрегат с бэка в message
+// list). threadId — id kind='thread' канала, открывается selectChannel().
+interface MessageThreadInfo {
+  threadId: string;
+  title: string;
+  messageCount: number;
+  lastActivityAt?: string;
+}
+
 // H.9: kind — 'user' (дефолт; обычное сообщение) или 'system_*' (плашки).
 // Старые сервера до миграции 22 поле не возвращают; считаем тогда 'user'.
 type MessageKind = "user" | "system_join" | "system_call" | "system_channel_event";
@@ -315,6 +327,8 @@ interface Message {
   linkPreviews?: LinkPreview[];
   isPinned?: boolean;
   pinnedAt?: string;
+  // Wave 10: тред из этого сообщения; undefined/null = треда нет.
+  thread?: MessageThreadInfo | null;
 }
 
 interface MentionAutocomplete {
@@ -2838,10 +2852,24 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     if (ch.workspaceId !== state.selectedWorkspaceId) return;
     if (state.channels.some((c) => c.id === ch.id)) return;
     state.channels = [...state.channels, ch];
-    // Wave 9: новый пост в открытом форуме — перечитываем карточки.
     if (ch.kind === "thread" && ch.parentChannelId && ch.parentChannelId === state.selectedChannelId) {
-      void loadForumPosts(ch.parentChannelId, /*keepCurrent*/ true);
-      return;
+      // Wave 10: тред на сообщении открытого text-канала — вешаем чип на
+      // корневое сообщение сразу (агрегаты придут при следующем refetch'е).
+      if (ch.rootMessageId) {
+        const idx = state.messages.findIndex((m) => m.id === ch.rootMessageId);
+        if (idx >= 0 && !state.messages[idx].thread) {
+          const next = state.messages.slice();
+          next[idx] = {
+            ...next[idx],
+            thread: { threadId: ch.id, title: ch.name, messageCount: 0, lastActivityAt: ch.createdAt }
+          };
+          state.messages = next;
+        }
+      } else {
+        // Wave 9: новый пост в открытом форуме — перечитываем карточки.
+        void loadForumPosts(ch.parentChannelId, /*keepCurrent*/ true);
+        return;
+      }
     }
     render();
     return;
@@ -2901,11 +2929,34 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
   if (event.channelId && event.channelId !== state.selectedChannelId) {
     if (event.event === "message.created") {
       const msg = event.payload as Message;
-      // Wave 9: сообщение в треде, чей родитель-форум сейчас открыт —
-      // обновляем карточки (счётчик/активность/превью).
+      // Wave 9/10: сообщение в треде, чей родитель сейчас открыт. Для
+      // форума перечитываем карточки, для text-канала — двигаем чип
+      // «N ответов» на корневом сообщении (только user-сообщения, чтобы
+      // system-плашка контекста не считалась ответом).
       const threadCh = state.channels.find((c) => c.id === event.channelId);
       if (threadCh?.kind === "thread" && threadCh.parentChannelId === state.selectedChannelId) {
-        void loadForumPosts(threadCh.parentChannelId!, /*keepCurrent*/ true);
+        if (threadCh.rootMessageId) {
+          if (!msg.kind || msg.kind === "user") {
+            const idx = state.messages.findIndex((m) => m.id === threadCh.rootMessageId);
+            if (idx >= 0) {
+              const next = state.messages.slice();
+              const prev = next[idx].thread;
+              next[idx] = {
+                ...next[idx],
+                thread: {
+                  threadId: threadCh.id,
+                  title: prev?.title ?? threadCh.name,
+                  messageCount: (prev?.messageCount ?? 0) + 1,
+                  lastActivityAt: msg.createdAt
+                }
+              };
+              state.messages = next;
+              render();
+            }
+          }
+        } else {
+          void loadForumPosts(threadCh.parentChannelId!, /*keepCurrent*/ true);
+        }
       }
       // Замьюченный канал — не инкрементим unread (Discord-like: канал
       // в списке остаётся серым, без badge'а). Mentions всё равно приходят
@@ -4794,12 +4845,14 @@ function renderChannelView(channel: Channel): string {
   const canSend = (channel.kind === "text" || channel.kind === "thread") && !isArchived;
   const ws = state.workspaces.find((w) => w.id === channel.workspaceId);
   const canModerate = !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
-  // Wave 9: breadcrumb для треда — стрелка назад к родительскому форуму.
+  // Wave 9/10: breadcrumb для треда — стрелка назад к родителю (форум или
+  // text-канал для тредов на сообщениях).
   const parentForum = channel.kind === "thread" && channel.parentChannelId
     ? state.channels.find((c) => c.id === channel.parentChannelId)
     : undefined;
+  const backLabel = parentForum?.kind === "forum" ? t("forum.back") : t("thread.back");
   const breadcrumb = parentForum
-    ? `<button class="ghost thread-back" data-ch-open="${parentForum.id}" title="${t("forum.back")}" aria-label="${t("forum.back")}">${icon("reply", { size: 16 })}</button>
+    ? `<button class="ghost thread-back" data-ch-open="${parentForum.id}" title="${backLabel}" aria-label="${backLabel}">${icon("reply", { size: 16 })}</button>
        <span class="thread-parent" data-ch-open="${parentForum.id}">${channelPrefix(parentForum)} ${escapeHtml(parentForum.name)}</span>
        <span class="channel-header-sep">›</span>`
     : "";
@@ -5730,10 +5783,16 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   const avatarSlot = grouped
     ? `<span class="message-avatar message-avatar-spacer" aria-hidden="true"><span class="grouped-timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${escapeHtml(formatTimeSmartShort(m.createdAt))}</span></span>`
     : avatarHtml;
+  // Wave 10: тред из сообщения — только в text-каналах воркспейса (не DM,
+  // не внутри треда/форума). Если тред уже есть — вход через чип, кнопку
+  // не дублируем.
+  const msgChannel = state.channels.find((c) => c.id === m.channelId);
+  const canThread = !state.dmMode && msgChannel?.kind === "text" && !msgChannel.archivedAt && !m.thread;
   // Wave 6: общий тулбар для обоих вариантов meta — i18n в одном месте.
   const actionsHtml = `<span class="message-actions">
           <button class="ghost action-react" data-id="${m.id}" title="${t("msg.react")}">${icon("smile")}</button>
           <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="${t("msg.reply")}">${icon("reply")}</button>
+          ${canThread ? `<button class="ghost action-thread" data-id="${m.id}" title="${t("msg.thread")}">${icon("channel-forum")}</button>` : ""}
           ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="${t("msg.edit")}">${icon("pencil")}</button>` : ""}
           ${canPin
             ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" title="${m.isPinned ? t("msg.unpin") : t("msg.pin")}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
@@ -5791,9 +5850,22 @@ function renderMessage(m: Message, grouped: boolean = false): string {
             </div>`
           : ""
       }
+      ${renderThreadChip(m.thread)}
       </div>
     </div>
   `;
+}
+
+// Wave 10: чип «Тред: N ответов» под сообщением. Клик открывает тред как
+// обычный канал через generic [data-ch-open] обработчик.
+function renderThreadChip(thread: MessageThreadInfo | null | undefined): string {
+  if (!thread) return "";
+  return `<button class="thread-chip" data-ch-open="${escapeHtml(thread.threadId)}" title="${t("thread.open")}">
+      ${icon("channel-forum", { size: 14 })}
+      <span class="thread-chip-title">${escapeHtml(thread.title)}</span>
+      <span class="thread-chip-count">${t("thread.replies", { n: thread.messageCount })}</span>
+      ${thread.lastActivityAt ? `<span class="thread-chip-activity">${escapeHtml(formatTimeSmart(thread.lastActivityAt))}</span>` : ""}
+    </button>`;
 }
 
 function renderSystemMessage(m: Message): string {
@@ -12200,6 +12272,29 @@ function attachShellHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>(".reply-cancel")?.addEventListener("click", () => {
     state.replyingTo = null;
     render();
+  });
+
+  // Wave 10: «Тред» из сообщения. Endpoint идемпотентен: если тред уже
+  // есть (гонка с другим клиентом) — бэк вернёт существующий, открываем его.
+  rootEl.querySelectorAll<HTMLButtonElement>(".action-thread").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const messageId = btn.dataset.id;
+      const channelId = state.selectedChannelId;
+      if (!messageId || !channelId) return;
+      try {
+        const thread = await httpClient.post<Channel>(
+          `/api/v1/channels/${channelId}/messages/${messageId}/thread`,
+          {}
+        );
+        if (!state.channels.some((c) => c.id === thread.id)) {
+          state.channels = [...state.channels, thread];
+        }
+        await selectChannel(thread.id);
+      } catch (err) {
+        state.status = describeError(err);
+        render();
+      }
+    });
   });
 
   // Клик на reply-snippet — прыжок к исходному сообщению (если оно в DOM).

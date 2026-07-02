@@ -60,6 +60,9 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	// Wave 9: форум — посты (треды) внутри kind='forum' канала. См. forum.go.
 	router.Protected("GET /api/v1/channels/{channelId}/forum/posts", m.handleForumPostList)
 	router.Protected("POST /api/v1/channels/{channelId}/forum/posts", m.handleForumPostCreate)
+	// Wave 10: тред из сообщения text-канала. Идемпотентен: повторный POST
+	// возвращает существующий тред. См. thread.go.
+	router.Protected("POST /api/v1/channels/{channelId}/messages/{messageId}/thread", m.handleThreadCreate)
 }
 
 // publish — фан-аут в workspace, channelID опционально (для delete/update
@@ -99,6 +102,9 @@ type channelView struct {
 	// Wave 9 (форум): для kind='thread' — id родительского форума.
 	// Клиент по нему строит breadcrumb и прячет треды из sidebar.
 	ParentChannelID *string `json:"parentChannelId,omitempty"`
+	// Wave 10 (треды): для kind='thread' с якорем на сообщение text-канала —
+	// id корневого сообщения. Клиент вешает чип «N ответов» на это сообщение.
+	RootMessageID *string `json:"rootMessageId,omitempty"`
 }
 
 type createRequest struct {
@@ -150,7 +156,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	//     соответствующего channel_role_overrides. base_action_mask на приватные
 	//     каналы НЕ распространяется (H.6).
 	rows, err := m.db.Query(r.Context(),
-		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id, c.archived_at, coalesce(c.name_color, ''), c.parent_channel_id
+		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id, c.archived_at, coalesce(c.name_color, ''), c.parent_channel_id, c.root_message_id
 		 from channels c
 		 where c.workspace_id = $1
 		   and (
@@ -181,8 +187,8 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v channelView
 		var id, wsID uuid.UUID
-		var catUUID, parentUUID *uuid.UUID
-		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &catUUID, &v.ArchivedAt, &v.NameColor, &parentUUID); err != nil {
+		var catUUID, parentUUID, rootMsgUUID *uuid.UUID
+		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &catUUID, &v.ArchivedAt, &v.NameColor, &parentUUID, &rootMsgUUID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -195,6 +201,10 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		if parentUUID != nil {
 			s := parentUUID.String()
 			v.ParentChannelID = &s
+		}
+		if rootMsgUUID != nil {
+			s := rootMsgUUID.String()
+			v.RootMessageID = &s
 		}
 		items = append(items, v)
 	}
@@ -499,12 +509,12 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// уехала одна и та же канонизированная версия (для clients без race'а
 	// между двумя одновременными PATCH'ами).
 	var v channelView
-	var reloadCat, reloadParent *uuid.UUID
+	var reloadCat, reloadParent, reloadRoot *uuid.UUID
 	err = m.db.QueryRow(r.Context(),
-		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, ''), parent_channel_id
+		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, ''), parent_channel_id, root_message_id
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &reloadCat, &v.ArchivedAt, &v.NameColor, &reloadParent)
+	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &reloadCat, &v.ArchivedAt, &v.NameColor, &reloadParent, &reloadRoot)
 	if reloadCat != nil {
 		s := reloadCat.String()
 		v.CategoryID = &s
@@ -512,6 +522,10 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if reloadParent != nil {
 		s := reloadParent.String()
 		v.ParentChannelID = &s
+	}
+	if reloadRoot != nil {
+		s := reloadRoot.String()
+		v.RootMessageID = &s
 	}
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload channel")
@@ -617,12 +631,12 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v channelView
-	var getCat, getParent *uuid.UUID
+	var getCat, getParent, getRoot *uuid.UUID
 	err := m.db.QueryRow(r.Context(),
-		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, ''), parent_channel_id
+		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, ''), parent_channel_id, root_message_id
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &getCat, &v.ArchivedAt, &v.NameColor, &getParent)
+	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &getCat, &v.ArchivedAt, &v.NameColor, &getParent, &getRoot)
 	if getCat != nil {
 		s := getCat.String()
 		v.CategoryID = &s
@@ -630,6 +644,10 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 	if getParent != nil {
 		s := getParent.String()
 		v.ParentChannelID = &s
+	}
+	if getRoot != nil {
+		s := getRoot.String()
+		v.RootMessageID = &s
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
