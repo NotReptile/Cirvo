@@ -13,6 +13,10 @@ export type CameraResolution = "360p" | "720p" | "1080p";
 // нативный NS + RNNoise на 100% поверх.
 export type DenoiserMode = "off" | "browser" | "rucord" | "rucord-aggressive";
 
+// Wave 9: эффект камеры (videoEffects.ts) — размытие фона через Mediapipe
+// Selfie Segmentation. Применяется при следующем включении камеры.
+export type CameraEffect = "none" | "blur-light" | "blur-strong";
+
 export interface VoiceSettings {
   audioInputId: string | null; // null = system default
   audioOutputId: string | null;
@@ -27,6 +31,9 @@ export interface VoiceSettings {
   // в buildAudioConstraints() (off → false, остальные → true).
   denoiserMode: DenoiserMode;
   denoiserIntensity: number; // 0..100, применится когда N.* модели появятся
+  // Wave 9: размытие фона камеры. Живёт здесь же, потому что и звук, и
+  // видео настраиваются в одном табе «Голос и видео».
+  cameraEffect: CameraEffect;
   // I.9: push-to-talk режим. Когда включён — микрофон по умолчанию замьючен,
   // unmute только пока зажат PTT-биндинг из I.4. `pttReleaseDelay` — сколько
   // мс держать unmute после отпускания клавиши, чтобы не обрывать речь на
@@ -48,6 +55,7 @@ const DEFAULTS: VoiceSettings = {
   autoGainControl: true,
   denoiserMode: "browser",
   denoiserIntensity: 50,
+  cameraEffect: "none",
   pushToTalk: false,
   pttReleaseDelay: 200
 };

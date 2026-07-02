@@ -3,6 +3,7 @@ import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
 import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
 import { wrapMicStream, type MicPipeline } from "./denoiser";
+import { wrapCameraTrack, type CameraPipeline } from "./videoEffects";
 import { SfuSession } from "./sfuSession";
 
 // Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
@@ -132,6 +133,9 @@ export class VoiceChannelManager {
   // N.4: pipeline RuCord-шумодава. Владеет raw mic-стримом и AudioContext'ом;
   // localStream выше — это pipeline.stream (для off/browser он же raw).
   private micPipeline: MicPipeline | null = null;
+  // Wave 9: pipeline эффекта камеры (размытие фона). Владеет raw-track'ом;
+  // cameraTrack ниже — это pipeline.track (для effect=none он же raw).
+  private cameraPipeline: CameraPipeline | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
   private screenTrack: MediaStreamTrack | null = null;
   // K.5(c): системный аудио-track screen-share'а. Отдельный sender от mic'а.
@@ -316,8 +320,12 @@ export class VoiceChannelManager {
         this.update({ error: message });
         return false;
       }
-      const track = videoStream.getVideoTracks()[0];
-      if (!track) return false;
+      const rawTrack = videoStream.getVideoTracks()[0];
+      if (!rawTrack) return false;
+      // Wave 9: эффект камеры (размытие фона) — оборачиваем raw-track в
+      // сегментационный pipeline; для effect=none он прозрачный.
+      this.cameraPipeline = await wrapCameraTrack(rawTrack);
+      const track = this.cameraPipeline.track;
       this.cameraTrack = track;
       if (this.localStream) {
         this.localStream.addTrack(track);
@@ -336,6 +344,12 @@ export class VoiceChannelManager {
       this.localStream.removeTrack(track);
     }
     track.stop();
+    // Wave 9: dispose гасит raw-track камеры и цикл сегментации (без него
+    // после track.stop() обработанного трека камера-индикатор остаётся).
+    if (this.cameraPipeline) {
+      this.cameraPipeline.dispose();
+      this.cameraPipeline = null;
+    }
     // Если параллельно идёт screen-share — он держит свой video sender,
     // его не трогаем. Иначе убираем video sender'ы.
     if (!this.screenTrack) {
@@ -396,6 +410,11 @@ export class VoiceChannelManager {
         this.cameraTrack = null;
         if (this.localStream) this.localStream.removeTrack(cam);
         cam.stop();
+        // Wave 9: screen замещает камеру — pipeline эффекта больше не нужен.
+        if (this.cameraPipeline) {
+          this.cameraPipeline.dispose();
+          this.cameraPipeline = null;
+        }
       }
       if (this.localStream) {
         this.localStream.addTrack(track);
@@ -665,6 +684,11 @@ export class VoiceChannelManager {
     if (this.micPipeline) {
       this.micPipeline.dispose();
       this.micPipeline = null;
+    }
+    // Wave 9: аналогично для камеры — dispose гасит raw video-track.
+    if (this.cameraPipeline) {
+      this.cameraPipeline.dispose();
+      this.cameraPipeline = null;
     }
     if (this.localStream) {
       for (const t of this.localStream.getTracks()) t.stop();

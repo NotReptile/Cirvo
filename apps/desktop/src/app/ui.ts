@@ -65,6 +65,7 @@ import {
   getVoiceSettings,
   subscribeVoiceSettings,
   updateVoiceSettings,
+  type CameraEffect,
   type CameraResolution,
   type DenoiserMode,
   type EnumeratedDevices,
@@ -8779,6 +8780,22 @@ function renderSettingsVoiceTab(): string {
         <small class="settings-hint">${t("vs.cam.res.hint")}</small>
       </div>
       <div class="settings-row">
+        <label>${t("vs.cam.effect")}</label>
+        <div class="settings-radio-group">
+          ${([["none", t("vs.cam.effect.none")], ["blur-light", t("vs.cam.effect.blurLight")], ["blur-strong", t("vs.cam.effect.blurStrong")]] as [CameraEffect, string][])
+            .map(
+              ([v, label]) => `
+            <label class="settings-radio">
+              <input type="radio" name="vs-cam-effect" value="${v}" ${s.cameraEffect === v ? "checked" : ""} />
+              <span>${label}</span>
+            </label>
+          `
+            )
+            .join("")}
+        </div>
+        <small class="settings-hint">${t("vs.cam.effect.hint")}</small>
+      </div>
+      <div class="settings-row">
         <button id="vs-test-cam" class="${camTesting ? "danger" : "primary"}">
           ${camTesting ? t("vs.camtest.stop") : t("vs.camtest.start")}
         </button>
@@ -8972,6 +8989,14 @@ function attachSettingsVoiceHandlers(): void {
   rootEl.querySelectorAll<HTMLInputElement>('input[name="vs-res"]').forEach((r) => {
     r.addEventListener("change", () => {
       if (r.checked) updateVoiceSettings({ cameraResolution: r.value as CameraResolution });
+    });
+  });
+
+  // Wave 9: эффект камеры (размытие фона). Применится при следующем
+  // включении камеры — активные треки не пересобираем.
+  rootEl.querySelectorAll<HTMLInputElement>('input[name="vs-cam-effect"]').forEach((r) => {
+    r.addEventListener("change", () => {
+      if (r.checked) updateVoiceSettings({ cameraEffect: r.value as CameraEffect });
     });
   });
 
