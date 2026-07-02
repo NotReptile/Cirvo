@@ -220,6 +220,24 @@ interface Channel {
   archivedAt?: string | null;
   // Wave 8: '#rrggbb' — цвет имени канала в sidebar; пусто = цвет темы.
   nameColor?: string | null;
+  // Wave 9 (форум): kind='thread' — пост форума, поле указывает на
+  // родительский kind='forum' канал. Треды скрыты из sidebar.
+  parentChannelId?: string | null;
+}
+
+// Wave 9: карточка поста в форум-вью (GET /channels/{id}/forum/posts).
+// id — это id тред-канала, открывается обычным selectChannel().
+interface ForumPost {
+  id: string;
+  title: string;
+  createdAt: string;
+  authorId?: string;
+  authorUsername?: string;
+  authorDisplayName?: string;
+  authorAvatarId?: string;
+  preview?: string;
+  messageCount: number;
+  lastActivityAt: string;
 }
 
 // J.5: пользовательская категория каналов. CRUD через `/api/v1/workspaces/{ws}/categories`
@@ -392,7 +410,7 @@ interface FriendItem {
 
 type FriendsTab = "all" | "online" | "pending" | "blocked";
 
-type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | "invites" | "categoryPermissions" | null;
+type ModalKind = "settings" | "members" | "audit" | "search" | "notifications" | "admin" | "channelSettings" | "workspaceRoles" | "welcomeChannel" | "createChannel" | "workspaceSettings" | "userProfile" | "invites" | "categoryPermissions" | "createForumPost" | null;
 
 // I.1: полноэкранная settings-модалка по Discord-pattern. Левый sidebar
 // с табами + контент справа. Tab «profile» = тело старой profile-card
@@ -438,7 +456,7 @@ interface WorkspaceSettingsState {
 // PUT /channels/{id}/permissions с granted=['channel.view'].
 interface CreateChannelState {
   workspaceId: string | null;
-  kind: "text" | "voice";
+  kind: "text" | "voice" | "forum";
   name: string;
   isPrivate: boolean;
   selectedRoles: Set<string>;
@@ -722,6 +740,11 @@ interface AppState {
   // C.5: unread indicators
   unread: Record<string, number>;                 // channelId → count
   selectedChannelLastReadAt: string | null;       // фриз lastReadAt на момент входа — для divider'а
+  // Wave 9: форум. Посты выбранного форум-канала (грузятся в selectChannel)
+  // + state модалки «Новый пост» (title/body/saving/error).
+  forumPosts: ForumPost[];
+  forumPostsLoading: boolean;
+  createForumPost: { channelId: string | null; title: string; body: string; saving: boolean; error: string | null };
   // C.7: поиск сообщений
   search: SearchState;
   // C.8: in-app уведомления
@@ -926,6 +949,9 @@ const state: AppState = {
   restoreScrollBottom: null,
   unread: {},
   selectedChannelLastReadAt: null,
+  forumPosts: [],
+  forumPostsLoading: false,
+  createForumPost: { channelId: null, title: "", body: "", saving: false, error: null },
   search: { query: "", loading: false, hits: [], error: null },
   notifications: [],
   notificationsUnread: 0,
@@ -1329,6 +1355,11 @@ async function selectChannel(id: string): Promise<void> {
     }
     return;
   }
+  // Wave 9: форум — вместо сообщений грузим список постов.
+  if (ch?.kind === "forum") {
+    await loadForumPosts(id);
+    return;
+  }
   // Параллельно: read-receipt (для divider'а) и сами сообщения.
   // lastReadAt фризим ДО mark-as-read, чтобы divider остался виден.
   const [readState, data] = await Promise.all([
@@ -1358,6 +1389,34 @@ async function selectChannel(id: string): Promise<void> {
   const last = state.messages[state.messages.length - 1];
   if (last && last.authorId !== state.me?.id) {
     void markChannelRead(id, last.id);
+  }
+}
+
+// Wave 9: загрузка постов форума. Вызывается из selectChannel и из
+// realtime-обработчиков (новый тред / новое сообщение в треде), когда
+// открыт родительский форум.
+// keepCurrent=true — refresh по realtime-событию: старые карточки остаются
+// видимыми, пока грузится свежий список (без мигания). false (вход в
+// канал) — чистим, чтобы не мелькали посты предыдущего форума.
+async function loadForumPosts(channelId: string, keepCurrent = false): Promise<void> {
+  state.forumPostsLoading = true;
+  if (!keepCurrent) {
+    state.forumPosts = [];
+  }
+  render();
+  try {
+    const data = await httpClient.get<{ items: ForumPost[] }>(`/api/v1/channels/${channelId}/forum/posts`);
+    if (state.selectedChannelId !== channelId) return;
+    state.forumPosts = data.items ?? [];
+  } catch (err) {
+    if (state.selectedChannelId !== channelId) return;
+    state.forumPosts = [];
+    state.status = describeError(err);
+  } finally {
+    if (state.selectedChannelId === channelId) {
+      state.forumPostsLoading = false;
+      render();
+    }
   }
 }
 
@@ -2563,7 +2622,9 @@ function maybeSendTyping(): void {
   const chId = state.selectedChannelId;
   if (!chId) return;
   const ch = state.channels.find((c) => c.id === chId);
-  if (ch && ch.kind !== "text") return; // DM-каналов нет в state.channels — для них ch=undefined, шлём
+  // Wave 9: в тредах typing работает как в тексте. DM-каналов нет в
+  // state.channels — для них ch=undefined, шлём.
+  if (ch && ch.kind !== "text" && ch.kind !== "thread") return;
   const now = Date.now();
   if (now - typingLastSentAt < TYPING_SEND_INTERVAL_MS) return;
   typingLastSentAt = now;
@@ -2776,6 +2837,11 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
     if (ch.workspaceId !== state.selectedWorkspaceId) return;
     if (state.channels.some((c) => c.id === ch.id)) return;
     state.channels = [...state.channels, ch];
+    // Wave 9: новый пост в открытом форуме — перечитываем карточки.
+    if (ch.kind === "thread" && ch.parentChannelId && ch.parentChannelId === state.selectedChannelId) {
+      void loadForumPosts(ch.parentChannelId, /*keepCurrent*/ true);
+      return;
+    }
     render();
     return;
   }
@@ -2834,6 +2900,12 @@ function handleRealtimeEvent(event: RealtimeEvent): void {
   if (event.channelId && event.channelId !== state.selectedChannelId) {
     if (event.event === "message.created") {
       const msg = event.payload as Message;
+      // Wave 9: сообщение в треде, чей родитель-форум сейчас открыт —
+      // обновляем карточки (счётчик/активность/превью).
+      const threadCh = state.channels.find((c) => c.id === event.channelId);
+      if (threadCh?.kind === "thread" && threadCh.parentChannelId === state.selectedChannelId) {
+        void loadForumPosts(threadCh.parentChannelId!, /*keepCurrent*/ true);
+      }
       // Замьюченный канал — не инкрементим unread (Discord-like: канал
       // в списке остаётся серым, без badge'а). Mentions всё равно приходят
       // через notification.created, обрабатываются выше.
@@ -4082,6 +4154,9 @@ function renderChannelsBlock(): string {
   // сворачиваемый блок внизу sidebar'а.
   const archived: Channel[] = [];
   for (const ch of state.channels) {
+    // Wave 9: треды (посты форума) в sidebar не показываются — до них
+    // добираются через форум-вью родительского канала.
+    if (ch.kind === "thread") continue;
     if (ch.archivedAt) {
       archived.push(ch);
       continue;
@@ -4517,7 +4592,9 @@ function renderDMChannelView(dm: DMItem): string {
 function channelPrefix(ch: Channel): string {
   const base = ch.kind === "voice"
     ? icon("channel-voice", { size: 16, className: "channel-icon" })
-    : icon("channel-text", { size: 16, className: "channel-icon" });
+    : ch.kind === "forum"
+      ? icon("channel-forum", { size: 16, className: "channel-icon" })
+      : icon("channel-text", { size: 16, className: "channel-icon" });
   if (!ch.isPrivate) return base;
   // Lock-overlay 10x10 поверх правого нижнего угла base-иконки.
   return `<span class="channel-icon-stack">${base}<span class="channel-icon-lock">${icon("lock", { size: 10 })}</span></span>`;
@@ -4626,9 +4703,69 @@ function setNsfwAck(channelId: string): void {
   }
 }
 
+// Wave 9: форум-вью — карточки постов (title, автор, превью, счётчик,
+// последняя активность), сортировка по активности приходит с сервера.
+// Клик по карточке открывает тред обычным selectChannel().
+function renderForumView(channel: Channel): string {
+  const isArchived = !!channel.archivedAt;
+  const cards = state.forumPosts
+    .map((p) => {
+      const authorName = p.authorDisplayName || p.authorUsername || "";
+      const avatar = renderAvatar({
+        avatarMediaId: p.authorAvatarId || undefined,
+        fallbackText: authorName || p.title,
+        sizePx: 28
+      });
+      const count = p.messageCount > 99 ? "99+" : String(p.messageCount);
+      return `
+        <div class="forum-post-card" data-ch-open="${p.id}">
+          <div class="forum-post-title">${escapeHtml(p.title)}</div>
+          ${p.preview ? `<div class="forum-post-preview">${escapeHtml(p.preview)}</div>` : ""}
+          <div class="forum-post-meta">
+            ${avatar}
+            ${authorName ? `<span class="forum-post-author">${escapeHtml(authorName)}</span>` : ""}
+            <span class="forum-post-count">${icon("reply", { size: 13 })} ${count}</span>
+            <span class="forum-post-activity">${escapeHtml(formatTimeSmart(p.lastActivityAt))}</span>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+  // Плейсхолдер только когда карточек нет: refresh с keepCurrent оставляет
+  // старые карточки на месте до прихода свежего списка.
+  const emptyBlock = state.forumPosts.length > 0
+    ? ""
+    : state.forumPostsLoading
+      ? `<div class="forum-empty">${t("forum.loading")}</div>`
+      : `<div class="forum-empty">
+           <div class="forum-empty-title">${t("forum.empty.title")}</div>
+           <div class="forum-empty-sub">${t("forum.empty.sub")}</div>
+         </div>`;
+  return `
+    <header class="channel-header">
+      <div class="channel-header-title">
+        <h2>${channelPrefix(channel)}<span class="channel-header-name">${escapeHtml(channel.name)}</span></h2>
+        ${isArchived ? `<span class="channel-archived-badge">${t("chat.header.archived")}</span>` : ""}
+        ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
+      </div>
+      <div class="channel-header-actions">
+        ${isArchived ? "" : `<button id="forum-new-post" class="primary forum-new-post-btn">${icon("plus", { size: 14 })} ${t("forum.newPost")}</button>`}
+      </div>
+    </header>
+    <div class="forum-post-list">
+      ${cards}
+      ${emptyBlock}
+    </div>
+  `;
+}
+
 function renderChannelView(channel: Channel): string {
   if (channel.kind === "voice") {
     return renderVoiceChannelView(channel);
+  }
+  // Wave 9: форум — список постов вместо message-стрима.
+  if (channel.kind === "forum") {
+    return renderForumView(channel);
   }
   // J.3: NSFW gate — показываем overlay до явного подтверждения.
   // DM-каналы исключаем (там нет per-channel настройки).
@@ -4652,9 +4789,19 @@ function renderChannelView(channel: Channel): string {
   }
   // Wave 8: архивный канал — read-only (бэк отдаст 403 на POST в любом случае).
   const isArchived = !!channel.archivedAt;
-  const canSend = channel.kind === "text" && !isArchived;
+  // Wave 9: в тредах (постах форума) композер работает как в тексте.
+  const canSend = (channel.kind === "text" || channel.kind === "thread") && !isArchived;
   const ws = state.workspaces.find((w) => w.id === channel.workspaceId);
   const canModerate = !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
+  // Wave 9: breadcrumb для треда — стрелка назад к родительскому форуму.
+  const parentForum = channel.kind === "thread" && channel.parentChannelId
+    ? state.channels.find((c) => c.id === channel.parentChannelId)
+    : undefined;
+  const breadcrumb = parentForum
+    ? `<button class="ghost thread-back" data-ch-open="${parentForum.id}" title="${t("forum.back")}" aria-label="${t("forum.back")}">${icon("reply", { size: 16 })}</button>
+       <span class="thread-parent" data-ch-open="${parentForum.id}">${channelPrefix(parentForum)} ${escapeHtml(parentForum.name)}</span>
+       <span class="channel-header-sep">›</span>`
+    : "";
   // J.1 + J.4: тема канала переехала на ту же строку, что и имя
   // (`# название · тема` с разделителем-точкой); ⚙ настроек канала
   // из header удалён — теперь на самом канале в sidebar при hover (J.2).
@@ -4662,6 +4809,7 @@ function renderChannelView(channel: Channel): string {
   return `
     <header class="channel-header">
       <div class="channel-header-title">
+        ${breadcrumb}
         <h2>${channelPrefix(channel)}<span class="channel-header-name">${escapeHtml(channel.name)}</span></h2>
         ${isArchived ? `<span class="channel-archived-badge">${t("chat.header.archived")}</span>` : ""}
         ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
@@ -5688,6 +5836,7 @@ function renderModal(): string {
   if (state.modal === "workspaceRoles") return renderWorkspaceRolesModal();
   if (state.modal === "welcomeChannel") return renderWelcomeChannelModal();
   if (state.modal === "createChannel") return renderCreateChannelModal();
+  if (state.modal === "createForumPost") return renderCreateForumPostModal();
   if (state.modal === "workspaceSettings") return renderWorkspaceSettingsModal();
   if (state.modal === "userProfile") return renderUserProfilePopup();
   if (state.modal === "invites") return renderInvitesModal();
@@ -6570,7 +6719,7 @@ function renderCreateChannelModal(): string {
   const cc = state.createChannel;
   const ws = state.workspaces.find((w) => w.id === cc.workspaceId);
   if (!ws) return "";
-  const kindLabel = cc.kind === "voice" ? "голосовой" : "текстовый";
+  const kindLabel = cc.kind === "voice" ? "голосовой" : cc.kind === "forum" ? "форум" : "текстовый";
   const rolesBlock = !cc.isPrivate
     ? `<div class="modal-hint">Канал виден всем участникам воркспейса.</div>`
     : cc.rolesLoading
@@ -6621,6 +6770,10 @@ function renderCreateChannelModal(): string {
                 <input type="radio" name="cc-kind" value="voice" ${cc.kind === "voice" ? "checked" : ""} />
                 <span>${icon("channel-voice", { size: 14 })} Голосовой</span>
               </label>
+              <label class="settings-radio">
+                <input type="radio" name="cc-kind" value="forum" ${cc.kind === "forum" ? "checked" : ""} />
+                <span>${icon("channel-forum", { size: 14 })} Форум</span>
+              </label>
             </div>
           </div>
           <label class="cc-field">
@@ -6628,14 +6781,16 @@ function renderCreateChannelModal(): string {
             <input id="create-channel-name" type="text" autocomplete="off"
                    maxlength="64" placeholder="новый-канал" value="${escapeHtml(cc.name)}" />
           </label>
-          <label class="cc-field cc-field-toggle">
+          ${cc.kind === "forum"
+            ? `<div class="modal-hint">Форум — доска постов: участники создают темы и обсуждают их в тредах. Приватные форумы пока не поддерживаются.</div>`
+            : `<label class="cc-field cc-field-toggle">
             <input id="create-channel-private" type="checkbox" ${cc.isPrivate ? "checked" : ""} />
             <span class="cc-field-toggle-body">
               <span class="cc-field-label">🔒 Приватный канал</span>
               <span class="cc-field-hint">Видят только выбранные роли + админы. Можно сменить позже в настройках канала.</span>
             </span>
           </label>
-          <div class="cc-roles">${rolesBlock}</div>
+          <div class="cc-roles">${rolesBlock}</div>`}
           ${errBlock}
         </div>
         <div class="modal-footer">
@@ -6669,12 +6824,19 @@ function attachCreateChannelHandlers(): void {
     render();
   });
 
-  // J.5: переключатель типа канала. Перерендер не нужен — заголовок модалки
-  // обновится при следующем render (например после submit), здесь просто
-  // пишем в state.
+  // J.5: переключатель типа канала. Для forum перерендер НУЖЕН — блок
+  // приватности скрывается (Wave 9: приватные форумы не поддерживаются),
+  // для text/voice достаточно записи в state.
   rootEl.querySelectorAll<HTMLInputElement>('input[name="cc-kind"]').forEach((r) => {
     r.addEventListener("change", () => {
-      if (r.checked) state.createChannel.kind = r.value as "text" | "voice";
+      if (!r.checked) return;
+      const prev = state.createChannel.kind;
+      state.createChannel.kind = r.value as "text" | "voice" | "forum";
+      if (r.value === "forum") {
+        state.createChannel.isPrivate = false;
+        state.createChannel.selectedRoles = new Set();
+      }
+      if (prev === "forum" || r.value === "forum") render();
     });
   });
 
@@ -6740,6 +6902,100 @@ async function submitCreateChannel(): Promise<void> {
   } catch (err) {
     cc.saving = false;
     cc.error = describeError(err);
+    render();
+  }
+}
+
+// Wave 9: модалка «Новый пост» форума. Двухшаговый submit: POST
+// /forum/posts {title} создаёт тред-канал, затем первое сообщение идёт
+// обычным POST /channels/{threadId}/messages (переиспользует mentions/
+// notifications/realtime). Если второй шаг упал — пост уже существует,
+// открываем его: юзер допишет руками, ничего не теряется.
+function renderCreateForumPostModal(): string {
+  const fp = state.createForumPost;
+  const ch = state.channels.find((c) => c.id === fp.channelId);
+  if (!ch) return "";
+  const errBlock = fp.error ? `<div class="modal-error">${escapeHtml(fp.error)}</div>` : "";
+  return `
+    <div class="modal-backdrop" data-modal-close>
+      <div class="modal cc-modal forum-post-modal" role="dialog">
+        <div class="modal-header">
+          <h3>${t("forum.newPost")} · ${escapeHtml(ch.name)}</h3>
+          <button class="ghost modal-close-btn" data-modal-close>✕</button>
+        </div>
+        <div class="modal-body">
+          <label class="cc-field">
+            <span class="cc-field-label">${t("forum.post.title")}</span>
+            <input id="forum-post-title" type="text" autocomplete="off"
+                   maxlength="96" placeholder="${t("forum.post.title.ph")}" value="${escapeHtml(fp.title)}" />
+          </label>
+          <label class="cc-field">
+            <span class="cc-field-label">${t("forum.post.body")}</span>
+            <textarea id="forum-post-body" rows="5" maxlength="4000"
+                      placeholder="${t("forum.post.body.ph")}">${escapeHtml(fp.body)}</textarea>
+          </label>
+          ${errBlock}
+        </div>
+        <div class="modal-footer">
+          <button class="ghost" data-modal-close>${t("common.cancel")}</button>
+          <button id="forum-post-submit" class="primary" ${fp.saving ? "disabled" : ""}>
+            ${fp.saving ? t("forum.post.saving") : t("forum.post.submit")}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function attachCreateForumPostHandlers(): void {
+  if (state.modal !== "createForumPost") return;
+  const titleInput = rootEl.querySelector<HTMLInputElement>("#forum-post-title");
+  titleInput?.addEventListener("input", () => {
+    state.createForumPost.title = titleInput.value;
+  });
+  const bodyInput = rootEl.querySelector<HTMLTextAreaElement>("#forum-post-body");
+  bodyInput?.addEventListener("input", () => {
+    state.createForumPost.body = bodyInput.value;
+  });
+  rootEl.querySelector<HTMLButtonElement>("#forum-post-submit")?.addEventListener("click", () => {
+    void submitCreateForumPost();
+  });
+}
+
+async function submitCreateForumPost(): Promise<void> {
+  const fp = state.createForumPost;
+  if (!fp.channelId || fp.saving) return;
+  const title = fp.title.trim();
+  const body = fp.body.trim();
+  if (!title) {
+    fp.error = t("forum.post.err.title");
+    render();
+    return;
+  }
+  if (!body) {
+    fp.error = t("forum.post.err.body");
+    render();
+    return;
+  }
+  fp.saving = true;
+  fp.error = null;
+  render();
+  try {
+    const thread = await httpClient.post<Channel>(`/api/v1/channels/${fp.channelId}/forum/posts`, { title });
+    if (!state.channels.some((c) => c.id === thread.id)) {
+      state.channels = [...state.channels, thread];
+    }
+    try {
+      await httpClient.post(`/api/v1/channels/${thread.id}/messages`, { body });
+    } catch (err) {
+      state.status = describeError(err);
+    }
+    state.modal = null;
+    fp.saving = false;
+    await selectChannel(thread.id);
+  } catch (err) {
+    fp.saving = false;
+    fp.error = describeError(err);
     render();
   }
 }
@@ -9983,6 +10239,26 @@ function attachShellHandlers(): void {
     if (!ch) return;
     togglePinsPopup(ch);
   });
+
+  // Wave 9: форум. Открытие поста/родителя (карточка, breadcrumb) + модалка
+  // «Новый пост».
+  rootEl.querySelectorAll<HTMLElement>("[data-ch-open]").forEach((el) => {
+    el.addEventListener("click", () => {
+      const id = el.dataset.chOpen;
+      if (id) void selectChannel(id);
+    });
+  });
+  rootEl.querySelector<HTMLButtonElement>("#forum-new-post")?.addEventListener("click", () => {
+    const ch = state.selectedChannelId;
+    if (!ch) return;
+    state.createForumPost = { channelId: ch, title: "", body: "", saving: false, error: null };
+    state.modal = "createForumPost";
+    render();
+    requestAnimationFrame(() => {
+      rootEl.querySelector<HTMLInputElement>("#forum-post-title")?.focus();
+    });
+  });
+  attachCreateForumPostHandlers();
 
   // #4a: кнопка звонка в DM-хедере. Тот же placeCall, что из профиля/member-list.
   rootEl.querySelector<HTMLButtonElement>("#dm-call")?.addEventListener("click", async (ev) => {

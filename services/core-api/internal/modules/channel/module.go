@@ -57,6 +57,9 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	// Wave 5: точечные права конкретных участников в канале.
 	router.Protected("GET /api/v1/channels/{channelId}/user-permissions", m.handleGetUserPermissions)
 	router.Protected("PUT /api/v1/channels/{channelId}/user-permissions", m.handleUpdateUserPermissions)
+	// Wave 9: форум — посты (треды) внутри kind='forum' канала. См. forum.go.
+	router.Protected("GET /api/v1/channels/{channelId}/forum/posts", m.handleForumPostList)
+	router.Protected("POST /api/v1/channels/{channelId}/forum/posts", m.handleForumPostCreate)
 }
 
 // publish — фан-аут в workspace, channelID опционально (для delete/update
@@ -93,6 +96,9 @@ type channelView struct {
 	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
 	// Wave 8: hex-цвет имени канала в sidebar, "" = цвет темы.
 	NameColor string `json:"nameColor,omitempty"`
+	// Wave 9 (форум): для kind='thread' — id родительского форума.
+	// Клиент по нему строит breadcrumb и прячет треды из sidebar.
+	ParentChannelID *string `json:"parentChannelId,omitempty"`
 }
 
 type createRequest struct {
@@ -115,11 +121,14 @@ type memberView struct {
 	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
 }
 
+// Wave 9: 'forum' создаётся явно; 'thread' (пост форума) — ТОЛЬКО через
+// POST /channels/{id}/forum/posts (forum.go), напрямую его создать нельзя.
 var allowedKinds = map[string]struct{}{
 	"text":   {},
 	"voice":  {},
 	"media":  {},
 	"system": {},
+	"forum":  {},
 }
 
 func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +150,7 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	//     соответствующего channel_role_overrides. base_action_mask на приватные
 	//     каналы НЕ распространяется (H.6).
 	rows, err := m.db.Query(r.Context(),
-		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id, c.archived_at, coalesce(c.name_color, '')
+		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id, c.archived_at, coalesce(c.name_color, ''), c.parent_channel_id
 		 from channels c
 		 where c.workspace_id = $1
 		   and (
@@ -172,8 +181,8 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var v channelView
 		var id, wsID uuid.UUID
-		var catUUID *uuid.UUID
-		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &catUUID, &v.ArchivedAt, &v.NameColor); err != nil {
+		var catUUID, parentUUID *uuid.UUID
+		if err := rows.Scan(&id, &wsID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &catUUID, &v.ArchivedAt, &v.NameColor, &parentUUID); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
@@ -182,6 +191,10 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		if catUUID != nil {
 			s := catUUID.String()
 			v.CategoryID = &s
+		}
+		if parentUUID != nil {
+			s := parentUUID.String()
+			v.ParentChannelID = &s
 		}
 		items = append(items, v)
 	}
@@ -221,6 +234,12 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Name == "" || len(req.Name) > 64 {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "name must be 1-64 chars")
+		return
+	}
+	// Wave 9: приватные форумы отложены — треды создаются is_private=false
+	// и наследование членства/ролей на них не реализовано. Пока запрет.
+	if req.Kind == "forum" && req.IsPrivate {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "private forums are not supported yet")
 		return
 	}
 
@@ -480,15 +499,19 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	// уехала одна и та же канонизированная версия (для clients без race'а
 	// между двумя одновременными PATCH'ами).
 	var v channelView
-	var reloadCat *uuid.UUID
+	var reloadCat, reloadParent *uuid.UUID
 	err = m.db.QueryRow(r.Context(),
-		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, '')
+		`select id, workspace_id, kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, ''), parent_channel_id
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &reloadCat, &v.ArchivedAt, &v.NameColor)
+	).Scan(&v.ID, &v.WorkspaceID, &v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &reloadCat, &v.ArchivedAt, &v.NameColor, &reloadParent)
 	if reloadCat != nil {
 		s := reloadCat.String()
 		v.CategoryID = &s
+	}
+	if reloadParent != nil {
+		s := reloadParent.String()
+		v.ParentChannelID = &s
 	}
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload channel")
@@ -594,15 +617,19 @@ func (m *Module) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v channelView
-	var getCat *uuid.UUID
+	var getCat, getParent *uuid.UUID
 	err := m.db.QueryRow(r.Context(),
-		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, '')
+		`select kind, name, coalesce(topic, ''), is_private, position, created_at, slow_mode_seconds, is_nsfw, category_id, archived_at, coalesce(name_color, ''), parent_channel_id
 		 from channels where id = $1`,
 		channelID,
-	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &getCat, &v.ArchivedAt, &v.NameColor)
+	).Scan(&v.Kind, &v.Name, &v.Topic, &v.IsPrivate, &v.Position, &v.CreatedAt, &v.SlowModeSeconds, &v.IsNsfw, &getCat, &v.ArchivedAt, &v.NameColor, &getParent)
 	if getCat != nil {
 		s := getCat.String()
 		v.CategoryID = &s
+	}
+	if getParent != nil {
+		s := getParent.String()
+		v.ParentChannelID = &s
 	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

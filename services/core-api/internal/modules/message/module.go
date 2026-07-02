@@ -363,6 +363,13 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Wave 9: форум — контейнер постов, сообщения живут только в тредах.
+	// Прямой POST в форум-канал — ошибка клиента.
+	if scope.Kind == "forum" {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "post messages inside a forum post, not the forum itself")
+		return
+	}
+
 	// J.3: slow-mode. Тянем только для text-каналов (DM не имеют slow-mode).
 	// Модераторы (MessageModerate) обходят — иначе они не смогут оперативно
 	// модерировать флуд в режиме slow-mode. Race между двумя сессиями

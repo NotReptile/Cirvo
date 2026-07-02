@@ -678,6 +678,90 @@ input[type="color"] {
   cursor: pointer;
 }
 
+/* Wave 9: форум — доска постов. Карточки в один столбец, hover-подсветка,
+   мета-строка (автор + счётчик + активность) в mute-цвете. */
+.forum-post-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.forum-post-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.forum-post-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-elev-2);
+}
+.forum-post-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 4px;
+}
+.forum-post-preview {
+  font-size: 13px;
+  color: var(--text-mute);
+  margin-bottom: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.forum-post-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.forum-post-author { color: var(--text); }
+.forum-post-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.forum-post-activity { font-variant-numeric: tabular-nums; }
+.forum-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-mute);
+  padding: 40px 0;
+}
+.forum-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.forum-new-post-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 6px 12px;
+}
+/* Wave 9: breadcrumb в шапке треда — стрелка назад + имя форума. */
+.thread-back { flex: none; padding: 4px 6px; }
+.thread-parent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-mute);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.thread-parent:hover { color: var(--text); }
+
 /* Popup управления громкостью remote-участника (ПКМ на чужом voice-tile). */
 .voice-volume-menu {
   position: fixed;
