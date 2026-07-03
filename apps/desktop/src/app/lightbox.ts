@@ -45,7 +45,7 @@ export function openLightbox(opts: LightboxOpts): void {
             : `<div class="lb-spinner"></div>`}
         </div>
         <figcaption class="lb-caption">
-          <span class="lb-filename" title="${escapeAttr(opts.filename)}">${escapeText(opts.filename)}</span>
+          <span class="lb-filename" data-tooltip="${escapeAttr(opts.filename)}">${escapeText(opts.filename)}</span>
           <button class="lb-download" disabled>Скачать</button>
           <button class="lb-close" aria-label="Закрыть">✕</button>
         </figcaption>

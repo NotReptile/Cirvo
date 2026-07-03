@@ -27,6 +27,11 @@ function openPopup(wrapper: HTMLDivElement): void {
     return;
   }
   closeActive();
+  // Drop-up: селект у нижнего края экрана (например качество демонстрации
+  // в ряду войс-кнопок) откроет popup за вьюпорт — разворачиваем вверх.
+  // 290 ≈ max-height popup'а + отступ.
+  const rect = wrapper.getBoundingClientRect();
+  wrapper.classList.toggle("drop-up", rect.bottom + 290 > window.innerHeight);
   wrapper.classList.add("listbox-open");
   activeWrapper = wrapper;
   outsideListener = (e: MouseEvent) => {
@@ -71,6 +76,10 @@ function wrap(select: HTMLSelectElement): void {
 
   const wrapper = document.createElement("div");
   wrapper.className = "listbox-wrapper";
+  // Компакт-вариант для селекта качества в ряду войс-кнопок.
+  if (select.classList.contains("screen-quality-select")) {
+    wrapper.classList.add("listbox-compact");
+  }
   wrapper.dataset.value = select.value;
 
   const trigger = document.createElement("button");
@@ -110,15 +119,17 @@ function wrap(select: HTMLSelectElement): void {
   });
 }
 
-// Opt-in селекторы. screen-quality-select исключён — он ghost-стиля
-// в voice-strip'е, custom wrapper там визуально лишний. Native `<select>`
-// без какого-то из этих классов остаётся как есть.
+// Opt-in селекторы. Native `<select>` без какого-то из этих классов
+// остаётся как есть.
 const TARGET_SELECTOR = [
   "select.settings-select",  // voice/appearance/audit-filter/channel-settings
   "select.listbox",          // явный opt-in
   "select.cc-field-select",  // ws-settings, welcome-channel
   "select.member-role",      // member-row role-select
-  "select.perm-select"       // channel-permissions матрица
+  "select.perm-select",      // channel-permissions матрица
+  // качество демонстрации в войс-кнопках: компакт-вид (.listbox-compact)
+  // + drop-up, т.к. ряд кнопок у нижнего края экрана
+  "select.screen-quality-select"
 ].join(", ");
 
 export function polishListboxes(root: ParentNode = document): void {

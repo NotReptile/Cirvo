@@ -107,20 +107,120 @@ input[type="time"] {
   background: transparent;
   border: none;
 }
-input[type="range"] { width: 100%; padding: 0; background: transparent; border: none; }
 input[type="date"], input[type="time"] {
   background: var(--bg);
   border: 1px solid var(--border);
   padding: 6px 10px;
 }
-input[type="color"] {
-  width: 36px;
-  height: 28px;
-  padding: 2px;
+
+/* Кастомный чекбокс: нативный квадратик WebView2 выбивается из темы. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 4px;
   background: var(--bg);
-  border: 1px solid var(--border);
   cursor: pointer;
+  position: relative;
+  transition: background 0.12s, border-color 0.12s;
 }
+input[type="checkbox"]:hover { border-color: var(--text-mute); }
+input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+input[type="checkbox"]:checked::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1.5px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+input[type="checkbox"]:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Тумблер (Discord-like) для «настроечных» рядов: label слева — тумблер
+   справа. Разметка та же (input type=checkbox), вид задаёт контекст. */
+.settings-check input[type="checkbox"],
+.cc-field-toggle input[type="checkbox"],
+.ssp-audio-toggle input[type="checkbox"] {
+  width: 40px;
+  height: 22px;
+  border: none;
+  border-radius: 11px;
+  background: var(--bg-elev-2);
+}
+.settings-check input[type="checkbox"]::before,
+.cc-field-toggle input[type="checkbox"]::before,
+.ssp-audio-toggle input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  transform: none;
+  transition: transform 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.settings-check input[type="checkbox"]:checked,
+.cc-field-toggle input[type="checkbox"]:checked,
+.ssp-audio-toggle input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.settings-check input[type="checkbox"]:checked::before,
+.cc-field-toggle input[type="checkbox"]:checked::before,
+.ssp-audio-toggle input[type="checkbox"]:checked::before { transform: translateX(18px); }
+
+/* Слайдер: трек с заливкой прогресса (--val выставляет polishSliders в ui.ts). */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 8px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--val, 50%),
+    var(--bg-elev-2) var(--val, 50%),
+    var(--bg-elev-2) 100%
+  );
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+input[type="range"]:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Color-инпут: круглый свотч. Пикер остаётся системным — это осознанно. */
+input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+input[type="color"]::-webkit-color-swatch { border: none; border-radius: 50%; }
+input[type="color"]:hover { border-color: var(--text-mute); }
+input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .auth-screen {
   display: grid;
@@ -667,15 +767,6 @@ input[type="color"] {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-.cs-color-row input[type="color"] {
-  width: 48px;
-  height: 32px;
-  padding: 2px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-elev-2);
-  cursor: pointer;
 }
 
 /* Wave 9: форум — доска постов. Карточки в один столбец, hover-подсветка,
@@ -1520,8 +1611,8 @@ input[type="color"] {
 .call-bar-actions { display: flex; gap: 6px; align-items: center; }
 
 .call-icon-btn {
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: none;
   background: rgba(255,255,255,0.08);
@@ -1531,9 +1622,16 @@ input[type="color"] {
   justify-content: center;
   cursor: pointer;
   padding: 0;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.06s ease;
 }
-.call-icon-btn:hover:not([disabled]) { background: rgba(255,255,255,0.14); }
+.call-icon-btn:hover:not([disabled]) { background: rgba(255,255,255,0.16); }
+.call-icon-btn:active:not([disabled]) { transform: scale(0.94); }
+/* Компактные контексты: voice-strip и call-bar в узком сайдбаре. */
+.voice-strip-actions .call-icon-btn,
+.call-bar-actions .call-icon-btn {
+  width: 36px;
+  height: 36px;
+}
 .call-icon-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 .call-icon-btn.danger { background: rgba(240, 71, 71, 0.18); color: #f04747; }
 .call-icon-btn.danger:hover:not([disabled]) { background: rgba(240, 71, 71, 0.3); }
@@ -1778,6 +1876,23 @@ input[type="color"] {
   cursor: pointer;
   transition: box-shadow 80ms linear, border-color 80ms linear;
 }
+/* Заглушка плитки без видео: аватар по центру на мягком градиенте.
+   Скрывается классом has-video (renderTile по cameraOn/screenSharing). */
+.voice-tile-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 50% 42%, #232730 0%, #181a1f 75%);
+}
+.voice-tile.has-video .voice-tile-placeholder { display: none; }
+.voice-tile-placeholder .avatar-pic {
+  transition: box-shadow 80ms linear;
+}
+.voice-tile.speaking .voice-tile-placeholder .avatar-pic {
+  box-shadow: 0 0 0 3px rgba(67, 181, 129, 0.9);
+}
 .voice-tile.self { border-color: rgba(67, 181, 129, 0.5); }
 .voice-tile.speaking,
 .call-video-tile.speaking {
@@ -1823,9 +1938,16 @@ input[type="color"] {
 .voice-name { flex: 1; }
 .voice-room-actions {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+/* Разделитель между группой контролов и hangup-кнопкой. */
+.voice-actions-sep {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+  flex-shrink: 0;
 }
 .voice-room-actions .error {
   color: #f04747;
@@ -2948,16 +3070,6 @@ input[type="color"] {
   gap: 10px;
   margin-top: 10px;
 }
-.profile-style-section input[type="color"] {
-  width: 36px;
-  height: 26px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: none;
-  cursor: pointer;
-}
-.profile-style-section input[type="color"]:disabled { opacity: 0.4; cursor: default; }
 .profile-style-label {
   font-size: 13px;
   color: var(--text);
@@ -3262,7 +3374,6 @@ input[type="color"] {
 .role-code-hint { color: var(--text-mute); font-size: 12px; font-family: monospace; }
 .roles-detail-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
 .role-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-mute); }
-.role-field input[type="color"] { width: 36px; height: 28px; border: 0; padding: 0; background: transparent; cursor: pointer; }
 .role-field input[type="number"] { width: 72px; padding: 4px 6px; }
 .role-field-check { gap: 8px; }
 .roles-detail-section { display: flex; flex-direction: column; gap: 8px; }
@@ -4350,6 +4461,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   font-size: 13px;
   outline: none;
 }
+.settings-search:focus { border-color: var(--accent); }
 .settings-search:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -4372,6 +4484,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   flex-direction: column;
   padding: 4px;
 }
+/* display:flex выше перебивает UA-правило [hidden]{display:none} — без
+   этого оверрайда пустая выпадашка висела «полоской» под поиском всегда. */
+.settings-search-results[hidden] { display: none; }
 .settings-search-item {
   background: transparent;
   border: none;
@@ -4439,7 +4554,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border: none;
   color: var(--text-mute);
   padding: 7px 10px;
-  border-radius: 4px;
+  border-radius: 6px;
   font-size: 14px;
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
@@ -4513,12 +4628,22 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   color: var(--text);
 }
 
+/* Скролл-контейнер на всю ширину колонки (скроллбар у края окна),
+   max-width — на внутренней обёртке. Раньше max-width стоял здесь и
+   скроллбар «висел» посреди экрана рядом со скроллом сайдбара. */
 .settings-content-body {
   flex: 1;
   overflow-y: auto;
   padding: 24px 32px 40px;
+}
+.settings-content-inner {
   max-width: 740px;
-  width: 100%;
+}
+
+@media (max-width: 980px) {
+  .settings-modal { grid-template-columns: 208px 1fr; }
+  .settings-content-header { padding: 16px 20px 10px; }
+  .settings-content-body { padding: 16px 20px 32px; }
 }
 
 .settings-stub {
@@ -5345,12 +5470,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   cursor: pointer;
   user-select: none;
 }
-.ssp-audio-toggle input[type="checkbox"] {
-  accent-color: var(--accent);
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-}
 /* Pinned messages: popup в channel-header + badge на сообщении +
    подсветка при jump-to. Popup абсолютно позиционируется под header'ом. */
 .channel-header { position: relative; }
@@ -5583,6 +5702,20 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   animation: rucord-tooltip-in 0.12s ease-out;
 }
 .listbox-wrapper.listbox-open .listbox-popup { display: block; }
+/* Drop-up: у нижнего края экрана popup разворачивается вверх (openPopup
+   вешает класс по месту в вьюпорте). */
+.listbox-wrapper.drop-up .listbox-popup {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+/* Компакт-вариант: селект качества демонстрации в ряду войс-кнопок. */
+.listbox-wrapper.listbox-compact { min-width: 96px; }
+.listbox-wrapper.listbox-compact .listbox-trigger {
+  padding: 5px 9px;
+  font-size: 12px;
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
 .listbox-list { list-style: none; padding: 0; margin: 0; }
 .listbox-option {
   padding: 7px 10px;

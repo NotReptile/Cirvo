@@ -178,7 +178,7 @@ function showPicker(sources: ScreenSource[], audioAvailable: boolean): Promise<P
               <div class="ssp-thumb">
                 <img src="data:image/jpeg;base64,${s.thumbnail}" alt="" />
               </div>
-              <div class="ssp-name" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
+              <div class="ssp-name" data-tooltip="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
             </button>
           `
         )

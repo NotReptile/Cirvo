@@ -43,7 +43,7 @@ import {
   setStatusChangeListener,
   type GlobalStatus
 } from "./tauriHotkeys";
-import { installTooltips } from "./tooltips";
+import { installTooltips, hideTooltip } from "./tooltips";
 import { polishListboxes } from "./listbox";
 import {
   type Locale,
@@ -1186,6 +1186,7 @@ export function renderApp(
 
   installGlobalKeyboardShortcuts();
   installTooltips();
+  installNativeGuards();
   realtime.subscribe(handleRealtimeEvent);
   // Wave 0: индикатор соединения + resync после восстановления WS.
   // Пока сокет лежал, message.created/notification.* не доезжали — после
@@ -3220,6 +3221,8 @@ function restoreImageSlots(snap: Map<string, string>): void {
 
 function render(): void {
   armStatusAutoClear();
+  // Пере-рендер уносит hover-элемент из DOM — открытый тултип залипал бы.
+  hideTooltip();
   if (!httpClient.getTokens()) {
     renderAuth();
     return;
@@ -3259,7 +3262,7 @@ function renderAuth(): void {
             <input name="email" type="email" autocomplete="email" />
           </label>
           <label data-only="register">Имя пользователя
-            <input name="username" minlength="3" maxlength="32" title="строчные a-z, 0-9, нижнее подчёркивание; 3-32 символа" placeholder="username" />
+            <input name="username" minlength="3" maxlength="32" data-tooltip="строчные a-z, 0-9, нижнее подчёркивание; 3-32 символа" placeholder="username" />
           </label>
           <label data-only="register">Отображаемое имя
             <input name="displayName" />
@@ -3279,6 +3282,7 @@ function renderAuth(): void {
       </div>
     </div>
   `;
+  polishNativeControls(rootEl);
   const switchBtn = rootEl.querySelector<HTMLButtonElement>(".auth-switch-server");
   if (switchBtn) {
     switchBtn.addEventListener("click", async () => {
@@ -3376,7 +3380,7 @@ function renderShell(): void {
     ${me ? renderUpdateBanner() : ""}
     <div class="shell${showMembers ? " with-members" : ""}">
       <aside class="ws-rail">
-        <button id="ws-rail-dm" class="ws-rail-icon ws-rail-home${dmMode ? " active" : ""}" title="Личные сообщения" aria-label="Личные сообщения">
+        <button id="ws-rail-dm" class="ws-rail-icon ws-rail-home${dmMode ? " active" : ""}" data-tooltip="Личные сообщения" aria-label="Личные сообщения">
           ${icon("users")}
           ${dmBadge}
         </button>
@@ -3386,15 +3390,15 @@ function renderShell(): void {
             const active = !dmMode && ws.id === state.selectedWorkspaceId ? " active" : "";
             const mediaAttr = ws.avatarMediaId ? ` data-avatar-media="${escapeHtml(ws.avatarMediaId)}"` : "";
             return `
-          <button class="ws-rail-icon${active}" data-ws="${ws.id}"${mediaAttr} title="${escapeHtml(ws.name)}" aria-label="${escapeHtml(ws.name)}">
+          <button class="ws-rail-icon${active}" data-ws="${ws.id}"${mediaAttr} data-tooltip="${escapeHtml(ws.name)}" aria-label="${escapeHtml(ws.name)}">
             <span class="ws-rail-letter">${escapeHtml(ws.name.charAt(0).toUpperCase())}</span>
           </button>
         `;
           })
           .join("")}
         <div class="ws-rail-spacer"></div>
-        <button id="ws-rail-create" class="ws-rail-icon ws-rail-add" title="Создать воркспейс" aria-label="Создать воркспейс">+</button>
-        <button id="ws-rail-invite" class="ws-rail-icon ws-rail-add" title="Принять инвайт" aria-label="Принять инвайт">↵</button>
+        <button id="ws-rail-create" class="ws-rail-icon ws-rail-add" data-tooltip="Создать воркспейс" aria-label="Создать воркспейс">+</button>
+        <button id="ws-rail-invite" class="ws-rail-icon ws-rail-add" data-tooltip="Принять инвайт" aria-label="Принять инвайт">↵</button>
       </aside>
       <aside class="ch-panel">
         <header class="ch-panel-header">
@@ -3415,7 +3419,7 @@ function renderShell(): void {
           ${renderVoiceStrip()}
         </div>
         <footer class="user-strip">
-          <button id="open-status" class="user user-btn" title="Изменить статус">
+          <button id="open-status" class="user user-btn" data-tooltip="Изменить статус">
             <span class="user-strip-avatar-wrap">
               ${renderAvatar({
                 avatarMediaId: me?.avatarMediaId,
@@ -3431,8 +3435,8 @@ function renderShell(): void {
           </button>
           <div class="user-strip-actions">
             ${renderBellButton()}
-            ${me?.isRoot ? `<button id="open-admin" class="ghost" title="Админ-панель" aria-label="Админ-панель">${icon("shield")}</button>` : ""}
-            <button id="open-profile" class="ghost" title="Настройки" aria-label="Настройки">${icon("settings")}</button>
+            ${me?.isRoot ? `<button id="open-admin" class="ghost" data-tooltip="Админ-панель" aria-label="Админ-панель">${icon("shield")}</button>` : ""}
+            <button id="open-profile" class="ghost" data-tooltip="Настройки" aria-label="Настройки">${icon("settings")}</button>
           </div>
         </footer>
       </aside>
@@ -3463,6 +3467,72 @@ function renderShell(): void {
   attachVoiceVideoStreams();
   updatePttIndicator();
   polishListboxes(rootEl);
+  polishNativeControls(rootEl);
+}
+
+// Полиш-проход по свежему innerHTML: гасим браузерные артефакты нативных
+// элементов, которые размечать в каждом шаблоне вручную слишком шумно.
+function polishNativeControls(root: ParentNode): void {
+  // Спеллчек-подчёркивание уместно только там, где пишут прозу: композер
+  // (input name="body") и textarea (bio, посты). Логины, поиск, url, emoji
+  // подчёркиваются красным без смысла.
+  for (const el of root.querySelectorAll<HTMLInputElement>("input")) {
+    if (el.name === "body") continue;
+    el.spellcheck = false;
+  }
+  // a11y: тултипы переехали из title в data-tooltip — иконочным кнопкам без
+  // текста возвращаем accessible name.
+  for (const el of root.querySelectorAll<HTMLElement>("[data-tooltip]:not([aria-label])")) {
+    if (!el.textContent?.trim()) {
+      el.setAttribute("aria-label", el.getAttribute("data-tooltip") ?? "");
+    }
+  }
+  // Кастомному треку слайдера нужна стартовая позиция заливки.
+  for (const el of root.querySelectorAll<HTMLInputElement>('input[type="range"]')) {
+    setSliderFill(el);
+  }
+}
+
+// Заливка прогресса слайдера: CSS-градиент трека читает --val в процентах.
+function setSliderFill(el: HTMLInputElement): void {
+  const min = Number(el.min || 0);
+  const max = Number(el.max || 100);
+  const value = Number(el.value);
+  const pct = max > min ? Math.min(100, Math.max(0, ((value - min) / (max - min)) * 100)) : 0;
+  el.style.setProperty("--val", `${pct}%`);
+}
+
+// Артефакты WebView, живущие на window: нативное контекстное меню вне полей
+// ввода и drag&drop-навигация (файл, брошенный мимо дроп-зоны чата,
+// открывался самим WebView2 поверх приложения).
+let nativeGuardsInstalled = false;
+function installNativeGuards(): void {
+  if (nativeGuardsInstalled) return;
+  nativeGuardsInstalled = true;
+  window.addEventListener("contextmenu", (e) => {
+    const target = e.target instanceof HTMLElement ? e.target : null;
+    // В полях ввода нативное меню полезно: вставка, спеллчек-замены.
+    if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+    // Выделенный текст: оставляем нативное «Копировать».
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+    e.preventDefault();
+  });
+  window.addEventListener("dragover", (e) => {
+    if (e.target instanceof HTMLElement && e.target.closest("main.content")) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "none";
+  });
+  window.addEventListener("drop", (e) => {
+    if (e.target instanceof HTMLElement && e.target.closest("main.content")) return;
+    e.preventDefault();
+  });
+  // Живое обновление заливки слайдеров: войс-настройки меняют value без
+  // render(), полиш-проход это не догоняет. document — чтобы достать и
+  // слайдеры в диалогах вне rootEl.
+  document.addEventListener("input", (e) => {
+    if (e.target instanceof HTMLInputElement && e.target.type === "range") setSliderFill(e.target);
+  });
 }
 
 function renderVoiceVolumeMenu(): string {
@@ -3869,7 +3939,7 @@ function renderMemberMenu(): string {
         const has = r.memberUserIds.includes(m.userId) || m.role === r.code;
         const isPrimary = m.role === r.code; // primary снимается только сменой роли
         const dot = r.color ? `<span class="role-color-dot" style="background:${r.color};"></span>` : "";
-        return `<button class="channel-menu-item notif-level${has ? " checked" : ""}" data-member-action="toggle-role" data-id="${m.userId}" data-role-id="${r.id}" ${isPrimary && has ? `disabled title="${t("menu.primary_role_hint")}"` : ""}>${has ? "✓" : "·"} ${dot}${escapeHtml(r.name)}</button>`;
+        return `<button class="channel-menu-item notif-level${has ? " checked" : ""}" data-member-action="toggle-role" data-id="${m.userId}" data-role-id="${r.id}" ${isPrimary && has ? `disabled data-tooltip="${t("menu.primary_role_hint")}"` : ""}>${has ? "✓" : "·"} ${dot}${escapeHtml(r.name)}</button>`;
       })
       .join("");
     return `<div class="channel-menu-separator"></div>
@@ -3953,7 +4023,7 @@ function renderCallOverlay(): string {
             <div class="call-bar-title">${escapeHtml(peerName)}</div>
             <div class="call-bar-meta">
               <span class="call-bar-timer" id="call-timer">${escapeHtml(duration)}</span>
-              ${snap.via ? `<span class="call-via ${snap.via}" title="${snap.via === "relay" ? "Медиа идёт через TURN-релей (оба участника за NAT) — возможна чуть большая задержка" : "Прямое p2p-соединение"}">${snap.via === "relay" ? "через релей" : "напрямую"}</span>` : ""}
+              ${snap.via ? `<span class="call-via ${snap.via}" data-tooltip="${snap.via === "relay" ? "Медиа идёт через TURN-релей (оба участника за NAT) — возможна чуть большая задержка" : "Прямое p2p-соединение"}">${snap.via === "relay" ? "через релей" : "напрямую"}</span>` : ""}
             </div>
           </div>
         </div>
@@ -4013,7 +4083,7 @@ function renderCallOverlay(): string {
 }
 
 function callIconButton(id: string, iconName: Parameters<typeof icon>[0], title: string, mod = "", disabled = false): string {
-  return `<button id="${id}" class="call-icon-btn ${mod}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${disabled ? "disabled" : ""}>${icon(iconName, { size: 20 })}</button>`;
+  return `<button id="${id}" class="call-icon-btn ${mod}" data-tooltip="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${disabled ? "disabled" : ""}>${icon(iconName, { size: 20 })}</button>`;
 }
 
 // Маппинг action-кодов из internal/auditlog/auditlog.go в человекочитаемые
@@ -4109,7 +4179,7 @@ function nameGradientStyle(raw: string | undefined | null): string {
 // Wave 7 (I.19): эмодзи-бейдж после имени, label — в tooltip.
 function badgeHtml(emoji?: string, label?: string): string {
   if (!emoji) return "";
-  return `<span class="profile-badge"${label ? ` title="${escapeHtml(label)}"` : ""}>${escapeHtml(emoji)}</span>`;
+  return `<span class="profile-badge"${label ? ` data-tooltip="${escapeHtml(label)}"` : ""}>${escapeHtml(emoji)}</span>`;
 }
 
 // Возвращает inline-style для имени участника: градиент профиля (I.18,
@@ -4260,7 +4330,7 @@ function renderArchivedBlock(archived: Channel[], canManage: boolean): string {
       const cls = ch.id === state.selectedChannelId ? "active" : "";
       const actions = canManage
         ? `<span class="channel-item-actions">
-             <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
+             <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" data-tooltip="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
            </span>`
         : "";
       return `
@@ -4299,12 +4369,12 @@ function renderChannelCategory(
   // Для orphan-блока «+ канал» создаёт без категории; для категории — внутри неё.
   const createDataAttr = category ? `data-create-in-category="${escapeHtml(category.id)}"` : `data-create-orphan="1"`;
   const addBtn = canManage
-    ? `<button class="ghost ch-category-add" ${createDataAttr} title="Создать канал" aria-label="Создать канал">${icon("plus")}</button>`
+    ? `<button class="ghost ch-category-add" ${createDataAttr} data-tooltip="Создать канал" aria-label="Создать канал">${icon("plus")}</button>`
     : "";
   // ⚙ для управления самой категорией (rename/delete) — только для реальных
   // (не orphan) категорий и canManage.
   const settingsBtn = canManage && category
-    ? `<button class="ghost ch-category-settings" data-category-id="${escapeHtml(category.id)}" title="Управление категорией" aria-label="Управление категорией">${icon("settings")}</button>`
+    ? `<button class="ghost ch-category-settings" data-category-id="${escapeHtml(category.id)}" data-tooltip="Управление категорией" aria-label="Управление категорией">${icon("settings")}</button>`
     : "";
   const collapseAttr = category ? `data-category-collapse="${escapeHtml(category.id)}"` : "";
   const collapseGlyph = category ? (isCollapsed ? "▸" : "▾") : "";
@@ -4323,7 +4393,7 @@ function renderChannelCategory(
       const inlineList = ch.kind === "voice" ? renderVoiceInlineParticipants(ch.id) : "";
       const actions = canManage
         ? `<span class="channel-item-actions">
-             <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" title="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
+             <button class="ghost channel-item-settings" data-ch-settings="${ch.id}" data-tooltip="Настройки канала" aria-label="Настройки канала">${icon("settings")}</button>
            </span>`
         : "";
       return `
@@ -4391,7 +4461,7 @@ function renderVoiceInlineParticipants(channelId: string): string {
         <li class="voice-inline-participant${isSelf ? " self" : ""}" data-voice-jump-user="${escapeHtml(p.userId)}">
           ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 24 })}
           <span class="voice-inline-name">${escapeHtml(name)}</span>
-          ${live ? `<span class="voice-inline-live">В ЭФИРЕ</span>` : ""}
+          ${live ? `<span class="voice-inline-live">${t("voice.live")}</span>` : ""}
         </li>
       `;
     })
@@ -4434,7 +4504,7 @@ function renderDMSidebarList(): string {
             ${d.peer.customStatus ? `<span class="dm-item-sub">${escapeHtml(d.peer.customStatus)}</span>` : ""}
           </span>
           ${badge}
-          <button class="ghost dm-item-close" data-dm-close="${escapeHtml(d.channelId)}" title="Скрыть из списка" aria-label="Скрыть">${icon("x", { size: 14 })}</button>
+          <button class="ghost dm-item-close" data-dm-close="${escapeHtml(d.channelId)}" data-tooltip="Скрыть из списка" aria-label="Скрыть">${icon("x", { size: 14 })}</button>
         </li>
       `;
     })
@@ -4442,7 +4512,7 @@ function renderDMSidebarList(): string {
   return `
     <div class="section-title dm-list-title">
       <span>Прямые сообщения</span>
-      <button id="dm-find-btn" class="ghost ch-category-add" title="Найти или начать беседу" aria-label="Найти">${icon("plus")}</button>
+      <button id="dm-find-btn" class="ghost ch-category-add" data-tooltip="Найти или начать беседу" aria-label="Найти">${icon("plus")}</button>
     </div>
     ${state.dms.length === 0
       ? `<div class="ch-panel-empty">Пока нет личных бесед. Нажми <strong>+</strong> или открой DM из профиля участника.</div>`
@@ -4486,14 +4556,14 @@ function renderFriendsSection(): string {
           f.customStatus || "@" + f.username;
         const actions =
           f.status === "pending_in"
-            ? `<button class="friends-act ok" data-friend-accept="${f.userId}" title="${t("friends.accept")}">✓</button>
-               <button class="friends-act danger" data-friend-remove="${f.userId}" title="${t("friends.decline")}">✕</button>`
+            ? `<button class="friends-act ok" data-friend-accept="${f.userId}" data-tooltip="${t("friends.accept")}">✓</button>
+               <button class="friends-act danger" data-friend-remove="${f.userId}" data-tooltip="${t("friends.decline")}">✕</button>`
             : f.status === "pending_out"
-              ? `<button class="friends-act danger" data-friend-remove="${f.userId}" title="${t("friends.cancel_request")}">✕</button>`
+              ? `<button class="friends-act danger" data-friend-remove="${f.userId}" data-tooltip="${t("friends.cancel_request")}">✕</button>`
               : f.status === "blocked"
                 ? `<button class="friends-act" data-friend-unblock="${f.userId}">${t("friends.unblock")}</button>`
-                : `<button class="friends-act" data-friend-msg="${f.userId}" title="${t("friends.message")}">${icon("reply", { size: 16 })}</button>
-                   <button class="friends-act danger" data-friend-remove-confirm="${f.userId}" title="${t("friends.remove")}">✕</button>`;
+                : `<button class="friends-act" data-friend-msg="${f.userId}" data-tooltip="${t("friends.message")}">${icon("reply", { size: 16 })}</button>
+                   <button class="friends-act danger" data-friend-remove-confirm="${f.userId}" data-tooltip="${t("friends.remove")}">✕</button>`;
         return `
           <li class="friends-row" data-friend-profile="${f.userId}">
             <span class="dm-home-avatar">
@@ -4600,8 +4670,8 @@ function renderDMChannelView(dm: DMItem): string {
         </div>
       </div>
       <div class="channel-header-actions">
-        <button id="dm-call" class="ghost" data-user-id="${escapeHtml(dm.peer.userId)}" title="${t("menu.call")}" aria-label="${t("menu.call")}">${icon("phone")}</button>
-        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="${t("header.pins")}" aria-label="${t("header.pins")}">${icon("pin")}</button>
+        <button id="dm-call" class="ghost" data-user-id="${escapeHtml(dm.peer.userId)}" data-tooltip="${t("menu.call")}" aria-label="${t("menu.call")}">${icon("phone")}</button>
+        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" data-tooltip="${t("header.pins")}" aria-label="${t("header.pins")}">${icon("pin")}</button>
       </div>
       ${state.pinsPopupOpen && state.channelPinsChannelId === dm.channelId ? renderPinsPopup() : ""}
     </header>
@@ -4619,7 +4689,7 @@ function renderDMChannelView(dm: DMItem): string {
     <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
-      <label class="attach-btn" title="${t("chat.composer.attach", { max: MAX_ATTACHMENTS })}">
+      <label class="attach-btn" data-tooltip="${t("chat.composer.attach", { max: MAX_ATTACHMENTS })}">
         ${icon("paperclip")}
         <input type="file" id="attach-input" multiple hidden />
       </label>
@@ -4629,7 +4699,7 @@ function renderDMChannelView(dm: DMItem): string {
         placeholder="${t("dm.composer.message_for", { name: escapeHtml(name) })}"
         value="${escapeHtml(loadDraft(dm.channelId))}"
       />
-      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="${t("chat.composer.emoji")}">${icon("smile")}</button>
+      <button type="button" id="composer-emoji" class="composer-emoji-btn" data-tooltip="${t("chat.composer.emoji")}">${icon("smile")}</button>
       <button type="submit">${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
@@ -4657,7 +4727,7 @@ function renderBellButton(): string {
   const badge = count > 0
     ? `<span class="bell-badge">${count > 99 ? "99+" : count}</span>`
     : "";
-  return `<button id="open-notifications" class="ghost bell-btn" title="${t("modal.notifications")}" aria-label="${t("modal.notifications")}">${icon("bell")}${badge}</button>`;
+  return `<button id="open-notifications" class="ghost bell-btn" data-tooltip="${t("modal.notifications")}" aria-label="${t("modal.notifications")}">${icon("bell")}${badge}</button>`;
 }
 
 // J.5: dropdown под ch-panel-header'ом. Discord-style меню для управления
@@ -4708,8 +4778,8 @@ function renderInvitesModal(): string {
             <li data-invite="${i.id}">
               <code class="invite-code">${escapeHtml(i.code)}</code>
               <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}</span>
-              <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" title="Копировать код">⧉</button>
-              <button class="ghost invite-revoke" data-invite="${i.id}" title="Отозвать">✕</button>
+              <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" data-tooltip="Копировать код">⧉</button>
+              <button class="ghost invite-revoke" data-invite="${i.id}" data-tooltip="Отозвать">✕</button>
             </li>
           `
             )
@@ -4852,7 +4922,7 @@ function renderChannelView(channel: Channel): string {
     : undefined;
   const backLabel = parentForum?.kind === "forum" ? t("forum.back") : t("thread.back");
   const breadcrumb = parentForum
-    ? `<button class="ghost thread-back" data-ch-open="${parentForum.id}" title="${backLabel}" aria-label="${backLabel}">${icon("reply", { size: 16 })}</button>
+    ? `<button class="ghost thread-back" data-ch-open="${parentForum.id}" data-tooltip="${backLabel}" aria-label="${backLabel}">${icon("reply", { size: 16 })}</button>
        <span class="thread-parent" data-ch-open="${parentForum.id}">${channelPrefix(parentForum)} ${escapeHtml(parentForum.name)}</span>
        <span class="channel-header-sep">›</span>`
     : "";
@@ -4869,10 +4939,10 @@ function renderChannelView(channel: Channel): string {
         ${channel.topic ? `<span class="channel-header-sep">·</span><span class="channel-header-topic">${escapeHtml(channel.topic)}</span>` : ""}
       </div>
       <div class="channel-header-actions">
-        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" title="${t("header.pins")}" aria-label="${t("header.pins")}">${icon("pin")}</button>
-        <button id="open-search" class="ghost" title="${t("header.search")}" aria-label="${t("modal.search")}">${icon("search")}</button>
-        ${canModerate ? `<button id="open-audit" class="ghost" title="${t("header.audit")}" aria-label="${t("header.audit")}">${icon("scroll")}</button>` : ""}
-        <button id="toggle-member-sidebar" class="ghost" title="${state.memberSidebarOpen ? t("header.members.hide") : t("header.members.show")}" aria-label="${t("modal.members")}">${icon("users")}</button>
+        <button id="open-pins" class="ghost${state.pinsPopupOpen ? " active" : ""}" data-tooltip="${t("header.pins")}" aria-label="${t("header.pins")}">${icon("pin")}</button>
+        <button id="open-search" class="ghost" data-tooltip="${t("header.search")}" aria-label="${t("modal.search")}">${icon("search")}</button>
+        ${canModerate ? `<button id="open-audit" class="ghost" data-tooltip="${t("header.audit")}" aria-label="${t("header.audit")}">${icon("scroll")}</button>` : ""}
+        <button id="toggle-member-sidebar" class="ghost" data-tooltip="${state.memberSidebarOpen ? t("header.members.hide") : t("header.members.show")}" aria-label="${t("modal.members")}">${icon("users")}</button>
       </div>
       ${state.pinsPopupOpen && state.channelPinsChannelId === channel.id ? renderPinsPopup() : ""}
     </header>
@@ -4891,7 +4961,7 @@ function renderChannelView(channel: Channel): string {
     <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
-      <label class="attach-btn ${canSend ? "" : "disabled"}" title="${t("chat.composer.attach", { max: MAX_ATTACHMENTS })}">
+      <label class="attach-btn ${canSend ? "" : "disabled"}" data-tooltip="${t("chat.composer.attach", { max: MAX_ATTACHMENTS })}">
         ${icon("paperclip")}
         <input type="file" id="attach-input" multiple hidden ${canSend ? "" : "disabled"} />
       </label>
@@ -4906,7 +4976,7 @@ function renderChannelView(channel: Channel): string {
         ${canSend ? "" : "disabled"}
         value="${escapeHtml(canSend ? loadDraft(channel.id) : "")}"
       />
-      <button type="button" id="composer-emoji" class="composer-emoji-btn" title="${t("chat.composer.emoji")}" ${canSend ? "" : "disabled"}>${icon("smile")}</button>
+      <button type="button" id="composer-emoji" class="composer-emoji-btn" data-tooltip="${t("chat.composer.emoji")}" ${canSend ? "" : "disabled"}>${icon("smile")}</button>
       <button type="submit" ${canSend && slowModeRemainingSec(channel.id) === 0 ? "" : "disabled"}>${state.uploadInFlight ? "…" : "↑"}</button>
     </form>
   `;
@@ -4920,7 +4990,7 @@ function renderScreenQualitySelect(): string {
   const opts = (Object.keys(SCREEN_SHARE_PRESETS) as ScreenShareQualityKey[])
     .map((k) => `<option value="${k}"${k === cur ? " selected" : ""}>${k}</option>`)
     .join("");
-  return `<select class="screen-quality-select ghost" title="Качество демонстрации экрана">${opts}</select>`;
+  return `<select class="screen-quality-select ghost" aria-label="${t("voice.quality")}">${opts}</select>`;
 }
 
 function renderVoiceChannelView(channel: Channel): string {
@@ -4953,13 +5023,28 @@ function renderVoiceChannelView(channel: Channel): string {
     const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
     const tag = isSelf ? `data-voice-self="1"` : `data-voice-peer="${escapeHtml(p.sessionId)}"`;
     const sharing = isSelf ? screenOn : !!p.screenSharing;
-    const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${extraClass ? " " + extraClass : ""}`;
+    // Без видео <video> — чёрный прямоугольник; рисуем Discord-like заглушку
+    // с аватаром. Speaking-кольцо вешает CSS по .voice-tile.speaking
+    // (speakingLoop). Аватар берём из members: VoiceParticipant несёт только
+    // имя, avatarMediaId у него нет.
+    const hasVideo = isSelf ? cameraOn || screenOn : !!p.cameraOn || !!p.screenSharing;
+    const member = state.members.find((m) => m.userId === p.userId);
+    const avatarMediaId = p.userId === state.me?.id ? state.me?.avatarMediaId : member?.avatarMediaId;
+    const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${hasVideo ? " has-video" : ""}${extraClass ? " " + extraClass : ""}`;
     return `<div class="${cls}">
       <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
+      <div class="voice-tile-placeholder">
+        ${renderAvatar({
+          avatarMediaId,
+          fallbackText: name,
+          sizePx: 72,
+          decoration: member?.avatarDecoration
+        })}
+      </div>
       <div class="voice-tile-overlay">
         <span class="voice-dot"></span>
-        <span class="voice-name">${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
-        ${sharing ? `<span class="voice-tile-live">В ЭФИРЕ</span>` : ""}
+        <span class="voice-name">${escapeHtml(name)}${isSelf ? ` ${t("voice.you")}` : ""}</span>
+        ${sharing ? `<span class="voice-tile-live">${t("voice.live")}</span>` : ""}
       </div>
     </div>`;
   };
@@ -4989,8 +5074,8 @@ function renderVoiceChannelView(channel: Channel): string {
     const subtitle = isArchived
       ? t("chat.composer.archived")
       : busyOther
-        ? "Сейчас вы в другом голосовом канале. Сначала выйдите оттуда."
-        : "Сейчас в голосовом чате никого нет";
+        ? t("voice.busy")
+        : t("voice.hero.none");
     return `
       ${header}
       <div class="voice-hero">
@@ -4999,7 +5084,7 @@ function renderVoiceChannelView(channel: Channel): string {
           <div class="voice-hero-subtitle">${escapeHtml(subtitle)}</div>
           ${isArchived ? "" : `<button id="voice-join" class="voice-hero-cta primary" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
             ${icon("phone-outgoing", { size: 16 })}
-            <span>${joining ? "Подключаюсь…" : "Присоединиться к голосовому каналу"}</span>
+            <span>${joining ? t("voice.joining") : t("voice.hero.join")}</span>
           </button>`}
           ${error ? `<div class="voice-hero-error">${escapeHtml(error)}</div>` : ""}
         </div>
@@ -5019,25 +5104,26 @@ function renderVoiceChannelView(channel: Channel): string {
 
   const actions = joined
     ? `
-      ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? "Включить микрофон" : "Заглушить", muted ? "danger" : "")}
-      ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? "Включить звук" : "Заглушить всё", isDeafened() ? "danger" : "")}
-      ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? "Выключить камеру" : "Включить камеру", "", screenOn)}
-      ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? "Прекратить демо" : "Поделиться экраном", screenOn ? "active" : "")}
+      ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? t("voice.unmute") : t("voice.mute"), muted ? "danger" : "")}
+      ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? t("voice.undeafen") : t("voice.deafen"), isDeafened() ? "danger" : "")}
+      ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? t("voice.cam.off") : t("voice.cam.on"), "", screenOn)}
+      ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? t("voice.screen.stop") : t("voice.screen.start"), screenOn ? "active" : "")}
       ${renderScreenQualitySelect()}
-      ${callIconButton("voice-leave", "log-out", leaving ? "Выхожу…" : "Выйти", "hangup", leaving)}
+      <span class="voice-actions-sep"></span>
+      ${callIconButton("voice-leave", "log-out", leaving ? t("voice.leaving") : t("voice.leave"), "hangup", leaving)}
     `
     : `
       <button id="voice-join" class="primary" data-channel-id="${channel.id}" ${joining || busyOther ? "disabled" : ""}>
-        ${icon("phone-outgoing", { size: 16 })} ${joining ? "Подключаюсь…" : "Войти в голосовой"}
+        ${icon("phone-outgoing", { size: 16 })} ${joining ? t("voice.joining") : t("voice.join")}
       </button>
-      ${busyOther ? `<div class="muted">Сейчас в другом voice-канале. Сначала выйди оттуда.</div>` : ""}
+      ${busyOther ? `<div class="muted">${t("voice.busy")}</div>` : ""}
     `;
 
   return `
     ${header}
     <div class="voice-room">
       <div class="voice-room-body">
-        <h3>Сейчас в канале</h3>
+        <h3>${t("voice.now")}</h3>
         ${tiles}
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
       </div>
@@ -5065,7 +5151,7 @@ function renderVoiceStrip(): string {
       const isSelf = p.sessionId === voice.selfSessionId;
       return `<li class="voice-strip-participant${isSelf ? " self" : ""}">
         <span class="voice-dot"></span>
-        <span>${escapeHtml(name)}${isSelf ? " (вы)" : ""}</span>
+        <span>${escapeHtml(name)}${isSelf ? ` ${t("voice.you")}` : ""}</span>
       </li>`;
     })
     .join("");
@@ -5107,6 +5193,11 @@ function attachVoiceVideoStreams(): void {
     if (el.srcObject !== stream) el.srcObject = stream;
     el.volume = Math.min(1, (state.voiceVolumes[sid] ?? 1) * globalOut);
     void applyOutputDevice(el);
+    // Подстраховка аватар-заглушки: сигналинг cameraOn (voice.state) может
+    // отстать от реального видеотрека — верим живому стриму.
+    if (stream?.getVideoTracks().some((t) => t.readyState === "live")) {
+      el.closest(".voice-tile")?.classList.add("has-video");
+    }
   }
   const callLocal = callMgr.getLocalStream();
   const callRemote = callMgr.getRemoteStream();
@@ -5368,7 +5459,7 @@ function renderPendingUploads(): string {
           (a) => `
         <div class="pending-chip" data-pending="${a.id}">
           <span>${isImage(a.contentType) ? "🖼" : "📄"} ${escapeHtml(a.filename || "файл")} · ${formatBytes(a.sizeBytes)}</span>
-          <button class="ghost pending-remove" data-id="${a.id}" title="Убрать">✕</button>
+          <button class="ghost pending-remove" data-id="${a.id}" data-tooltip="Убрать">✕</button>
         </div>
       `
         )
@@ -5487,7 +5578,7 @@ function renderReplySnippet(reply: ReplySnippet | undefined): string {
   });
   const color = member ? getUserColor(member.userId, member.role) : undefined;
   const authorStyle = color ? ` style="color:${color};"` : "";
-  return `<div class="reply-snippet" data-jump-id="${escapeHtml(reply.messageId)}" title="Перейти к исходному">
+  return `<div class="reply-snippet" data-jump-id="${escapeHtml(reply.messageId)}" data-tooltip="Перейти к исходному">
     <span class="reply-arrow">${icon("reply", { size: 14 })}</span>
     ${avatar}
     <span class="reply-author"${authorStyle}>${escapeHtml(author)}</span>
@@ -5501,14 +5592,14 @@ function renderReplyBar(): string {
   if (r.deleted) {
     return `<div class="reply-bar">
       <span class="muted">Отвечаем на удалённое сообщение</span>
-      <button class="ghost reply-cancel" title="Отменить ответ">✕</button>
+      <button class="ghost reply-cancel" data-tooltip="Отменить ответ">✕</button>
     </div>`;
   }
   const author = describePeer(r.authorId);
   return `<div class="reply-bar">
     <span class="reply-arrow">↩</span>
     <span>В ответ <b>${escapeHtml(author)}</b>: ${escapeHtml(r.body)}</span>
-    <button class="ghost reply-cancel" title="Отменить ответ">✕</button>
+    <button class="ghost reply-cancel" data-tooltip="Отменить ответ">✕</button>
   </div>`;
 }
 
@@ -5727,7 +5818,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   // раскрывает конкретное сообщение до следующего полного relog'а.
   if (state.blockedIds.has(m.authorId) && !state.revealedBlocked.has(m.id)) {
     return `
-      <div class="message message-blocked" data-reveal-blocked="${m.id}" title="Нажми, чтобы показать">
+      <div class="message message-blocked" data-reveal-blocked="${m.id}" data-tooltip="Нажми, чтобы показать">
         <span>Сообщение заблокированного пользователя</span>
         <button class="ghost">Показать</button>
       </div>
@@ -5751,7 +5842,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   const authorCustomStatus = m.authorId === state.me?.id
     ? state.me?.customStatus
     : authorMember?.customStatus;
-  const authorTitle = authorCustomStatus ? ` title="${escapeHtml(authorCustomStatus)}"` : "";
+  const authorTitle = authorCustomStatus ? ` data-tooltip="${escapeHtml(authorCustomStatus)}"` : "";
   const avatarHtml = renderAvatar({
     avatarMediaId: authorAvatarId,
     fallbackText: authorName,
@@ -5767,7 +5858,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
         <div class="message-content">
           <div class="message-meta">
             <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}
-            <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
+            <span class="timestamp" data-tooltip="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
           </div>
           <form class="edit-form" data-edit-id="${m.id}">
             <input name="body" value="${escapeHtml(m.body)}" autofocus />
@@ -5781,7 +5872,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
 
   const groupedCls = grouped ? " message-grouped" : "";
   const avatarSlot = grouped
-    ? `<span class="message-avatar message-avatar-spacer" aria-hidden="true"><span class="grouped-timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${escapeHtml(formatTimeSmartShort(m.createdAt))}</span></span>`
+    ? `<span class="message-avatar message-avatar-spacer" aria-hidden="true"><span class="grouped-timestamp" data-tooltip="${escapeHtml(formatTime(m.createdAt))}">${escapeHtml(formatTimeSmartShort(m.createdAt))}</span></span>`
     : avatarHtml;
   // Wave 10: тред из сообщения — только в text-каналах воркспейса (не DM,
   // не внутри треда/форума). Если тред уже есть — вход через чип, кнопку
@@ -5790,14 +5881,14 @@ function renderMessage(m: Message, grouped: boolean = false): string {
   const canThread = !state.dmMode && msgChannel?.kind === "text" && !msgChannel.archivedAt && !m.thread;
   // Wave 6: общий тулбар для обоих вариантов meta — i18n в одном месте.
   const actionsHtml = `<span class="message-actions">
-          <button class="ghost action-react" data-id="${m.id}" title="${t("msg.react")}">${icon("smile")}</button>
-          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" title="${t("msg.reply")}">${icon("reply")}</button>
-          ${canThread ? `<button class="ghost action-thread" data-id="${m.id}" title="${t("msg.thread")}">${icon("channel-forum")}</button>` : ""}
-          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" title="${t("msg.edit")}">${icon("pencil")}</button>` : ""}
+          <button class="ghost action-react" data-id="${m.id}" data-tooltip="${t("msg.react")}">${icon("smile")}</button>
+          <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" data-tooltip="${t("msg.reply")}">${icon("reply")}</button>
+          ${canThread ? `<button class="ghost action-thread" data-id="${m.id}" data-tooltip="${t("msg.thread")}">${icon("channel-forum")}</button>` : ""}
+          ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" data-tooltip="${t("msg.edit")}">${icon("pencil")}</button>` : ""}
           ${canPin
-            ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" title="${m.isPinned ? t("msg.unpin") : t("msg.pin")}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
+            ? `<button class="ghost action-pin" data-id="${m.id}" data-pinned="${m.isPinned ? "1" : "0"}" data-tooltip="${m.isPinned ? t("msg.unpin") : t("msg.pin")}">${icon(m.isPinned ? "pin-off" : "pin")}</button>`
             : ""}
-          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" title="${t("common.delete")}">${icon("trash")}</button>` : ""}
+          ${canDelete ? `<button class="ghost action-delete" data-id="${m.id}" data-tooltip="${t("common.delete")}">${icon("trash")}</button>` : ""}
         </span>`;
   const metaBlock = grouped
     ? `<div class="message-meta message-meta-grouped">
@@ -5805,7 +5896,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
       </div>`
     : `<div class="message-meta">
         <span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}${isMine ? ` <span class="author-mine">${t("msg.you")}</span>` : ""}
-        <span class="timestamp" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? t("msg.edited") : ""}</span>
+        <span class="timestamp" data-tooltip="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? t("msg.edited") : ""}</span>
         ${actionsHtml}
       </div>`;
   const pinnedCls = m.isPinned ? " message-pinned" : "";
@@ -5813,7 +5904,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
     <div class="message${groupedCls}${pinnedCls}" data-id="${m.id}">
       ${avatarSlot}
       <div class="message-content">
-      ${m.isPinned ? `<div class="message-pin-badge" title="Закреплённое сообщение">${icon("pin", { size: 12 })}</div>` : ""}
+      ${m.isPinned ? `<div class="message-pin-badge" data-tooltip="Закреплённое сообщение">${icon("pin", { size: 12 })}</div>` : ""}
       ${renderReplySnippet(m.replyTo)}
       ${metaBlock}
       ${m.body ? `<div class="message-body">${renderBody(m.body, m.mentionEveryone)}</div>` : ""}
@@ -5829,7 +5920,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
               ${reactions
                 .map(
                   ([emoji, agg]) => `
-                <button class="reaction-chip${agg.mine ? " mine" : ""}" data-react-toggle="${m.id}" data-emoji="${escapeHtml(emoji)}" title="${escapeHtml(reactionTooltip(emoji, agg))}">
+                <button class="reaction-chip${agg.mine ? " mine" : ""}" data-react-toggle="${m.id}" data-emoji="${escapeHtml(emoji)}" data-tooltip="${escapeHtml(reactionTooltip(emoji, agg))}">
                   <span>${escapeHtml(emoji)}</span>
                   <span class="count">${agg.count}</span>
                 </button>
@@ -5846,7 +5937,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
                 (e) =>
                   `<button class="ghost picker-emoji" data-react-toggle="${m.id}" data-emoji="${escapeHtml(e)}">${e}</button>`
               ).join("")}
-              <button class="ghost picker-emoji picker-more" data-react-more="${m.id}" title="Все эмодзи">➕</button>
+              <button class="ghost picker-emoji picker-more" data-react-more="${m.id}" data-tooltip="Все эмодзи">➕</button>
             </div>`
           : ""
       }
@@ -5860,7 +5951,7 @@ function renderMessage(m: Message, grouped: boolean = false): string {
 // обычный канал через generic [data-ch-open] обработчик.
 function renderThreadChip(thread: MessageThreadInfo | null | undefined): string {
   if (!thread) return "";
-  return `<button class="thread-chip" data-ch-open="${escapeHtml(thread.threadId)}" title="${t("thread.open")}">
+  return `<button class="thread-chip" data-ch-open="${escapeHtml(thread.threadId)}" data-tooltip="${t("thread.open")}">
       ${icon("channel-forum", { size: 14 })}
       <span class="thread-chip-title">${escapeHtml(thread.title)}</span>
       <span class="thread-chip-count">${t("thread.replies", { n: thread.messageCount })}</span>
@@ -5892,7 +5983,7 @@ function renderSystemMessage(m: Message): string {
     <div class="message message-system" data-id="${m.id}">
       <span class="message-system-icon">${icon(iconName, { size: 16 })}</span>
       <span class="message-system-text">${escapeHtml(text)}</span>
-      <span class="message-system-time" title="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
+      <span class="message-system-time" data-tooltip="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
     </div>
   `;
 }
@@ -6046,7 +6137,7 @@ function renderUserProfilePopup(): string {
     <div class="modal-backdrop" data-modal-close>
       <div class="modal user-profile-popup" role="dialog">
         <div class="user-profile-banner" style="${bannerStyle}"${bannerAttrs}>${effectOverlay}</div>
-        <button class="user-profile-close" data-modal-close title="Закрыть">✕</button>
+        <button class="user-profile-close" data-modal-close data-tooltip="Закрыть">✕</button>
         <div class="user-profile-avatar-row">
           <div class="user-profile-avatar-wrap">
             ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 80, className: "user-profile-avatar", decoration: avatarDecoration })}
@@ -6105,7 +6196,7 @@ function renderProfileWidgets(): string {
   return `
     <div class="user-profile-widgets">
       ${widgets.map((w) => `
-        <a class="profile-widget" href="${escapeHtml(w.url)}" target="_blank" rel="noopener noreferrer nofollow" title="${escapeHtml(w.url)}">
+        <a class="profile-widget" href="${escapeHtml(w.url)}" target="_blank" rel="noopener noreferrer nofollow" data-tooltip="${escapeHtml(w.url)}">
           <span class="profile-widget-icon">${widgetIcon(w.url)}</span>
           <span class="profile-widget-label">${escapeHtml(w.label)}</span>
         </a>
@@ -7155,11 +7246,11 @@ function renderWorkspaceRolesModal(): string {
     <div class="roles-list">
       <div class="roles-list-header">
         <span>Роли</span>
-        <button id="role-create" class="ghost" title="Создать роль">+</button>
+        <button id="role-create" class="ghost" data-tooltip="Создать роль">+</button>
       </div>
       <ul>
         ${rs.roles.map((r) => `
-          <li class="roles-list-item ${r.id === rs.selectedRoleId ? "active" : ""}" data-select-role="${r.id}" draggable="true" title="Перетащи, чтобы изменить позицию">
+          <li class="roles-list-item ${r.id === rs.selectedRoleId ? "active" : ""}" data-select-role="${r.id}" draggable="true" data-tooltip="Перетащи, чтобы изменить позицию">
             <span class="role-color-dot" style="background:${r.color ?? "var(--text-mute)"};"></span>
             <span class="role-name">${escapeHtml(r.name)}</span>
             ${r.system ? `<span class="role-badge">sys</span>` : ""}
@@ -7189,7 +7280,7 @@ function renderWorkspaceRolesModal(): string {
           <label class="role-field">
             <span>Цвет</span>
             <input id="role-color" type="color" value="${escapeHtml(draft.color || "#888888")}" />
-            ${draft.color ? `<button id="role-color-clear" class="ghost" title="Без цвета">✕</button>` : ""}
+            ${draft.color ? `<button id="role-color-clear" class="ghost" data-tooltip="Без цвета">✕</button>` : ""}
           </label>
           <label class="role-field">
             <span>Позиция</span>
@@ -7622,7 +7713,7 @@ function renderNotificationItem(n: NotificationItem): string {
       <div class="notif-body">
         <div class="notif-title">${escapeHtml(title)}</div>
         ${body ? `<div class="notif-snippet">${escapeHtml(body)}</div>` : ""}
-        <div class="notif-time" title="${escapeHtml(formatTime(n.createdAt))}">${escapeHtml(formatTimeSmart(n.createdAt))}</div>
+        <div class="notif-time" data-tooltip="${escapeHtml(formatTime(n.createdAt))}">${escapeHtml(formatTimeSmart(n.createdAt))}</div>
       </div>
     </li>
   `;
@@ -7672,7 +7763,7 @@ function renderSearchHit(hit: SearchHit): string {
       <div class="search-hit-head">
         <span class="search-hit-channel">#${escapeHtml(hit.channelName)}</span>
         <span class="search-hit-author">${escapeHtml(author)}</span>
-        <span class="search-hit-time" title="${escapeHtml(formatTime(hit.createdAt))}">${escapeHtml(formatTimeSmart(hit.createdAt))}</span>
+        <span class="search-hit-time" data-tooltip="${escapeHtml(formatTime(hit.createdAt))}">${escapeHtml(formatTimeSmart(hit.createdAt))}</span>
       </div>
       <div class="search-hit-body">${highlighted}</div>
     </li>
@@ -7753,11 +7844,11 @@ function renderAuditFilter(): string {
         ${targetOpts}
       </select>
       <input id="audit-filter-actor" type="text" placeholder="Имя автора…" value="${escapeHtml(f.actor)}" />
-      <input id="audit-filter-from" type="date" title="С" value="${escapeHtml(f.from)}" />
-      <input id="audit-filter-to" type="date" title="По" value="${escapeHtml(f.to)}" />
-      ${hasAnyFilter ? `<button id="audit-filter-clear" class="ghost" title="Сбросить">✕</button>` : ""}
-      <button id="audit-export-csv" class="primary" title="Скачать видимые записи (CSV, ru-метки)">Экспорт CSV</button>
-      <button id="audit-export-full" class="ghost" title="Полный экспорт с сервера: все записи под фильтр (раздел/период/тип/код), коды действий без перевода">Полный экспорт</button>
+      <input id="audit-filter-from" type="date" data-tooltip="С" value="${escapeHtml(f.from)}" />
+      <input id="audit-filter-to" type="date" data-tooltip="По" value="${escapeHtml(f.to)}" />
+      ${hasAnyFilter ? `<button id="audit-filter-clear" class="ghost" data-tooltip="Сбросить">✕</button>` : ""}
+      <button id="audit-export-csv" class="primary" data-tooltip="Скачать видимые записи (CSV, ru-метки)">Экспорт CSV</button>
+      <button id="audit-export-full" class="ghost" data-tooltip="Полный экспорт с сервера: все записи под фильтр (раздел/период/тип/код), коды действий без перевода">Полный экспорт</button>
     </div>
   `;
 }
@@ -7971,7 +8062,7 @@ function renderSettingsModal(): string {
 
   const sidebar = `
     <aside class="settings-sidebar">
-      <button class="settings-user" data-settings-tab="profile" title="Открыть профиль">
+      <button class="settings-user" data-settings-tab="profile" data-tooltip="Открыть профиль">
         ${renderAvatar({
           avatarMediaId: me.avatarMediaId,
           fallbackText: displayName,
@@ -8006,7 +8097,9 @@ function renderSettingsModal(): string {
         <button class="ghost settings-close" data-modal-close aria-label="Закрыть">✕</button>
       </header>
       <div class="settings-content-body">
-        ${renderSettingsTabContent(activeTab)}
+        <div class="settings-content-inner">
+          ${renderSettingsTabContent(activeTab)}
+        </div>
       </div>
     </section>
   `;
@@ -8141,13 +8234,13 @@ function renderSettingsHotkeysTab(): string {
 function globalStatusBadge(id: ActionId): string {
   const st: GlobalStatus = getGlobalStatus(id);
   if (st === "registered") {
-    return `<span class="hotkeys-global ok" title="${t("hk.badge.ok")}">🌐</span>`;
+    return `<span class="hotkeys-global ok" data-tooltip="${t("hk.badge.ok")}">🌐</span>`;
   }
   if (st === "failed") {
-    return `<span class="hotkeys-global fail" title="${t("hk.badge.fail")}">🌐✕</span>`;
+    return `<span class="hotkeys-global fail" data-tooltip="${t("hk.badge.fail")}">🌐✕</span>`;
   }
   if (st === "bare") {
-    return `<span class="hotkeys-global fail" title="${t("hk.badge.bare")}">🌐✕</span>`;
+    return `<span class="hotkeys-global fail" data-tooltip="${t("hk.badge.bare")}">🌐✕</span>`;
   }
   return "";
 }
@@ -8161,12 +8254,12 @@ function renderHotkeyRow(def: ActionDef, conflicts: Map<string, ActionDef[]>): s
   const sig = b.chord ? formatChord(b.chord) : "";
   const others = sig ? (conflicts.get(sig) ?? []).filter((a) => a.id !== def.id) : [];
   const conflictBadge = others.length > 0
-    ? `<span class="hotkeys-conflict" title="${t("hk.conflict", { list: escapeHtml(others.map(hkLabel).join(", ")) })}">⚠</span>`
+    ? `<span class="hotkeys-conflict" data-tooltip="${t("hk.conflict", { list: escapeHtml(others.map(hkLabel).join(", ")) })}">⚠</span>`
     : "";
   const desc = hkDesc(def);
   return `
     <div class="hotkeys-row ${b.enabled ? "" : "disabled"} ${others.length > 0 ? "has-conflict" : ""}" data-hotkey-row="${def.id}">
-      <label class="hotkeys-toggle" title="${b.enabled ? t("hk.toggle.off") : t("hk.toggle.on")}">
+      <label class="hotkeys-toggle" data-tooltip="${b.enabled ? t("hk.toggle.off") : t("hk.toggle.on")}">
         <input type="checkbox" data-hotkey-toggle="${def.id}" ${b.enabled ? "checked" : ""} />
         <span class="hotkeys-toggle-track"></span>
       </label>
@@ -8177,10 +8270,10 @@ function renderHotkeyRow(def: ActionDef, conflicts: Map<string, ActionDef[]>): s
       <button class="hotkeys-chord ${isCapturing ? "capturing" : ""}" data-hotkey-capture="${def.id}">
         ${escapeHtml(chordLabel)}
       </button>
-      <button class="ghost hotkeys-reset" data-hotkey-reset="${def.id}" title="${t("hk.reset")}">
+      <button class="ghost hotkeys-reset" data-hotkey-reset="${def.id}" data-tooltip="${t("hk.reset")}">
         ${icon("x", { size: 14 })}
       </button>
-      <button class="ghost hotkeys-clear" data-hotkey-clear="${def.id}" title="${t("hk.clear")}" ${b.chord ? "" : "disabled"}>
+      <button class="ghost hotkeys-clear" data-hotkey-clear="${def.id}" data-tooltip="${t("hk.clear")}" ${b.chord ? "" : "disabled"}>
         ${icon("trash", { size: 14 })}
       </button>
     </div>
@@ -8342,7 +8435,7 @@ function renderSettingsAppearanceTab(): string {
         <div class="settings-slider-wrap" style="gap: 12px;">
           <input id="ap-accent" type="color" value="${escapeHtml(accentValue)}" />
           <span id="ap-accent-val" class="settings-slider-val" style="min-width: 120px;">${escapeHtml(accentDisplay)}</span>
-          <button id="ap-accent-reset" class="ghost" title="${t("ap.accent.reset")}">${icon("x", { size: 14 })}</button>
+          <button id="ap-accent-reset" class="ghost" data-tooltip="${t("ap.accent.reset")}">${icon("x", { size: 14 })}</button>
         </div>
         <small class="settings-hint">${t("ap.accent.hint")}</small>
       </div>
@@ -9165,11 +9258,11 @@ function renderSettingsProfileTab(): string {
     <div class="profile-card-head">
       <div class="profile-banner-area" style="${bannerStyle}"${bannerAttrs}>
         <div class="profile-banner-actions">
-          <button id="profile-banner-upload" class="ghost profile-banner-btn" title="${t("pf.banner.upload")}">
+          <button id="profile-banner-upload" class="ghost profile-banner-btn" data-tooltip="${t("pf.banner.upload")}">
             ${icon("pencil", { size: 14 })}
           </button>
           ${me.bannerMediaId
-            ? `<button id="profile-banner-remove" class="ghost profile-banner-btn" title="${t("pf.banner.remove")}">${icon("trash", { size: 14 })}</button>`
+            ? `<button id="profile-banner-remove" class="ghost profile-banner-btn" data-tooltip="${t("pf.banner.remove")}">${icon("trash", { size: 14 })}</button>`
             : ""}
         </div>
       </div>
@@ -9182,11 +9275,11 @@ function renderSettingsProfileTab(): string {
           className: "profile-card-avatar",
           decoration: profileStyleDraft ? (profileStyleDraft.decoration || undefined) : me.avatarDecoration
         })}
-        <button id="profile-avatar-upload" class="profile-card-avatar-edit" title="${t("pf.avatar.change")}">
+        <button id="profile-avatar-upload" class="profile-card-avatar-edit" data-tooltip="${t("pf.avatar.change")}">
           ${icon("pencil", { size: 14 })}
         </button>
         ${me.avatarMediaId
-          ? `<button id="profile-avatar-remove" class="profile-card-avatar-remove" title="${t("pf.avatar.remove")}">${icon("trash", { size: 12 })}</button>`
+          ? `<button id="profile-avatar-remove" class="profile-card-avatar-remove" data-tooltip="${t("pf.avatar.remove")}">${icon("trash", { size: 12 })}</button>`
           : ""}
       </div>
       <div class="profile-card-name">
@@ -9267,9 +9360,9 @@ function renderProfileWidgetsSection(): string {
             <span class="profile-widget-icon">${widgetIcon(w.url)}</span>
             <input type="text" maxlength="48" placeholder="${t("pw.name.ph")}" value="${escapeHtml(w.label)}" data-widget-label="${i}" class="widget-edit-label" />
             <input type="text" maxlength="300" placeholder="https://…" value="${escapeHtml(w.url)}" data-widget-url="${i}" class="widget-edit-url" />
-            <button class="ghost" data-widget-up="${i}" title="${t("pw.up")}" ${i === 0 ? "disabled" : ""}>↑</button>
-            <button class="ghost" data-widget-down="${i}" title="${t("pw.down")}" ${i === (widgetsDraft?.length ?? 0) - 1 ? "disabled" : ""}>↓</button>
-            <button class="ghost danger" data-widget-remove="${i}" title="${t("common.delete")}">✕</button>
+            <button class="ghost" data-widget-up="${i}" data-tooltip="${t("pw.up")}" ${i === 0 ? "disabled" : ""}>↑</button>
+            <button class="ghost" data-widget-down="${i}" data-tooltip="${t("pw.down")}" ${i === (widgetsDraft?.length ?? 0) - 1 ? "disabled" : ""}>↓</button>
+            <button class="ghost danger" data-widget-remove="${i}" data-tooltip="${t("common.delete")}">✕</button>
           </div>
         `).join("");
   const canAdd = (widgetsDraft?.length ?? 0) < 8;
@@ -9496,7 +9589,7 @@ function renderProfileEditBannerColor(): string {
     <div class="settings-slider-wrap" style="gap:12px; align-items:center;">
       <input id="profile-banner-color-input" type="color" value="${escapeHtml(colorValue)}" />
       <span id="profile-banner-color-val" class="settings-slider-val" style="min-width:120px;">${escapeHtml(pe.draftBannerColor || t("ap.accent.default"))}</span>
-      <button id="profile-banner-color-clear" class="ghost" title="${t("pf.clear")}">${icon("x", { size: 14 })}</button>
+      <button id="profile-banner-color-clear" class="ghost" data-tooltip="${t("pf.clear")}">${icon("x", { size: 14 })}</button>
     </div>
     <small class="profile-field-hint">${t("pf.bannercolor.hint")}</small>
     ${errBlock}
@@ -9830,7 +9923,7 @@ function renderProfileField(opts: ProfileFieldOpts): string {
     `;
   }
   const action = opts.disabled
-    ? `<span class="profile-field-disabled" title="${escapeHtml(opts.disabledHint ?? "")}">${t("pf.na")}</span>`
+    ? `<span class="profile-field-disabled" data-tooltip="${escapeHtml(opts.disabledHint ?? "")}">${t("pf.na")}</span>`
     : `<button class="ghost profile-field-edit" data-profile-edit="${opts.field}">${t("pf.edit")}</button>`;
   return `
     <div class="profile-field" data-profile-field="${opts.field}">
@@ -9949,9 +10042,9 @@ function renderMemberRow(m: Member, ownerId: string, canManageRole: boolean, can
         }
       </td>
       <td>
-        ${!isSelf ? `<button class="ghost member-dm" data-user-id="${m.userId}" title="Личное сообщение">${icon("reply")}</button>` : ""}
-        ${showCall ? `<button class="ghost member-call" data-user-id="${m.userId}" title="Позвонить">${icon("phone")}</button>` : ""}
-        ${showKick ? `<button class="ghost member-kick" data-user-id="${m.userId}" title="Удалить">${icon("trash")}</button>` : ""}
+        ${!isSelf ? `<button class="ghost member-dm" data-user-id="${m.userId}" data-tooltip="Личное сообщение">${icon("reply")}</button>` : ""}
+        ${showCall ? `<button class="ghost member-call" data-user-id="${m.userId}" data-tooltip="Позвонить">${icon("phone")}</button>` : ""}
+        ${showKick ? `<button class="ghost member-kick" data-user-id="${m.userId}" data-tooltip="Удалить">${icon("trash")}</button>` : ""}
       </td>
     </tr>
   `;
@@ -13270,8 +13363,8 @@ function renderChannelSettingsInvites(): string {
           <li data-invite="${i.id}">
             <code class="invite-code">${escapeHtml(i.code)}</code>
             <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}</span>
-            <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" title="Копировать код">⧉</button>
-            <button class="ghost invite-revoke" data-invite="${i.id}" title="Отозвать">✕</button>
+            <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" data-tooltip="Копировать код">⧉</button>
+            <button class="ghost invite-revoke" data-invite="${i.id}" data-tooltip="Отозвать">✕</button>
           </li>
         `).join("")}
       </ul>`;
