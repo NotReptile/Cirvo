@@ -16,6 +16,11 @@ mod screen_capture;
 #[cfg(target_os = "windows")]
 mod screen_audio;
 
+// Нативные плашки WebView2 (разрешение микрофона/камеры, «сохранить пароль»)
+// гасим на стороне шелла — Win-only, см. комментарий в модуле.
+#[cfg(target_os = "windows")]
+mod webview_tweaks;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -46,6 +51,13 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
+
+    // on_page_load, а не setup: PlatformWebview готов гарантированно, и хук
+    // не конфликтует с чужим содержимым setup-замыкания.
+    #[cfg(target_os = "windows")]
+    let builder = builder.on_page_load(|webview, _payload| {
+        webview_tweaks::install(webview);
+    });
 
     builder
         .run(tauri::generate_context!())
