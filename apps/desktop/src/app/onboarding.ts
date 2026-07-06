@@ -12,7 +12,7 @@ export function renderOnboarding(container: HTMLElement, onDone: (url: string) =
         </p>
         <form id="onboarding-form" class="onboarding-form" autocomplete="off">
           <label for="onboarding-url">Адрес сервера</label>
-          <input id="onboarding-url" name="url" placeholder="<PUBLIC_IP> или chat.example.com" required />
+          <input id="onboarding-url" name="url" placeholder="chat.example.com или 203.0.113.10" spellcheck="false" required />
           <div class="onboarding-error" id="onboarding-error" hidden></div>
           <button type="submit" class="primary" id="onboarding-submit">Подключиться</button>
         </form>

@@ -38,6 +38,14 @@ cpal = "0.15"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 
+# Убираем нативные плашки WebView2 (разрешение микрофона/камеры, «сохранить
+# пароль») — см. webview_tweaks.rs. Версии строго те, что уже в графе у wry
+# (Cargo.lock: webview2-com 0.38.x, windows-core 0.61.x) — второе дерево
+# `windows` даст несовместимые COM-типы.
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

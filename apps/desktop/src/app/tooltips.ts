@@ -84,7 +84,9 @@ function onMouseOver(ev: MouseEvent): void {
   if (currentTarget && currentTarget !== target) hide();
   currentTarget = target;
   showTimer = setTimeout(() => {
-    if (!currentTarget) return;
+    // innerHTML-пере-рендер мог заменить DOM под неподвижным курсором —
+    // detached-элемент уже не там, где был, тултип показался бы в пустоте.
+    if (!currentTarget || !currentTarget.isConnected) return;
     const tip = ensureTooltip();
     tip.textContent = text;
     position(currentTarget, tip);
@@ -98,6 +100,12 @@ function onMouseOut(ev: MouseEvent): void {
   // не скрываем (mouseover/mouseout по дочерним нодам).
   const related = ev.relatedTarget as Node | null;
   if (related && target.contains(related)) return;
+  hide();
+}
+
+// Для render()-цикла: innerHTML-пере-рендер уносит hover-элемент из DOM,
+// mouseout по нему уже не придёт — открытый тултип «залипает» на экране.
+export function hideTooltip(): void {
   hide();
 }
 
