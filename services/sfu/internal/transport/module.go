@@ -22,6 +22,7 @@ import (
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	sharedticket "github.com/NotReptile/RuCord/libs/shared-go/wsticket"
 
 	"github.com/NotReptile/RuCord/services/sfu/internal/rtc"
 )
@@ -38,10 +39,11 @@ type Module struct {
 	db      *postgres.Pool
 	jwt     *jwtauth.Issuer
 	manager *rtc.Manager
+	tickets *sharedticket.Store
 }
 
-func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, manager *rtc.Manager) *Module {
-	return &Module{logger: logger, db: db, jwt: jwt, manager: manager}
+func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, manager *rtc.Manager, tickets *sharedticket.Store) *Module {
+	return &Module{logger: logger, db: db, jwt: jwt, manager: manager, tickets: tickets}
 }
 
 func (m *Module) RegisterRoutes(mux *http.ServeMux) {
@@ -54,6 +56,17 @@ type envelope struct {
 }
 
 func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		claims, err := m.tickets.Consume(ctx, ticket, sharedticket.PurposeSFU)
+		cancel()
+		if err != nil || claims.ChannelID == uuid.Nil {
+			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid websocket ticket")
+			return
+		}
+		m.connectAuthenticated(w, r, claims.UserID, claims.SessionID, claims.ChannelID)
+		return
+	}
 	token := r.URL.Query().Get("access_token")
 	if token == "" {
 		token = bearerToken(r)
@@ -73,14 +86,18 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid channel id")
 		return
 	}
+	m.connectAuthenticated(w, r, claims.UserID, claims.SessionID, channelID)
+}
+
+func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, userID, sessionID, channelID uuid.UUID) {
 
 	checkCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	if !sessionAlive(checkCtx, m.db, claims.SessionID, claims.UserID) {
+	if !sessionAlive(checkCtx, m.db, sessionID, userID) {
 		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session not active")
 		return
 	}
-	if !isVoiceParticipant(checkCtx, m.db, channelID, claims.SessionID) {
+	if !isVoiceParticipant(checkCtx, m.db, channelID, sessionID) {
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "join the voice channel first")
 		return
 	}
@@ -93,7 +110,7 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 	wsConn.SetReadLimit(maxReadBytes)
 
 	sig := &wsSignaler{conn: wsConn}
-	peer, err := m.manager.Join(channelID, claims.UserID, claims.SessionID, sig)
+	peer, err := m.manager.Join(channelID, userID, sessionID, sig)
 	if err != nil {
 		m.logger.Error("sfu join failed", "error", err)
 		_ = wsConn.Close(websocket.StatusInternalError, "join failed")

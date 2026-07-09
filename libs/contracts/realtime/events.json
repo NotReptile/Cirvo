@@ -1,32 +1,27 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "RuCordRealtimeEvents",
+  "$id": "https://rucord.local/contracts/realtime-envelope-v2.json",
+  "title": "RealtimeEnvelopeV2",
   "type": "object",
   "properties": {
-    "event": {
-      "type": "string",
-      "enum": [
-        "presence.snapshot",
-        "presence.updated",
-        "message.created",
-        "signal.offer",
-        "signal.answer",
-        "signal.ice-candidate"
-      ]
-    },
-    "channelId": {
-      "type": "string"
-    },
-    "workspaceId": {
-      "type": "string"
-    },
-    "payload": {
-      "type": "object"
-    }
+    "version": { "const": 2 },
+    "seq": { "type": "integer", "minimum": 1 },
+    "eventId": { "type": "string", "format": "uuid" },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "event": { "type": "string", "minLength": 1 },
+    "workspaceId": { "type": "string", "format": "uuid" },
+    "channelId": { "type": "string", "format": "uuid" },
+    "userId": { "type": "string", "format": "uuid" },
+    "payload": {}
   },
-  "required": [
-    "event",
-    "payload"
+  "required": ["version", "event", "payload"],
+  "oneOf": [
+    {
+      "properties": { "event": { "enum": ["sync.ready", "sync.required", "presence.snapshot"] } }
+    },
+    {
+      "required": ["seq", "eventId", "occurredAt"]
+    }
   ],
   "additionalProperties": false
 }

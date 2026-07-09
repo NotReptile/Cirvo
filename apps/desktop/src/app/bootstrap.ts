@@ -35,7 +35,10 @@ export function bootstrapDesktopApp(container: HTMLElement): void {
 
 function startApp(container: HTMLElement, apiBaseUrl: string, realtimeUrl: string): void {
   const http = new HttpClient(apiBaseUrl);
-  const realtime = new RealtimeClient(realtimeUrl);
+  const realtime = new RealtimeClient(realtimeUrl, async () => {
+    const result = await http.post<{ ticket: string }>("/api/v1/realtime/ticket", {});
+    return result.ticket || null;
+  });
 
   const callManager = new CallManager(http, realtime);
   const voiceManager = new VoiceChannelManager(http, realtime);

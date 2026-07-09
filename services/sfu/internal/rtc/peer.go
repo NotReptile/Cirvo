@@ -16,6 +16,7 @@ import (
 // картинку, пока паблишер не пришлёт I-frame. PLI шлём периодически,
 // пока видео-трек жив — просто и надёжно (как в pion/example sfu-ws).
 const pliInterval = 2 * time.Second
+const negotiationTimeout = 10 * time.Second
 
 // SDPPayload / ICEPayload — JSON-формы сигналинга (зеркало клиента).
 type SDPPayload struct {
@@ -44,6 +45,7 @@ type Peer struct {
 	mu          sync.Mutex
 	negotiating bool // sub.offer отправлен, ждём sub.answer
 	negPending  bool // за время переговоров трек-сет изменился ещё раз
+	negTimer    *time.Timer
 	closed      bool
 	published   []*webrtc.TrackLocalStaticRTP
 }
@@ -136,9 +138,14 @@ func (p *Peer) HandleSubAnswer(desc SDPPayload) {
 	answer := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: desc.SDP}
 	if err := p.sub.SetRemoteDescription(answer); err != nil {
 		p.logger.Warn("sub answer rejected", "error", err)
+		p.failNegotiation("sub answer rejected")
 		return
 	}
 	p.mu.Lock()
+	if p.negTimer != nil {
+		p.negTimer.Stop()
+		p.negTimer = nil
+	}
 	p.negotiating = false
 	pending := p.negPending
 	p.negPending = false
@@ -291,13 +298,42 @@ func (p *Peer) negotiateSub() {
 	offer, err := p.sub.CreateOffer(nil)
 	if err != nil {
 		p.logger.Warn("sub offer create failed", "error", err)
+		p.failNegotiation("sub offer create failed")
 		return
 	}
 	if err := p.sub.SetLocalDescription(offer); err != nil {
 		p.logger.Warn("sub offer apply failed", "error", err)
+		p.failNegotiation("sub offer apply failed")
 		return
 	}
-	_ = p.signal.Send("sub.offer", SDPPayload{Type: "offer", SDP: offer.SDP})
+	if err := p.signal.Send("sub.offer", SDPPayload{Type: "offer", SDP: offer.SDP}); err != nil {
+		p.logger.Warn("sub offer send failed", "error", err)
+		p.failNegotiation("sub offer send failed")
+		return
+	}
+	p.mu.Lock()
+	if !p.closed && p.negotiating {
+		p.negTimer = time.AfterFunc(negotiationTimeout, func() {
+			p.failNegotiation("sub negotiation timeout")
+		})
+	}
+	p.mu.Unlock()
+}
+
+func (p *Peer) failNegotiation(reason string) {
+	p.mu.Lock()
+	if !p.negotiating || p.closed {
+		p.mu.Unlock()
+		return
+	}
+	p.negotiating = false
+	p.negPending = false
+	if p.negTimer != nil {
+		p.negTimer.Stop()
+		p.negTimer = nil
+	}
+	p.mu.Unlock()
+	p.signal.Close(reason)
 }
 
 // Close снимает peer'а с комнаты: его треки убираются у подписчиков,
@@ -309,6 +345,10 @@ func (p *Peer) Close(reason string) {
 		return
 	}
 	p.closed = true
+	if p.negTimer != nil {
+		p.negTimer.Stop()
+		p.negTimer = nil
+	}
 	published := p.published
 	p.published = nil
 	p.mu.Unlock()

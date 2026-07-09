@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/coder/websocket"
@@ -15,6 +16,8 @@ import (
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	sharedticket "github.com/NotReptile/RuCord/libs/shared-go/wsticket"
+	"github.com/NotReptile/RuCord/services/realtime/internal/eventjournal"
 	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
 )
 
@@ -41,11 +44,13 @@ type Module struct {
 	db          *postgres.Pool
 	jwt         *jwtauth.Issuer
 	hub         *hub.Hub
+	journal     *eventjournal.Journal
+	tickets     *sharedticket.Store
 	dispatchers []Dispatcher
 }
 
-func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, h *hub.Hub, dispatchers ...Dispatcher) *Module {
-	return &Module{logger: logger, db: db, jwt: jwt, hub: h, dispatchers: dispatchers}
+func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, h *hub.Hub, journal *eventjournal.Journal, tickets *sharedticket.Store, dispatchers ...Dispatcher) *Module {
+	return &Module{logger: logger, db: db, jwt: jwt, hub: h, journal: journal, tickets: tickets, dispatchers: dispatchers}
 }
 
 func (m *Module) RegisterRoutes(mux *http.ServeMux) {
@@ -58,6 +63,17 @@ type envelope struct {
 }
 
 func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
+	if ticket := r.URL.Query().Get("ticket"); ticket != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		claims, err := m.tickets.Consume(ctx, ticket, sharedticket.PurposeRealtime)
+		cancel()
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid websocket ticket")
+			return
+		}
+		m.connectAuthenticated(w, r, claims.UserID, claims.SessionID)
+		return
+	}
 	token := r.URL.Query().Get("access_token")
 	if token == "" {
 		token = bearerToken(r)
@@ -71,14 +87,18 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid token")
 		return
 	}
+	m.connectAuthenticated(w, r, claims.UserID, claims.SessionID)
+}
+
+func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, userID, sessionID uuid.UUID) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	if !sessionAlive(ctx, m.db, claims.SessionID, claims.UserID) {
+	if !sessionAlive(ctx, m.db, sessionID, userID) {
 		cancel()
 		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session not active")
 		return
 	}
-	workspaces, err := loadUserWorkspaces(ctx, m.db, claims.UserID)
+	workspaces, err := loadUserWorkspaces(ctx, m.db, userID)
 	cancel()
 	if err != nil {
 		m.logger.Error("workspace lookup failed", "error", err)
@@ -95,26 +115,110 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	wsConn.SetReadLimit(maxReadBytes)
 
-	connection := hub.NewConnection(claims.SessionID, claims.UserID, workspaces)
+	connection := hub.NewConnection(sessionID, userID, workspaces)
 	m.hub.Add(connection)
 	defer func() {
 		m.hub.Remove(connection)
 		_ = wsConn.Close(websocket.StatusNormalClosure, "bye")
 	}()
 
-	snapshot := buildPresenceSnapshot(workspaces)
-	if encoded, err := json.Marshal(snapshot); err == nil {
-		select {
-		case connection.Send <- encoded:
-		default:
-		}
-	}
+	m.initializeSync(r.Context(), connection, workspaces, parseCursor(r))
+	connection.Activate()
 
 	connectionCtx, cancelConn := context.WithCancel(context.Background())
 	defer cancelConn()
 
 	go m.readLoop(connectionCtx, cancelConn, wsConn, connection)
-	m.writeLoop(connectionCtx, wsConn, connection, claims.SessionID)
+	m.writeLoop(connectionCtx, wsConn, connection, sessionID)
+}
+
+func parseCursor(r *http.Request) int64 {
+	raw := r.URL.Query().Get("cursor")
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+func (m *Module) initializeSync(ctx context.Context, conn *hub.Connection, workspaces []uuid.UUID, cursor int64) {
+	syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	highWater, err := m.journal.HighWater(syncCtx)
+	if err != nil {
+		m.logger.Warn("realtime high-water lookup failed", "error", err)
+		m.sendControl(conn, "sync.required", map[string]any{"reason": "journal_unavailable", "cursor": 0})
+		m.sendPresence(conn, workspaces)
+		return
+	}
+
+	requiresSnapshot := cursor == 0
+	reason := "missing_cursor"
+	if cursor > 0 {
+		minimum, minErr := m.journal.MinimumCursor(syncCtx)
+		if minErr != nil {
+			requiresSnapshot = true
+			reason = "journal_unavailable"
+		} else if minimum > 0 && cursor < minimum-1 {
+			requiresSnapshot = true
+			reason = "cursor_expired"
+		}
+	}
+
+	if !requiresSnapshot && cursor < highWater {
+		items, replayErr := m.journal.Replay(syncCtx, conn.UserID, workspaces, cursor, highWater)
+		if replayErr != nil || len(items) >= eventjournal.MaxReplayItems {
+			requiresSnapshot = true
+			if replayErr != nil {
+				reason = "replay_failed"
+			} else {
+				reason = "replay_limit"
+			}
+		} else {
+			for _, item := range items {
+				encoded, marshalErr := json.Marshal(item)
+				if marshalErr != nil || !conn.SendReplay(encoded) {
+					return
+				}
+			}
+		}
+	}
+
+	if requiresSnapshot {
+		m.sendControl(conn, "sync.required", map[string]any{"reason": reason, "cursor": highWater})
+	} else {
+		m.sendControl(conn, "sync.ready", map[string]any{"cursor": highWater, "workspaces": uuidStrings(workspaces)})
+	}
+	m.sendPresence(conn, workspaces)
+}
+
+func (m *Module) sendControl(conn *hub.Connection, event string, payload any) {
+	encoded, err := json.Marshal(map[string]any{
+		"version": 2,
+		"event":   event,
+		"payload": payload,
+	})
+	if err == nil {
+		conn.SendReplay(encoded)
+	}
+}
+
+func (m *Module) sendPresence(conn *hub.Connection, workspaces []uuid.UUID) {
+	if encoded, err := json.Marshal(buildPresenceSnapshot(workspaces)); err == nil {
+		conn.SendReplay(encoded)
+	}
+}
+
+func uuidStrings(ids []uuid.UUID) []string {
+	values := make([]string, 0, len(ids))
+	for _, id := range ids {
+		values = append(values, id.String())
+	}
+	return values
 }
 
 func (m *Module) readLoop(ctx context.Context, cancel context.CancelFunc, wsConn *websocket.Conn, conn *hub.Connection) {
@@ -270,6 +374,7 @@ func loadUserWorkspaces(ctx context.Context, db *postgres.Pool, userID uuid.UUID
 }
 
 type presenceSnapshot struct {
+	Version int                `json:"version"`
 	Event   string             `json:"event"`
 	Payload presenceSnapshotPL `json:"payload"`
 }
@@ -285,7 +390,8 @@ func buildPresenceSnapshot(workspaces []uuid.UUID) presenceSnapshot {
 		ws = append(ws, id.String())
 	}
 	return presenceSnapshot{
-		Event: "presence.snapshot",
+		Version: 2,
+		Event:   "presence.snapshot",
 		Payload: presenceSnapshotPL{
 			Workspaces: ws,
 			Timestamp:  time.Now().UTC().Format(time.RFC3339Nano),

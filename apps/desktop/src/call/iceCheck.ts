@@ -52,7 +52,7 @@ export async function runIceCheck(http: HttpClient): Promise<IceCheckResult> {
 
   let servers: RTCIceServer[];
   try {
-    const resp = await http.get<IceServersResponse>("/api/v1/ice-servers");
+    const resp = await http.get<IceServersResponse>("/api/v1/media/config");
     servers = resp.iceServers ?? [];
   } catch (err) {
     result.error = `Не удалось получить /ice-servers: ${err instanceof Error ? err.message : String(err)}`;

@@ -425,7 +425,7 @@ export class CallManager {
   private async ensureIceServers(): Promise<void> {
     if (this.iceServers) return;
     try {
-      const resp = await this.http.get<IceServersResponse>("/api/v1/ice-servers");
+      const resp = await this.http.get<IceServersResponse>("/api/v1/media/config");
       this.iceServers = resp.iceServers ?? [];
     } catch {
       this.iceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];

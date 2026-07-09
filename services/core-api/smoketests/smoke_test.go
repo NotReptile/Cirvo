@@ -95,7 +95,7 @@ func TestMain(m *testing.M) {
 			DB:          db,
 			Redis:       redisClient,
 			JWT:         jwt,
-			Publisher:   realtimebus.NewPublisher(redisClient),
+			Publisher:   realtimebus.NewPublisher(redisClient, db),
 			ObjectStore: objectStore,
 			Limiter:     ratelimit.New(redisClient.Client),
 			Settings:    serversettings.NewProvider(db),

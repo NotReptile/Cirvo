@@ -31,7 +31,7 @@ export interface VoiceParticipant {
   cameraOn?: boolean;
 }
 
-export type VoiceState = "idle" | "joining" | "active" | "leaving";
+export type VoiceState = "idle" | "joining" | "active" | "media-reconnecting" | "leaving";
 
 // Пресет качества screenshare'а: разрешение, FPS и cap по битрейту.
 // Передаётся в toggleScreenShare() — без него браузер сам выбирает
@@ -198,6 +198,7 @@ export class VoiceChannelManager {
       await this.leave();
     }
     this.update({ state: "joining", channelId, participants: [], error: null });
+    let serverJoined = false;
     try {
       await this.ensureIceServers();
       await this.acquireLocalStream();
@@ -206,8 +207,8 @@ export class VoiceChannelManager {
         {}
       );
       const others = resp.others ?? [];
+      serverJoined = true;
       this.update({
-        state: "active",
         channelId,
         selfSessionId: resp.self.sessionId,
         participants: [resp.self, ...others]
@@ -222,9 +223,17 @@ export class VoiceChannelManager {
           await this.dialPeer(other);
         }
       }
+      this.update({ state: "active" });
     } catch (err) {
       const message = err instanceof Error ? err.message : "join failed";
       this.tearDownLocal();
+      if (serverJoined) {
+        try {
+          await this.http.post(`/api/v1/channels/${channelId}/voice/leave`, {});
+        } catch {
+          /* join rollback is best-effort; stale rows are reaped server-side */
+        }
+      }
       this.snapshot = { ...IDLE, error: message };
       this.emit();
       throw err;
@@ -708,7 +717,7 @@ export class VoiceChannelManager {
   private async ensureIceServers(): Promise<void> {
     if (this.iceServers) return;
     try {
-      const r = await this.http.get<IceServersResponse>("/api/v1/ice-servers");
+      const r = await this.http.get<IceServersResponse>("/api/v1/media/config");
       this.iceServers = r.iceServers ?? [];
       this.sfuUrl = r.sfuUrl?.trim() ? r.sfuUrl.trim() : null;
     } catch {
@@ -717,25 +726,53 @@ export class VoiceChannelManager {
     }
   }
 
-  // F.2: поднять SFU-сессию. При ошибке (сокет не открылся / нет токена)
-  // звонок не валим — участник остаётся в ростере, но без медиа. Это
-  // деградация, а не падение: лучше «вижу участников, не слышу», чем
-  // выкинутый из канала юзер.
+  // SFU обязателен, когда сервер его анонсировал. Initial connect должен
+  // завершиться до перехода voice state в active; дальнейшие обрывы
+  // восстанавливаются внутри SfuSession.
   private async startSfu(channelId: string, _selfSessionId: string): Promise<void> {
-    const token = this.http.getTokens()?.accessToken;
-    if (!this.sfuUrl || !token || !this.localStream) return;
+    if (!this.sfuUrl || !this.localStream) throw new Error("sfu configuration unavailable");
     const session = new SfuSession({
       wsUrl: this.sfuUrl,
-      accessToken: token,
+      getAccessToken: () => this.http.getTokens()?.accessToken ?? null,
+      getTicket: async () => {
+        const result = await this.http.post<{ ticket: string }>(
+          `/api/v1/channels/${channelId}/voice/sfu-ticket`,
+          {}
+        );
+        return result.ticket || null;
+      },
       channelId,
       iceServers: this.iceServers ?? [],
-      onRemoteChange: () => this.emit()
+      refreshIceServers: async () => {
+        const config = await this.http.get<IceServersResponse>("/api/v1/media/config");
+        this.iceServers = config.iceServers ?? [];
+        return this.iceServers;
+      },
+      onRemoteChange: () => this.emit(),
+      onStateChange: (state, error) => {
+        if (state === "reconnecting") {
+          this.update({ state: "media-reconnecting", error: error ?? "media reconnecting" });
+          return;
+        }
+        if (this.snapshot.state === "media-reconnecting") {
+          this.update({ state: "active", error: null });
+          void this.reloadVoiceRoster(channelId);
+        }
+      }
     });
     this.sfu = session;
+    await session.start(this.localStream);
+  }
+
+  private async reloadVoiceRoster(channelId: string): Promise<void> {
     try {
-      await session.start(this.localStream);
-    } catch (err) {
-      this.update({ error: err instanceof Error ? err.message : "sfu connect failed" });
+      const data = await this.http.get<{ items: VoiceParticipant[] }>(
+        `/api/v1/channels/${channelId}/voice/participants`
+      );
+      if (this.snapshot.channelId !== channelId) return;
+      this.update({ participants: data.items ?? [] });
+    } catch {
+      // The next voice event or reconnect will retry convergence.
     }
   }
 

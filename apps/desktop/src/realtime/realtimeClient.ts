@@ -1,4 +1,8 @@
 export interface RealtimeEvent {
+  version?: number;
+  seq?: number;
+  eventId?: string;
+  occurredAt?: string;
   event: string;
   workspaceId?: string;
   channelId?: string;
@@ -24,8 +28,17 @@ export class RealtimeClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connState: ConnectionState = "offline";
   private stateListeners = new Set<StateListener>();
+  private cursor = 0;
+  private cursorKey: string | null = null;
+  private tokenSubject: string | null = null;
+  private connecting = false;
+  private syncPending = false;
+  private pendingEvents: RealtimeEvent[] = [];
 
-  constructor(readonly endpoint: string) {}
+  constructor(
+    readonly endpoint: string,
+    private readonly issueTicket?: () => Promise<string | null>
+  ) {}
 
   getConnectionState(): ConnectionState {
     return this.connState;
@@ -43,12 +56,21 @@ export class RealtimeClient {
   }
 
   setAccessToken(token: string | null): void {
+    const nextSubject = token ? subjectFromToken(token) : null;
+    if (this.tokenSubject && nextSubject && this.tokenSubject !== nextSubject) {
+      this.disconnect();
+    }
     this.accessToken = token;
+    this.tokenSubject = nextSubject;
     if (!token) {
+      this.cursor = 0;
+      this.cursorKey = null;
       this.disconnect();
       return;
     }
-    this.connect();
+    this.cursorKey = `rucord:realtime-cursor:${this.endpoint}:${nextSubject ?? "unknown"}`;
+    this.cursor = readCursor(this.cursorKey);
+    void this.connect();
   }
 
   subscribe(listener: Listener): () => void {
@@ -68,15 +90,66 @@ export class RealtimeClient {
     }
   }
 
-  private connect(): void {
+  acknowledgeCursor(cursor: number): void {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) return;
+    this.cursor = cursor;
+    if (!this.cursorKey) return;
+    try {
+      localStorage.setItem(this.cursorKey, String(cursor));
+    } catch {
+      // Storage can be disabled; in-memory resume still works this session.
+    }
+  }
+
+  completeSnapshot(cursor: number): void {
+    this.acknowledgeCursor(cursor);
+    this.syncPending = false;
+    const pending = this.pendingEvents
+      .splice(0, this.pendingEvents.length)
+      .filter((event) => typeof event.seq === "number" && event.seq > this.cursor)
+      .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    for (const event of pending) {
+      this.acknowledgeCursor(event.seq!);
+      this.notify(event);
+    }
+  }
+
+  beginSnapshot(): void {
+    this.syncPending = true;
+    this.pendingEvents = [];
+  }
+
+  private notify(event: RealtimeEvent): void {
+    for (const listener of this.listeners) listener(event);
+  }
+
+  private async connect(): Promise<void> {
     if (!this.accessToken) return;
+    if (this.connecting) return;
     if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
       return;
     }
+    this.connecting = true;
     this.manualClose = false;
     this.setConnState(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
-    const url = `${this.endpoint}?access_token=${encodeURIComponent(this.accessToken)}`;
-    const socket = new WebSocket(url);
+    let ticket: string | null = null;
+    if (this.issueTicket) {
+      try {
+        ticket = await this.issueTicket();
+      } catch {
+        // One-release compatibility: fall back to the access-token query.
+      }
+    }
+    if (!this.accessToken || this.manualClose) {
+      this.connecting = false;
+      return;
+    }
+    const url = new URL(this.endpoint);
+    if (ticket) url.searchParams.set("ticket", ticket);
+    else url.searchParams.set("access_token", this.accessToken);
+    if (this.cursor > 0) url.searchParams.set("cursor", String(this.cursor));
+    const socket = new WebSocket(url.toString());
+    this.connecting = false;
     this.socket = socket;
     socket.onopen = () => {
       this.reconnectAttempts = 0;
@@ -90,9 +163,26 @@ export class RealtimeClient {
         return;
       }
       if (!parsed) return;
-      for (const listener of this.listeners) {
-        listener(parsed);
+      if (parsed.event === "sync.required") {
+        this.syncPending = true;
+        this.pendingEvents = [];
       }
+      if (parsed.event === "sync.ready") {
+        const next = Number((parsed.payload as { cursor?: unknown } | null)?.cursor);
+        if (Number.isSafeInteger(next) && next >= 0) {
+          this.syncPending = false;
+          this.acknowledgeCursor(next);
+        }
+      }
+      if (parsed.version === 2 && typeof parsed.seq === "number") {
+        if (parsed.seq <= this.cursor) return;
+        if (this.syncPending) {
+          this.pendingEvents.push(parsed);
+          return;
+        }
+        this.acknowledgeCursor(parsed.seq);
+      }
+      this.notify(parsed);
     };
     socket.onclose = () => {
       this.socket = null;
@@ -103,7 +193,7 @@ export class RealtimeClient {
       this.setConnState("reconnecting");
       const delay = Math.min(30_000, 500 * 2 ** this.reconnectAttempts);
       this.reconnectAttempts += 1;
-      this.reconnectTimer = setTimeout(() => this.connect(), delay);
+      this.reconnectTimer = setTimeout(() => void this.connect(), delay);
     };
     socket.onerror = () => {
       socket.close();
@@ -129,5 +219,26 @@ export class RealtimeClient {
       this.socket = null;
     }
     this.setConnState("offline");
+  }
+}
+
+function readCursor(key: string): number {
+  try {
+    const value = Number(localStorage.getItem(key));
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function subjectFromToken(token: string): string | null {
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    const normalized = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
+    const payload = JSON.parse(atob(normalized)) as { sub?: unknown };
+    return typeof payload.sub === "string" && payload.sub ? payload.sub : null;
+  } catch {
+    return null;
   }
 }

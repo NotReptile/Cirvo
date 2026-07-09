@@ -68,7 +68,7 @@ type LinkPreviewRunner struct {
 func NewLinkPreviewRunner(logger *slog.Logger, db *postgres.Pool, redis *redisstore.Client) *LinkPreviewRunner {
 	var pub *realtimebus.Publisher
 	if redis != nil {
-		pub = realtimebus.NewPublisher(redis)
+		pub = realtimebus.NewPublisher(redis, db)
 	}
 	return &LinkPreviewRunner{
 		logger:    logger,

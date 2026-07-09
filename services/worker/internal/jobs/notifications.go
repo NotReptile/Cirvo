@@ -61,7 +61,7 @@ type NotificationRunner struct {
 func NewNotificationRunner(logger *slog.Logger, db *postgres.Pool, redis *redisstore.Client) *NotificationRunner {
 	var pub *realtimebus.Publisher
 	if redis != nil {
-		pub = realtimebus.NewPublisher(redis)
+		pub = realtimebus.NewPublisher(redis, db)
 	}
 	return &NotificationRunner{logger: logger, db: db, publisher: pub}
 }

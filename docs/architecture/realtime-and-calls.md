@@ -4,12 +4,21 @@
 
 The realtime node (`services/realtime`) is limited to:
 
-- transport connection lifecycle (`/ws` WebSocket upgrade with `access_token` query, session liveness check, presence snapshot);
+- transport connection lifecycle (`/ws` WebSocket upgrade with a 30-second one-time ticket; legacy `access_token` remains temporarily);
+- durable `RealtimeEnvelopeV2` journal with a seven-day replay window;
 - presence events;
 - signaling message transport (events `call.invite|offer|answer|ice|hangup`);
 - broadcast fan-out by user and by session (`hub.BroadcastUser`, `hub.BroadcastSession`).
 
-It is not responsible for canonical message persistence, workspace membership or role evaluation.
+It is not responsible for canonical message persistence, workspace membership or role evaluation. Postgres remains the source of truth; the journal only closes disconnect/reconnect gaps.
+
+## Resume protocol
+
+- Every durable event has `version`, global `seq`, `eventId` and `occurredAt`.
+- The desktop reconnects with its last acknowledged `cursor`.
+- The connection is registered in paused mode, replay is queued first, and live frames are buffered until `sync.ready`.
+- Missing, expired or oversized replay cursors produce `sync.required`; the desktop runs an authoritative generation-guarded REST snapshot and then acknowledges the supplied cursor.
+- `typing.*` remains transient and is not journaled.
 
 ## Signaling Module
 
@@ -22,10 +31,12 @@ It is not responsible for canonical message persistence, workspace membership or
 
 ## ICE Configuration
 
-`core-api` exposes `GET /api/v1/ice-servers` (Protected). It returns `{ iceServers: RTCIceServer[] }`, built from env:
+`core-api` exposes `GET /api/v1/media/config` (Protected). `/api/v1/ice-servers` is a one-release compatibility alias. The response contains `{ mode, sfuUrl, iceServers, turnExpiresAt }`.
 
 - `ICE_STUN_URLS` - comma-separated; defaults to `stun:stun.l.google.com:19302`.
-- `ICE_TURN_URL`, `ICE_TURN_USERNAME`, `ICE_TURN_CREDENTIAL` - optional; if `ICE_TURN_URL` is empty only STUN is returned.
+- `ICE_TURN_URLS` - comma-separated UDP/TCP/TLS endpoints.
+- `ICE_TURN_SHARED_SECRET` - coturn REST secret used to issue per-user one-hour HMAC credentials.
+- Static `ICE_TURN_URL/USERNAME/CREDENTIAL` values are legacy fallback only.
 
 `deploy/local/docker-compose.yml` ships a coturn service under the `turn` profile (`docker compose --profile turn up coturn`). For local 1-on-1 development host candidates are usually sufficient and the TURN container does not need to run.
 
@@ -40,9 +51,6 @@ States: `idle` → (`outgoing` | `incoming`) → `connecting` → `active` → `
 - Local stream is `getUserMedia({ audio: true })` only in MVP. Video is reserved.
 - UI consumes immutable `CallSnapshot` via `subscribe(listener)` and never touches `RTCPeerConnection`.
 
-## Open Items
+## Media recovery
 
-- Group calls / voice channels (mesh first, SFU later).
-- Video tracks and screen share.
-- Persistent call lifecycle (table `calls` with timestamps and reason) - for in-chat call history and synchronized duration across peers.
-- TURN credential rotation via HMAC time-limited secrets.
+SFU is the production voice/video/screen transport. Initial SFU failure rolls back the voice membership. After activation, signaling or ICE failure moves the client to `media-reconnecting`; publisher/subscriber PCs are rebuilt with fresh credentials and current local tracks using exponential backoff. Mesh is an explicit development fallback only.

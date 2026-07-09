@@ -19,5 +19,7 @@ services/**/bin/
 *.test
 TASKS.md
 backups/
+*.code-workspace
+/install.ps1
 
 .claude/

@@ -35,7 +35,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 	signalingModule := signaling.NewModule(container.Logger, container.DB, container.Hub)
 	typingModule := typing.NewModule(container.Logger, container.DB, container.Hub)
 	server.registerModules(
-		transport.NewModule(container.Logger, container.DB, container.JWT, container.Hub, signalingModule, typingModule),
+		transport.NewModule(container.Logger, container.DB, container.JWT, container.Hub, container.Journal, container.Tickets, signalingModule, typingModule),
 		presence.NewModule(container.Hub),
 		signalingModule,
 		typingModule,

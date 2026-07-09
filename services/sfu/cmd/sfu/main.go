@@ -29,6 +29,8 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/observability"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	"github.com/NotReptile/RuCord/libs/shared-go/wsticket"
 
 	"github.com/NotReptile/RuCord/services/sfu/internal/rtc"
 	"github.com/NotReptile/RuCord/services/sfu/internal/transport"
@@ -37,6 +39,10 @@ import (
 const version = "0.1.0"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		runHealthcheck()
+		return
+	}
 	cfg := sharedconfig.Load("sfu", ":8095")
 	logger := observability.NewLogger(cfg.ServiceName)
 
@@ -50,13 +56,25 @@ func main() {
 	}
 	defer db.Close()
 
+	redisClient, err := redisstore.ConnectFromEnv(rootCtx)
+	if err != nil {
+		logger.Error("redis connect failed", "error", err)
+		return
+	}
+	defer redisClient.Close()
+
 	jwtIssuer, err := jwtauth.NewIssuerFromEnv(cfg.ServiceName)
 	if err != nil {
 		logger.Error("jwt issuer init failed", "error", err)
 		return
 	}
 
-	engine, err := rtc.NewEngine(logger, loadEngineConfig())
+	engineConfig := loadEngineConfig()
+	if cfg.Environment == "production" && len(engineConfig.PublicIPs) == 0 {
+		logger.Error("RUCORD_SFU_PUBLIC_IP is required in production")
+		return
+	}
+	engine, err := rtc.NewEngine(logger, engineConfig)
 	if err != nil {
 		logger.Error("rtc engine init failed", "error", err)
 		return
@@ -67,7 +85,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", sharedhttp.HealthHandler(cfg.ServiceName, version))
-	transport.NewModule(logger, db, jwtIssuer, manager).RegisterRoutes(mux)
+	transport.NewModule(logger, db, jwtIssuer, manager, wsticket.New(redisClient.Client)).RegisterRoutes(mux)
 
 	handler := sharedhttp.WithRequestID(mux)
 	handler = sharedhttp.AccessLog(logger, handler)
@@ -100,6 +118,15 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("http server shutdown error", "error", err)
 	}
+}
+
+func runHealthcheck() {
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:8095/healthz")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	_ = resp.Body.Close()
 }
 
 func loadEngineConfig() rtc.EngineConfig {

@@ -64,6 +64,21 @@ jobs:
           # «Dependencies file is not found». Кэш не критичен для smoke.
           cache: false
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Desktop typecheck, unit tests and build
+        run: |
+          npm run check:desktop
+          npm --workspace apps/desktop test
+          npm run build:desktop
+
       # MinIO нельзя поднять через services-блок: у GH Actions services нет
       # поля command, а официальный minio/minio требует `server /data`.
       # Bitnami-вариант, который умеет стартовать сам, выпилили из публичного
@@ -104,8 +119,18 @@ jobs:
           go build \
             ./services/core-api/... \
             ./services/realtime/... \
+            ./services/sfu/... \
             ./services/worker/... \
             ./libs/shared-go/...
 
+      - name: Unit tests with race detector
+        run: go test -race ./libs/shared-go/... ./services/core-api/... ./services/realtime/... ./services/sfu/...
+
+      - name: Validate production compose
+        run: docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env.example config --quiet
+
       - name: Smoke tests
-        run: go test -tags=smoke -count=1 -v ./services/core-api/smoketests/
+        run: |
+          go test -tags=smoke -count=1 -v ./libs/shared-go/wsticket/
+          go test -tags=smoke -count=1 -v ./services/realtime/internal/eventjournal/
+          go test -tags=smoke -count=1 -v ./services/core-api/smoketests/

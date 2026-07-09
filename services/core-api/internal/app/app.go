@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	sharedticket "github.com/NotReptile/RuCord/libs/shared-go/wsticket"
 	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/attachment"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/audit"
@@ -23,6 +24,7 @@ import (
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/system"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/voice"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/workspace"
+	ticketmod "github.com/NotReptile/RuCord/services/core-api/internal/modules/wsticket"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
@@ -70,6 +72,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		voice.NewModule(container.DB, container.Publisher, ice.SFUEnabled(), container.Logger),
 		audit.NewModule(container.DB),
 		ice.NewModule(),
+		ticketmod.NewModule(container.DB, sharedticket.New(container.Redis.Client)),
 		servermod.NewModule(container.DB, container.Settings, container.ObjectStore, container.Logger),
 		system.NewModule(),
 	)

@@ -20,12 +20,15 @@ interface SfuSessionOptions {
   // Допускается и относительный путь (начинается с "/") — тогда хост
   // берётся из window.location.
   wsUrl: string;
-  accessToken: string;
+  getAccessToken: () => string | null;
+  getTicket?: () => Promise<string | null>;
   channelId: string;
   iceServers: RTCIceServer[];
+  refreshIceServers?: () => Promise<RTCIceServer[]>;
   // Дёргается при любом изменении набора remote-треков — менеджер
   // транслирует это в emit() для UI-ререндера.
   onRemoteChange: () => void;
+  onStateChange?: (state: "connected" | "reconnecting", error?: string) => void;
 }
 
 interface SignalEnvelope {
@@ -48,6 +51,14 @@ export class SfuSession {
   private sub: RTCPeerConnection | null = null;
   private closed = false;
   private pubMakingOffer = false;
+  private localStream: MediaStream | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private reconnecting = false;
+  private hasStarted = false;
+  private resetting = false;
+  private iceServers: RTCIceServer[];
 
   // ICE, пришедшие до setRemoteDescription соответствующего PC.
   private pubPendingIce: RTCIceCandidateInit[] = [];
@@ -57,16 +68,25 @@ export class SfuSession {
   private remotes = new Map<string, MediaStream>();
   private audioEls = new Map<string, HTMLAudioElement>();
 
-  constructor(private readonly opts: SfuSessionOptions) {}
+  constructor(private readonly opts: SfuSessionOptions) {
+    this.iceServers = opts.iceServers;
+  }
 
   // start открывает сокет, поднимает оба PC и публикует локальные треки.
   // Резолвится, когда pub-PC отправил первый offer (медиа потечёт после
   // ICE/DTLS — ждать коннекта тут не нужно, UI покажет участника сразу).
   async start(localStream: MediaStream): Promise<void> {
+    this.localStream = localStream;
+    await this.connectTransport(localStream);
+    this.hasStarted = true;
+    this.opts.onStateChange?.("connected");
+  }
+
+  private async connectTransport(localStream: MediaStream): Promise<void> {
     await this.openSocket();
     if (this.closed) return;
 
-    const config: RTCConfiguration = { iceServers: this.opts.iceServers };
+    const config: RTCConfiguration = { iceServers: this.iceServers };
     const pub = new RTCPeerConnection(config);
     const sub = new RTCPeerConnection(config);
     this.pub = pub;
@@ -91,12 +111,54 @@ export class SfuSession {
     // браузер всё равно его примет; событие игнорируем.
     sub.ondatachannel = () => {};
 
+    const handleState = (pc: RTCPeerConnection) => {
+      const state = pc.connectionState;
+      if (state === "connected") {
+        if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+        this.disconnectTimer = null;
+        return;
+      }
+      if (state === "failed" || state === "closed") {
+        this.scheduleReconnect(`peer connection ${state}`);
+      } else if (state === "disconnected" && !this.disconnectTimer) {
+        this.disconnectTimer = setTimeout(() => {
+          this.disconnectTimer = null;
+          if (pc.connectionState === "disconnected") this.scheduleReconnect("peer connection disconnected");
+        }, 5_000);
+      }
+    };
+    pub.onconnectionstatechange = () => handleState(pub);
+    sub.onconnectionstatechange = () => handleState(sub);
+
     for (const track of localStream.getTracks()) {
       pub.addTrack(track, localStream);
     }
     // Если negotiationneeded по какой-то причине не выстрелил (тайминги
     // некоторых webview) — гарантируем первый offer явно.
     await this.renegotiatePub();
+    await this.waitForConnected(pub, sub);
+  }
+
+  private waitForConnected(pub: RTCPeerConnection, sub: RTCPeerConnection): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const started = Date.now();
+      const timer = setInterval(() => {
+        if (this.closed) {
+          clearInterval(timer);
+          reject(new Error("sfu session closed"));
+          return;
+        }
+        if (pub.connectionState === "connected" && sub.connectionState === "connected") {
+          clearInterval(timer);
+          resolve();
+          return;
+        }
+        if (["failed", "closed"].includes(pub.connectionState) || ["failed", "closed"].includes(sub.connectionState) || Date.now() - started >= 15_000) {
+          clearInterval(timer);
+          reject(new Error("sfu media connection timeout"));
+        }
+      }, 100);
+    });
   }
 
   getRemoteStream(sessionId: string): MediaStream | null {
@@ -187,6 +249,16 @@ export class SfuSession {
   stop(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.disconnectTimer) clearTimeout(this.disconnectTimer);
+    this.reconnectTimer = null;
+    this.disconnectTimer = null;
+    this.closeTransport();
+    this.localStream = null;
+  }
+
+  private closeTransport(): void {
+    this.resetting = true;
     for (const el of this.audioEls.values()) {
       el.srcObject = null;
       el.remove();
@@ -217,34 +289,106 @@ export class SfuSession {
       }
       this.ws = null;
     }
+    this.pubPendingIce = [];
+    this.subPendingIce = [];
+    this.pubMakingOffer = false;
+    this.resetting = false;
   }
 
   // ---- internals -----------------------------------------------------------
 
-  private openSocket(): Promise<void> {
+  private async openSocket(): Promise<void> {
+    let ticket: string | null = null;
+    if (this.opts.getTicket) {
+      try {
+        ticket = await this.opts.getTicket();
+      } catch {
+        // Compatibility fallback below.
+      }
+    }
     return new Promise((resolve, reject) => {
+      const token = this.opts.getAccessToken();
+      if (!ticket && !token) {
+        reject(new Error("sfu access token unavailable"));
+        return;
+      }
       let base = this.opts.wsUrl;
       if (base.startsWith("/")) {
         const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
         base = `${proto}//${window.location.host}${base}`;
       }
-      const sep = base.includes("?") ? "&" : "?";
-      const url =
-        `${base}${sep}access_token=${encodeURIComponent(this.opts.accessToken)}` +
-        `&channel_id=${encodeURIComponent(this.opts.channelId)}`;
-      const ws = new WebSocket(url);
+      const url = new URL(base);
+      if (ticket) url.searchParams.set("ticket", ticket);
+      else url.searchParams.set("access_token", token!);
+      url.searchParams.set("channel_id", this.opts.channelId);
+      const ws = new WebSocket(url.toString());
       this.ws = ws;
-      ws.onopen = () => resolve();
-      ws.onerror = () => reject(new Error("sfu socket error"));
+      let settled = false;
+      const timeout = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        ws.close();
+        reject(new Error("sfu socket timeout"));
+      }, 10_000);
+      ws.onopen = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      ws.onerror = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        reject(new Error("sfu socket error"));
+      };
       ws.onclose = () => {
-        // Закрытие после старта = потеря сигналинга; медиа без него
-        // деградирует. Менеджер заметит по отсутствию участников/таймауту.
-        if (!this.closed) this.opts.onRemoteChange();
+        clearTimeout(timeout);
+        if (!settled) {
+          settled = true;
+          reject(new Error("sfu socket closed before ready"));
+          return;
+        }
+        if (this.hasStarted && !this.closed && !this.resetting) this.scheduleReconnect("sfu signaling closed");
       };
       ws.onmessage = (ev) => {
         void this.handleMessage(ev.data);
       };
     });
+  }
+
+  private scheduleReconnect(reason: string): void {
+    if (this.closed || this.reconnecting || this.reconnectTimer || !this.localStream) return;
+    this.reconnecting = true;
+    this.opts.onStateChange?.("reconnecting", reason);
+    this.closeTransport();
+    this.opts.onRemoteChange();
+    const delay = Math.min(30_000, 500 * 2 ** this.reconnectAttempts);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      const stream = this.localStream;
+      if (!stream || this.closed) return;
+      void (async () => {
+        if (this.opts.refreshIceServers) {
+          try {
+            this.iceServers = await this.opts.refreshIceServers();
+          } catch {
+            // Existing credentials may still be valid; try them once more.
+          }
+        }
+        await this.connectTransport(stream);
+      })()
+        .then(() => {
+          this.reconnectAttempts = 0;
+          this.reconnecting = false;
+          this.opts.onStateChange?.("connected");
+        })
+        .catch((err) => {
+          this.reconnecting = false;
+          this.scheduleReconnect(err instanceof Error ? err.message : "sfu reconnect failed");
+        });
+    }, delay);
   }
 
   private async handleMessage(data: unknown): Promise<void> {

@@ -1159,6 +1159,7 @@ let voiceMgr: VoiceChannelManager;
 let callTimerInterval: ReturnType<typeof setInterval> | null = null;
 // Wave 0: текущее состояние WS-соединения (для баннера «Переподключение…»).
 let connState: ConnectionState = "offline";
+let syncGeneration = 0;
 // F.8: auto-update. handle живёт вне state — это не сессионные данные.
 let updateHandle: UpdateHandle | null = null;
 let updatePhase: "idle" | "available" | "downloading" | "ready" = "idle";
@@ -1188,15 +1189,10 @@ export function renderApp(
   installTooltips();
   installNativeGuards();
   realtime.subscribe(handleRealtimeEvent);
-  // Wave 0: индикатор соединения + resync после восстановления WS.
-  // Пока сокет лежал, message.created/notification.* не доезжали — после
-  // reconnect'а перетягиваем то, что realtime доносил бы инкрементально.
+  // Индикатор соединения. Realtime v2 сам присылает replay либо
+  // sync.required; полный REST-resync запускается только во втором случае.
   realtime.onConnectionStateChange((s) => {
-    const wasDown = connState === "reconnecting";
     connState = s;
-    if (s === "connected" && wasDown && state.me) {
-      void resyncAfterReconnect();
-    }
     render();
   });
   callManager.subscribe((snap) => {
@@ -1272,18 +1268,20 @@ async function bootstrapSession(): Promise<void> {
   }
 }
 
-async function loadWorkspaces(): Promise<void> {
+async function loadWorkspaces(generation?: number): Promise<void> {
   const data = await httpClient.get<{ items: Workspace[] }>("/api/v1/workspaces");
+  if (generation !== undefined && generation !== syncGeneration) return;
   state.workspaces = data.items ?? [];
   if (state.selectedWorkspaceId && !state.workspaces.some((w) => w.id === state.selectedWorkspaceId)) {
     state.selectedWorkspaceId = null;
   }
   if (!state.selectedWorkspaceId && state.workspaces.length > 0) {
-    await selectWorkspace(state.workspaces[0].id);
+    await selectWorkspace(state.workspaces[0].id, generation !== undefined);
   }
 }
 
-async function selectWorkspace(id: string): Promise<void> {
+async function selectWorkspace(id: string, preserveSyncGeneration = false): Promise<void> {
+  if (!preserveSyncGeneration) syncGeneration += 1;
   state.selectedWorkspaceId = id;
   state.selectedChannelId = null;
   state.channels = [];
@@ -1319,7 +1317,7 @@ async function selectWorkspace(id: string): Promise<void> {
 // Прелоад участников всех voice-каналов воркспейса — чтобы под voice-каналом
 // в sidebar сразу был виден список «кто в канале», без необходимости туда
 // заходить. Дальше поддерживается realtime'ом через voice.joined/voice.left.
-async function loadAllVoicePeeks(workspaceId: string): Promise<void> {
+async function loadAllVoicePeeks(workspaceId: string, generation?: number): Promise<void> {
   const voiceChannels = state.channels.filter((c) => c.kind === "voice" && c.workspaceId === workspaceId);
   if (voiceChannels.length === 0) return;
   const results = await Promise.allSettled(
@@ -1329,7 +1327,7 @@ async function loadAllVoicePeeks(workspaceId: string): Promise<void> {
         .then((d) => ({ channelId: c.id, items: d.items ?? [] }))
     )
   );
-  if (state.selectedWorkspaceId !== workspaceId) return; // race
+  if (state.selectedWorkspaceId !== workspaceId || (generation !== undefined && generation !== syncGeneration)) return;
   const next: Record<string, VoicePeekParticipant[]> = {};
   for (const r of results) {
     if (r.status === "fulfilled" && r.value.items.length > 0) {
@@ -1436,12 +1434,12 @@ async function loadForumPosts(channelId: string, keepCurrent = false): Promise<v
   }
 }
 
-async function loadUnread(workspaceId: string): Promise<void> {
+async function loadUnread(workspaceId: string, generation?: number): Promise<void> {
   try {
     const data = await httpClient.get<{ items: { channelId: string; unreadCount: number }[] }>(
       `/api/v1/workspaces/${workspaceId}/unread`
     );
-    if (state.selectedWorkspaceId !== workspaceId) return;
+    if (state.selectedWorkspaceId !== workspaceId || (generation !== undefined && generation !== syncGeneration)) return;
     const map: Record<string, number> = {};
     for (const it of data.items ?? []) {
       // Активный канал считается прочитанным, не надо мигать badge'м на нём.
@@ -1537,20 +1535,55 @@ function renderUpdateBanner(): string {
   return "";
 }
 
-// Wave 0: догон после восстановления WS. Всё fire-and-forget и идемпотентно —
-// повторный resync (если соединение снова мигнёт) ничего не сломает.
-async function resyncAfterReconnect(): Promise<void> {
-  void loadNotifications();
-  void loadDMs();
-  if (state.selectedWorkspaceId) void loadUnread(state.selectedWorkspaceId);
-  void backfillSelectedChannel();
+// Авторитетный resync. Generation token не даёт медленному ответу от старого
+// reconnect перезаписать состояние, уже полученное более новым циклом.
+async function resyncAfterReconnect(cursorToAcknowledge?: number): Promise<void> {
+  const generation = ++syncGeneration;
+  const previousWorkspace = state.selectedWorkspaceId;
+  try {
+    await loadWorkspaces(generation);
+    if (generation !== syncGeneration) return;
+
+    const workspaceId = state.selectedWorkspaceId ?? previousWorkspace;
+    if (workspaceId && state.workspaces.some((w) => w.id === workspaceId)) {
+      const [channelsResp, categoriesResp] = await Promise.all([
+        httpClient.get<{ items: Channel[] }>(`/api/v1/workspaces/${workspaceId}/channels`),
+        httpClient.get<{ items: ChannelCategory[] }>(`/api/v1/workspaces/${workspaceId}/categories`).catch(() => ({ items: [] }))
+      ]);
+      if (generation !== syncGeneration || state.selectedWorkspaceId !== workspaceId) return;
+      state.channels = channelsResp.items ?? [];
+      state.categories = categoriesResp.items ?? [];
+      if (state.selectedChannelId && !state.channels.some((c) => c.id === state.selectedChannelId) &&
+          !state.dms.some((d) => d.channelId === state.selectedChannelId)) {
+        state.selectedChannelId = null;
+        state.messages = [];
+      }
+      await Promise.all([
+        loadMembers(generation),
+        loadUnread(workspaceId, generation),
+        loadWsRoles(workspaceId, generation),
+        loadAllVoicePeeks(workspaceId, generation)
+      ]);
+    }
+    await Promise.all([
+      loadNotifications(generation),
+      loadDMs(generation),
+      loadFriends(generation),
+      backfillSelectedChannel(generation)
+    ]);
+    if (generation !== syncGeneration) return;
+    if (cursorToAcknowledge !== undefined) realtimeClient.completeSnapshot(cursorToAcknowledge);
+    render();
+  } catch (err) {
+    if (generation === syncGeneration) state.status = describeError(err);
+  }
 }
 
 // Догружает сообщения активного канала, пришедшие пока сокет лежал.
 // Если разрыв был коротким — дописываем хвост (по id-дедупу), скролл не
 // дёргается. Если за время разрыва пришло >50 сообщений (нет пересечения
 // с локальным списком) — заменяем окно целиком, как при входе в канал.
-async function backfillSelectedChannel(): Promise<void> {
+async function backfillSelectedChannel(generation?: number): Promise<void> {
   const id = state.selectedChannelId;
   if (!id) return;
   const ch = state.channels.find((c) => c.id === id);
@@ -1559,7 +1592,7 @@ async function backfillSelectedChannel(): Promise<void> {
     const data = await httpClient.get<{ items: Message[]; nextCursor?: string }>(
       `/api/v1/channels/${id}/messages?limit=50`
     );
-    if (state.selectedChannelId !== id) return; // канал сменили пока грузили
+    if (state.selectedChannelId !== id || (generation !== undefined && generation !== syncGeneration)) return;
     const fresh = (data.items ?? []).slice().reverse();
     if (fresh.length === 0) return;
     const known = new Set(state.messages.map((m) => m.id));
@@ -1583,10 +1616,11 @@ async function backfillSelectedChannel(): Promise<void> {
 
 // G.8: загрузка DM-листа. Зовётся на bootstrap и при входе в DM-режим
 // (чтобы освежить lastMessageAt/unread, если что-то пришло пока юзер был в ws).
-async function loadDMs(): Promise<void> {
+async function loadDMs(generation?: number): Promise<void> {
   state.dmsLoading = true;
   try {
     const data = await httpClient.get<{ items: DMItem[] }>("/api/v1/dm");
+    if (generation !== undefined && generation !== syncGeneration) return;
     state.dms = (data.items ?? []).map((d) => ({
       ...d,
       unreadCount: d.channelId === state.selectedChannelId ? 0 : d.unreadCount
@@ -1715,10 +1749,11 @@ async function setWorkspaceNotifLevel(workspaceId: string, level: NotifLevel | "
 
 // ---- Wave 3: друзья ---------------------------------------------------------
 
-async function loadFriends(): Promise<void> {
+async function loadFriends(generation?: number): Promise<void> {
   state.friendsLoading = true;
   try {
     const data = await httpClient.get<{ items: FriendItem[] }>("/api/v1/friends");
+    if (generation !== undefined && generation !== syncGeneration) return;
     state.friends = data.items ?? [];
     state.blockedIds = new Set(state.friends.filter((f) => f.status === "blocked").map((f) => f.userId));
   } catch (err) {
@@ -1863,13 +1898,14 @@ async function jumpToSearchHit(hit: SearchHit): Promise<void> {
 
 // C.8 — in-app уведомления.
 
-async function loadNotifications(): Promise<void> {
+async function loadNotifications(generation?: number): Promise<void> {
   state.notificationsLoading = true;
   try {
     const [list, count] = await Promise.all([
       httpClient.get<{ items: NotificationItem[] }>("/api/v1/notifications?limit=30"),
       httpClient.get<{ unread: number }>("/api/v1/notifications/count")
     ]);
+    if (generation !== undefined && generation !== syncGeneration) return;
     state.notifications = list.items ?? [];
     state.notificationsUnread = count.unread ?? 0;
   } catch (err) {
@@ -2534,13 +2570,14 @@ function slugify(value: string): string {
     .slice(0, 64);
 }
 
-async function loadMembers(): Promise<void> {
+async function loadMembers(generation?: number): Promise<void> {
   if (!state.selectedWorkspaceId) return;
   state.membersLoading = true;
   state.members = [];
   render();
   try {
     const data = await httpClient.get<{ items: Member[] }>(`/api/v1/workspaces/${state.selectedWorkspaceId}/members`);
+    if (generation !== undefined && generation !== syncGeneration) return;
     state.members = data.items ?? [];
   } catch (err) {
     state.status = describeError(err);
@@ -2716,6 +2753,24 @@ function updateTypingLine(): void {
 }
 
 function handleRealtimeEvent(event: RealtimeEvent): void {
+  if (event.event === "sync.required") {
+    const cursor = Number((event.payload as { cursor?: unknown } | null)?.cursor);
+    void resyncAfterReconnect(Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : undefined);
+    return;
+  }
+  if (event.event === "sync.ready") {
+    const payload = event.payload as { cursor?: unknown; workspaces?: unknown } | null;
+    const remote = Array.isArray(payload?.workspaces)
+      ? payload.workspaces.filter((id): id is string => typeof id === "string").sort()
+      : [];
+    const local = state.workspaces.map((workspace) => workspace.id).sort();
+    if (state.me && (remote.length !== local.length || remote.some((id, index) => id !== local[index]))) {
+      const cursor = Number(payload?.cursor);
+      realtimeClient.beginSnapshot();
+      void resyncAfterReconnect(Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : undefined);
+    }
+    return;
+  }
   // Wave 2: typing-индикатор. Transient, не зависит от селекции — копим
   // в module-map с TTL, строка обновляется прямым DOM-mutate.
   if (event.event === "typing.start") {
@@ -3681,11 +3736,11 @@ function getUserColor(userId: string, primaryRole: string | undefined | null): s
   return color;
 }
 
-async function loadWsRoles(workspaceId: string): Promise<void> {
+async function loadWsRoles(workspaceId: string, generation?: number): Promise<void> {
   try {
     const data = await httpClient.get<{ items: WorkspaceRole[] }>(`/api/v1/workspaces/${workspaceId}/roles`);
     // Race-guard: ответ устарел если юзер успел переключить воркспейс.
-    if (state.selectedWorkspaceId !== workspaceId) return;
+    if (state.selectedWorkspaceId !== workspaceId || (generation !== undefined && generation !== syncGeneration)) return;
     state.wsRoles = data.items ?? [];
     userColorCache = null;
     render();

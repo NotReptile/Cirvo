@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const sendBufferSize = 64
+const sendBufferSize = 512
 
 type Connection struct {
 	SessionID    uuid.UUID
@@ -16,7 +16,51 @@ type Connection struct {
 	Send         chan []byte
 	Close        chan struct{}
 
-	closeOnce sync.Once
+	closeOnce  sync.Once
+	deliveryMu sync.Mutex
+	active     bool
+	pending    [][]byte
+}
+
+// SendReplay queues a historical frame ahead of buffered live traffic.
+func (c *Connection) SendReplay(payload []byte) bool {
+	select {
+	case c.Send <- payload:
+		return true
+	default:
+		c.Shutdown()
+		return false
+	}
+}
+
+// Activate flushes live frames accumulated while the replay was running.
+func (c *Connection) Activate() {
+	c.deliveryMu.Lock()
+	pending := c.pending
+	c.pending = nil
+	c.active = true
+	c.deliveryMu.Unlock()
+	for _, payload := range pending {
+		if !c.SendReplay(payload) {
+			return
+		}
+	}
+}
+
+func (c *Connection) QueueLive(payload []byte) bool {
+	c.deliveryMu.Lock()
+	if !c.active {
+		if len(c.pending) >= sendBufferSize {
+			c.deliveryMu.Unlock()
+			c.Shutdown()
+			return false
+		}
+		c.pending = append(c.pending, payload)
+		c.deliveryMu.Unlock()
+		return true
+	}
+	c.deliveryMu.Unlock()
+	return c.SendReplay(payload)
 }
 
 func NewConnection(sessionID, userID uuid.UUID, workspaces []uuid.UUID) *Connection {
@@ -178,11 +222,8 @@ func (h *Hub) BroadcastUser(userID uuid.UUID, payload []byte) {
 }
 
 func (h *Hub) deliver(conn *Connection, payload []byte) {
-	select {
-	case conn.Send <- payload:
-	default:
+	if !conn.QueueLive(payload) {
 		h.logger.Warn("dropping slow consumer", "sessionId", conn.SessionID.String())
-		conn.Shutdown()
 	}
 }
 

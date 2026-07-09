@@ -8,6 +8,8 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	"github.com/NotReptile/RuCord/libs/shared-go/wsticket"
+	"github.com/NotReptile/RuCord/services/realtime/internal/eventjournal"
 	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
 )
 
@@ -17,6 +19,8 @@ type Container struct {
 	Redis      *redisstore.Client
 	JWT        *jwtauth.Issuer
 	Subscriber *realtimebus.Subscriber
+	Journal    *eventjournal.Journal
+	Tickets    *wsticket.Store
 	Hub        *hub.Hub
 	CORS       func(http.Handler) http.Handler
 }

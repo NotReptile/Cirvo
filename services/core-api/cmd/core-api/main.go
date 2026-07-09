@@ -55,7 +55,7 @@ func main() {
 		return
 	}
 
-	publisher := realtimebus.NewPublisher(redisClient)
+	publisher := realtimebus.NewPublisher(redisClient, db)
 
 	objectStore, err := objectstore.ConnectFromEnv(rootCtx)
 	if err != nil {

@@ -1,7 +1,7 @@
 # Single-Node Runbook
 
 Один хост держит весь стек: Postgres, Redis, MinIO, Caddy (reverse-proxy с TLS)
-и три Go-сервиса (`core-api`, `realtime`, `worker`). Caddy терминирует TLS и
+и четыре Go-сервиса (`core-api`, `realtime`, `sfu`, `worker`). Caddy терминирует TLS и
 проксирует HTTP/WS к сервисам.
 
 ## Перед первым запуском
@@ -17,6 +17,11 @@
      (без `*`), например `https://chat.example.com,tauri://localhost`;
    - `RUCORD_BOOTSTRAP_*` — данные первого администратора (создаётся один
      раз на пустой БД, см. A.1).
+   - `ICE_TURN_URLS`, `ICE_TURN_SHARED_SECRET` — TURN UDP/TCP и временные credentials;
+   - `RUCORD_SFU_URL`, `RUCORD_SFU_PUBLIC_IP`, `RUCORD_SFU_UDP_PORT` — публичный SFU.
+
+На роутере и host firewall открой `80/tcp`, `443/tcp`, `3478/tcp+udp`,
+`49160-49200/udp` и `50000/udp`.
 
 ## Запуск инфраструктуры + edge
 
@@ -45,20 +50,16 @@ docker compose \
 - `redis`;
 - `minio` (S3-совместимое хранилище);
 - `reverse-proxy` (Caddy на 80/443, HTTP/3 на 443/udp).
+- `coturn` и `sfu` — основной production media path.
 
 Сервис `migrate` существует в compose-файле, но привязан к `profiles:
 ["tools"]` — `up` его не трогает, нужно явно вызывать `run --rm migrate`.
 
 ## Запуск сервисов
 
-Пока `core-api`, `realtime`, `worker` не упакованы в образы — запускай как
-host-процессы (бинарники из `services/*/cmd/*`). Они должны слушать
-`127.0.0.1:8080` (core-api), `127.0.0.1:8090` (realtime). Caddy резолвит их
-через `host.docker.internal` (на Linux маппится в host-gateway).
-
-После того как для сервисов появятся Dockerfile'ы — их можно будет добавить
-в `docker-compose.yml` и переключить `RUCORD_UPSTREAM_HOST` на имена
-сервисов compose-сети.
+Все Go-сервисы собираются `deploy/Dockerfile.service` и запускаются тем же
+compose. SFU имеет обязательный healthcheck и в production отказывается
+стартовать без `RUCORD_SFU_PUBLIC_IP`.
 
 ## TLS
 
@@ -75,6 +76,7 @@ host-процессы (бинарники из `services/*/cmd/*`). Они до�
 - `GET /healthz`, `/readyz` — наружу для health-чека ALB/uptime;
 - `GET/POST /api/*` → core-api:8080;
 - `GET /ws*` → realtime:8090 (WebSocket, таймауты 1h);
+- `GET /sfu/ws*` → sfu:8095; RTP идёт напрямую на `50000/udp`;
 - всё остальное — `404`.
 
 ## Security headers
