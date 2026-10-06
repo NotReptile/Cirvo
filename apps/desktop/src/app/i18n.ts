@@ -26,6 +26,13 @@ let currentTimeFormat: TimeFormat = readStoredTimeFormat();
 
 const listeners = new Set<() => void>();
 
+// <html lang> влияет на проверку орфографии, переносы и озвучку скринридером.
+// Без этого интерфейс оставался с lang="en" даже при русском языке.
+function applyDocumentLang(): void {
+  if (typeof document !== "undefined") document.documentElement.lang = currentLocale;
+}
+applyDocumentLang();
+
 function readStoredLocale(): Locale {
   try {
     const raw = localStorage.getItem(LOCALE_KEY);
@@ -50,6 +57,7 @@ export function setLocale(locale: Locale): void {
   if (currentLocale === locale) return;
   currentLocale = locale;
   try { localStorage.setItem(LOCALE_KEY, locale); } catch { /* ignore */ }
+  applyDocumentLang();
   notify();
 }
 

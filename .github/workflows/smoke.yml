@@ -79,19 +79,19 @@ jobs:
           npm --workspace apps/desktop test
           npm run build:desktop
 
-      # MinIO нельзя поднять через services-блок: у GH Actions services нет
-      # поля command, а официальный minio/minio требует `server /data`.
-      # Bitnami-вариант, который умеет стартовать сам, выпилили из публичного
-      # docker hub в августе 2025, поэтому поднимаем обычным docker run.
+      # Build the upstream source at a fixed revision: public MinIO container
+      # registries no longer allow anonymous pulls. This binary is CI-only.
+      - name: Build MinIO
+        env:
+          GOBIN: ${{ runner.temp }}/minio-bin
+          GOWORK: 'off'
+        run: go install github.com/minio/minio@7aac2a2c5b7c882e68c1ce017d8256be2feea27f
+
       - name: Start MinIO
         run: |
-          docker run -d --name minio \
-            -p 9000:9000 -p 9001:9001 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest \
-            server /data --console-address ":9001"
-
+          mkdir -p "${{ runner.temp }}/minio-data"
+          "${{ runner.temp }}/minio-bin/minio" server "${{ runner.temp }}/minio-data" \
+            --console-address ":9001" > "${{ runner.temp }}/minio.log" 2>&1 &
       - name: Wait for MinIO
         run: |
           for i in {1..30}; do
@@ -99,7 +99,7 @@ jobs:
             sleep 1
           done
           echo "minio not ready" >&2
-          docker logs minio || true
+          cat "${{ runner.temp }}/minio.log" || true
           exit 1
 
       - name: Apply migrations

@@ -266,9 +266,14 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 .shell.with-members {
   grid-template-columns: 72px 240px 1fr 220px;
 }
-@media (max-width: 900px) {
+/* Узкое окно: панель участников прячется. Селектор с .shell.with-members
+   обязателен: базовое правило .member-sidebar { display: flex } объявлено
+   ниже по файле и при одинаковой специфичности перебивало бы display: none.
+   Тогда панель занимала бы вторую строку сетки и ужимала чат по высоте. */
+@media (max-width: 1000px) {
   .shell.with-members { grid-template-columns: 72px 240px 1fr; }
-  .member-sidebar { display: none; }
+  .shell.with-members .member-sidebar { display: none; }
+  #toggle-member-sidebar { display: none; }
 }
 
 /* Workspace rail — узкая колонка слева с иконками воркспейсов. */
