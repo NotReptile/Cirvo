@@ -1,16 +1,21 @@
-# F.7: cross-platform release-сборка desktop-клиента на тег v*.
-# Собирает .msi/.exe (Windows), .dmg/.app.tar.gz (macOS universal),
-# .AppImage/.deb (Linux) и публикует draft-релиз в GitHub Releases.
-# tauri-action дополнительно генерирует подписанный latest.json для
-# auto-update (F.8) — он попадает в тот же релиз.
+# Release-сборка desktop-клиента на тег v*.
 #
-# Требуемые Secrets (см. docs/runbooks/desktop-release.md):
+# По умолчанию собирается только Windows (.msi + NSIS .exe): это основная
+# платформа пользователей, а в приватном репозитории минуты macOS тарифицируются
+# с множителем x10. macOS и Linux включаются вручную: Actions → desktop-release →
+# Run workflow → platforms = all.
+#
+# Результат — draft-релиз в GitHub Releases. Проверяешь артефакты руками и
+# публикуешь сам. tauri-action дополнительно генерирует подписанный latest.json
+# для auto-update (доступен клиентам только после Publish и только если
+# репозиторий публичный — подробности в docs/runbooks/desktop-release.md).
+#
+# Требуемые Secrets:
 #   TAURI_SIGNING_PRIVATE_KEY          — приватный ключ updater-подписи
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — его пароль (пустая строка, если без)
 #
-# Code-signing бинарей (Authenticode / macOS notarization) — отдельный
-# подпункт F.7, не настроен: артефакты будут «неподписанными» для SmartScreen
-# и Gatekeeper, но updater-подпись latest.json от этого не зависит.
+# Code-signing бинарей (Authenticode / macOS notarization) не настроен:
+# SmartScreen и Gatekeeper будут ругаться на «неизвестного издателя».
 
 name: desktop-release
 
@@ -18,31 +23,86 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег релиза (например v0.1.1-test). Пусто — имя выбранной ветки/тега"
+        required: false
+        type: string
+      platforms:
+        description: "Какие платформы собирать"
+        required: true
+        default: windows
+        type: choice
+        options:
+          - windows
+          - all
+      prerelease:
+        description: "Пометить релиз как pre-release"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
+concurrency:
+  group: desktop-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          win='{"platform":"windows-latest","args":""}'
+          mac='{"platform":"macos-latest","args":"--target universal-apple-darwin"}'
+          lin='{"platform":"ubuntu-22.04","args":""}'
+          if [ "$PLATFORMS" = "all" ]; then
+            echo "matrix={\"include\":[$win,$mac,$lin]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":[$win]}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: plan
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            args: ""
-          - platform: macos-latest
-            # Universal: один .dmg для Intel и Apple Silicon.
-            args: "--target universal-apple-darwin"
-          - platform: ubuntu-22.04
-            args: ""
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.platform }}
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+
+      # Версия приложения живёт в трёх файлах и должна совпадать с тегом,
+      # иначе updater сравнивает версии неправильно. Суффикс после «-»
+      # (v0.1.1-test) при сравнении отбрасывается.
+      - name: Check version matches tag
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.RELEASE_TAG.replace(/^v/, "").split("-")[0];
+            const pkg = JSON.parse(fs.readFileSync("apps/desktop/package.json", "utf8")).version;
+            const tauri = JSON.parse(fs.readFileSync("apps/desktop/src-tauri/tauri.conf.json", "utf8")).version;
+            const cargo = /^version\s*=\s*"([^"]+)"/m.exec(fs.readFileSync("apps/desktop/src-tauri/Cargo.toml", "utf8"))[1];
+            const bad = Object.entries({ package: pkg, tauri, cargo }).filter(([, v]) => v !== tag);
+            if (bad.length) {
+              console.error(`Тег ${process.env.RELEASE_TAG} ожидает версию ${tag}, а в файлах: ${JSON.stringify({ package: pkg, tauri, cargo })}`);
+              process.exit(1);
+            }
+            console.log(`Версия ${tag} совпадает во всех трёх файлах`);
+          '
 
       # npm workspace: lock-файл и node_modules живут в корне репозитория.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -56,7 +116,7 @@ jobs:
           workspaces: apps/desktop/src-tauri
 
       # Linux: webkit2gtk для Tauri, alsa для cpal, xcb/pipewire для xcap
-      # (screen-capture pipeline K.5).
+      # (захват экрана).
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -82,12 +142,19 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: "RuCord ${{ github.ref_name }}"
-          releaseBody: "Изменения — см. описание тега. Артефакты собраны CI."
-          # Draft: проверяешь артефакты руками и публикуешь сам. Auto-update
-          # клиентов сработает только после publish (latest.json недоступен
-          # из draft-релиза).
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "RuCord ${{ env.RELEASE_TAG }}"
+          releaseBody: |
+            ## Установка (Windows)
+
+            1. Скачать `RuCord_*_x64-setup.exe` из блока **Assets** ниже.
+            2. Запустить. Установщик не подписан сертификатом издателя, поэтому SmartScreen
+               покажет предупреждение: **Подробнее → Выполнить в любом случае**.
+            3. При первом запуске ввести адрес сервера, например `chat.example.com`.
+
+            Список изменений: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md
+            Артефакты собраны CI из тега `${{ env.RELEASE_TAG }}`.
+          # Draft: проверяешь артефакты руками и публикуешь сам.
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ inputs.prerelease || false }}
           args: ${{ matrix.args }}

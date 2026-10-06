@@ -1,0 +1,53 @@
+name: Ошибка
+description: Что-то работает не так, как ожидалось
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Уязвимости безопасности сюда не пишите: используйте **Security → Report a vulnerability**.
+  - type: textarea
+    id: what
+    attributes:
+      label: Что произошло
+      description: Что вы сделали, что ожидали и что получили.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Как воспроизвести
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Где проявляется
+      options:
+        - Клиент (Windows)
+        - Подключение к серверу
+        - Голос и видео
+        - Сервер (API, realtime, SFU)
+        - Развёртывание и документация
+        - Другое
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия клиента
+      placeholder: "0.1.0"
+  - type: input
+    id: os
+    attributes:
+      label: Операционная система
+      placeholder: Windows 11 23H2
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи и скриншоты
+      description: Без паролей, токенов и адресов серверов.
+      render: text

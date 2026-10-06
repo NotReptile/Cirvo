@@ -179,7 +179,6 @@ sudo systemctl restart ssh
 sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
-sudo ufw allow 443/udp
 sudo ufw allow 3478/tcp
 sudo ufw allow 3478/udp
 sudo ufw allow 49160:49200/udp
@@ -239,7 +238,7 @@ docker compose version
 1. **Проброс портов** (Переадресация портов) — перенаправить на
    **новый IP сервера** (например `192.168.1.50`), а не на старый
    Windows-ПК:
-   - TCP 80, TCP 443, UDP 443
+   - TCP 80, TCP 443 (UDP 443 не нужен: HTTP/3 в Caddyfile отключён)
    - TCP 3478, UDP 3478
    - UDP 49160–49200
    - UDP 50000 (SFU RTP)
@@ -263,16 +262,16 @@ docker compose version
 
 ```bash
 sudo apt install -y git
-git clone <URL-репозитория> rucord
+git clone https://github.com/NotReptile/RuCord.git rucord   # приватный репозиторий: нужен токен или SSH-ключ
 cd rucord
 
 # Конфиг
 cp deploy/.env.example deploy/.env
 nano deploy/.env
 #   - POSTGRES_PASSWORD, MINIO_*, RUCORD_JWT_SECRET — свои секреты
-#   - RUCORD_DOMAIN=rucord-home.duckdns.org
+#   - RUCORD_DOMAIN=chat.example.com
 #   - RUCORD_TLS_EMAIL=<твой email>
-#   - ICE_TURN_URL/USERNAME/CREDENTIAL — TURN (см. docker-compose)
+#   - RUCORD_CORS_ORIGINS=tauri://localhost,http://tauri.localhost,https://tauri.localhost
 #   - ICE_TURN_URLS и ICE_TURN_SHARED_SECRET — TURN UDP/TCP + временные credentials
 #   - RUCORD_SFU_URL, RUCORD_SFU_PUBLIC_IP, RUCORD_SFU_UDP_PORT=50000
 #   - RUCORD_BOOTSTRAP_* — первый админ
@@ -290,11 +289,11 @@ docker compose -f deploy/single-node/docker-compose.yml \
   --env-file deploy/.env logs -f core-api
 ```
 
-Проверка снаружи: `https://rucord-home.duckdns.org/readyz` → `200`.
+Проверка снаружи: `https://chat.example.com/readyz` → `200`.
 
-> Перенос данных со старого Windows-инстанса (аккаунты/история/файлы) —
-> отдельная процедура через `deploy/backup.sh` (MinIO) + `pg_dump`
-> Postgres. Если нужно сохранить текущую базу — попроси, распишу.
+> Перенос данных со старого Windows-инстанса (аккаунты, история, файлы) —
+> отдельная процедура: `deploy/backup.sh` на старом хосте и `deploy/restore.sh`
+> на новом, см. [backup-and-restore.md](backup-and-restore.md).
 
 ---
 
@@ -307,24 +306,21 @@ IP у duckdns динамический. Нужен апдейтер, чтобы 
 ```bash
 crontab -e
 # каждые 5 минут обновлять duckdns
-*/5 * * * * curl -fsS "https://www.duckdns.org/update?domains=rucord-home&token=<ТВОЙ_ТОКЕН>&ip=" >/dev/null 2>&1
+*/5 * * * * curl -fsS "https://www.duckdns.org/update?domains=<ПОДДОМЕН>&token=<ТВОЙ_ТОКЕН>&ip=" >/dev/null 2>&1
 ```
 
 (пустой `ip=` → duckdns берёт IP из запроса; т.к. сервер ходит через
 основного провайдера — это и будет `<PUBLIC_IP>`.)
 
 > coturn резолвит `external-ip` при старте. Если IP сменился — нужен
-> `docker compose ... restart coturn`. Можно повесить на cron проверку
-> смены IP с авто-рестартом (попроси — добавлю скрипт).
+> `docker compose ... restart coturn`. Автоматический рестарт при смене IP
+> не настроен.
 
 ---
 
 ## 10. Несколько сервисов на одной коробке
 
-RuCord уже за Caddy (reverse-proxy). Другие сервисы (см. список идей)
-вешаются туда же по поддоменам или путям. Для отдельных поддоменов
-удобно завести ещё duckdns-домены (`rucord-home`, `cloud-home`,
-`photos-home`) и роутить их в Caddyfile на нужные контейнеры. С 8745HS
-и 16 ГБ (расширяемо до 256) спокойно живёт десяток лёгких сервисов.
-
-```
+RuCord уже за Caddy (reverse-proxy). Другие сервисы вешаются туда же по
+поддоменам или путям. Для отдельных поддоменов удобно завести ещё
+duckdns-домены и роутить их в Caddyfile на нужные контейнеры. На мини-ПК с
+8745HS и 16 ГБ спокойно живёт десяток лёгких сервисов.
