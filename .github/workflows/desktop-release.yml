@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Тег релиза (например v0.1.1-test). Пусто — имя выбранной ветки/тега"
+        description: "Существующий тег релиза (например v0.1.1-test). Пусто — выбранный тег"
         required: false
         type: string
       platforms:
@@ -78,6 +78,8 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       # Версия приложения живёт в трёх файлах и должна совпадать с тегом,
       # иначе updater сравнивает версии неправильно. Суффикс после «-»
