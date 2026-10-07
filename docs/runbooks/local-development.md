@@ -5,7 +5,7 @@
 ## Требования
 
 - Docker Desktop (с docker compose)
-- Go 1.25+
+- Go 1.26+
 - Node.js 20.19+ или 22.12+
 
 ## 1. Подготовка окружения

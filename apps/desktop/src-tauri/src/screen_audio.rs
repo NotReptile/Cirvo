@@ -101,7 +101,7 @@ fn run_audio_thread(
             return;
         }
     };
-    let sample_rate = cfg.sample_rate().0;
+    let sample_rate = cfg.sample_rate();
     let channels = cfg.channels();
     let sample_format = cfg.sample_format();
     let stream_config: cpal::StreamConfig = cfg.into();
@@ -126,7 +126,7 @@ fn run_audio_thread(
         cpal::SampleFormat::F32 => {
             let cb = emit.clone();
             device.build_input_stream(
-                &stream_config,
+                stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| { cb(data); },
                 |err| eprintln!("[screen-audio] stream error: {}", err),
                 None,
@@ -135,7 +135,7 @@ fn run_audio_thread(
         cpal::SampleFormat::I16 => {
             let cb = emit.clone();
             device.build_input_stream(
-                &stream_config,
+                stream_config,
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
                     let mut converted: Vec<f32> = Vec::with_capacity(data.len());
                     for s in data {
@@ -150,7 +150,7 @@ fn run_audio_thread(
         cpal::SampleFormat::U16 => {
             let cb = emit.clone();
             device.build_input_stream(
-                &stream_config,
+                stream_config,
                 move |data: &[u16], _: &cpal::InputCallbackInfo| {
                     let mut converted: Vec<f32> = Vec::with_capacity(data.len());
                     for s in data {

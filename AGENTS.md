@@ -49,8 +49,10 @@ npm run build:desktop              # vite build
 npm --workspace apps/desktop run tauri build   # exe; нужен Rust и ключ подписи, см. docs/runbooks/desktop-release.md
 ```
 
-CI (`.github/workflows/smoke.yml`) выполняет всё перечисленное на каждый push и PR
-в `main`. Перед PR прогони хотя бы `check:desktop`, тесты клиента и `go build`.
+CI (`.github/workflows/smoke.yml`) проверяет клиент и Go-сервисы на каждый push и
+PR в `main`; `desktop-check.yml` отдельно собирает Tauri для Windows без бандла
+и публикации релиза. Перед PR прогони хотя бы `check:desktop`, тесты клиента и
+`go build`.
 
 ## Правила кода
 

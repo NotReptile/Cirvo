@@ -8,11 +8,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
     "paths": {
       "@rucord/shared-ts": [
-        "libs/shared-ts/src/index.ts"
+        "./libs/shared-ts/src/index.ts"
       ]
     }
   }
