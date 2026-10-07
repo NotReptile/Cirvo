@@ -6,6 +6,12 @@
 //     для них остаётся дефолтное поведение.
 //  2. Менеджер паролей Edge и general-автофилл выключены — иначе на форме
 //     логина всплывает нативная плашка «Сохранить пароль?».
+//  3. Остальные браузерные возможности выключены, чтобы приложение не вело
+//     себя как вкладка Edge: зум (Ctrl+колесо/Ctrl+±/щипок ломает вёрстку),
+//     строка состояния со ссылкой внизу окна, свайп-навигация «назад», а в
+//     релизной сборке ещё и горячие клавиши браузера (F5/Ctrl+R перезагружали
+//     страницу и сбрасывали состояние звонка, Ctrl+P печать, Ctrl+F поиск).
+//     В debug-сборке горячие клавиши оставлены: нужны F12 и перезагрузка.
 //
 // Версии webview2-com/windows-core в Cargo.toml обязаны совпадать с теми,
 // что уже тянет wry (см. Cargo.lock) — иначе в графе появится второе,
@@ -14,7 +20,8 @@
 use std::sync::Once;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2Settings4, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
+    ICoreWebView2Settings3, ICoreWebView2Settings4, ICoreWebView2Settings5,
+    ICoreWebView2Settings6, COREWEBVIEW2_PERMISSION_KIND_CAMERA,
     COREWEBVIEW2_PERMISSION_KIND_MICROPHONE, COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION,
     COREWEBVIEW2_PERMISSION_STATE_ALLOW,
 };
@@ -33,9 +40,22 @@ pub fn install<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
             };
 
             if let Ok(settings) = core.Settings() {
+                let _ = settings.SetIsZoomControlEnabled(false);
+                let _ = settings.SetIsStatusBarEnabled(false);
+                if let Ok(s3) = settings.cast::<ICoreWebView2Settings3>() {
+                    if !cfg!(debug_assertions) {
+                        let _ = s3.SetAreBrowserAcceleratorKeysEnabled(false);
+                    }
+                }
                 if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
                     let _ = s4.SetIsPasswordAutosaveEnabled(false);
                     let _ = s4.SetIsGeneralAutofillEnabled(false);
+                }
+                if let Ok(s5) = settings.cast::<ICoreWebView2Settings5>() {
+                    let _ = s5.SetIsPinchZoomEnabled(false);
+                }
+                if let Ok(s6) = settings.cast::<ICoreWebView2Settings6>() {
+                    let _ = s6.SetIsSwipeNavigationEnabled(false);
                 }
             }
 
