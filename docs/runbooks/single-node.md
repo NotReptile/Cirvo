@@ -14,14 +14,22 @@
    - `RUCORD_TLS_EMAIL` — почта для Let's Encrypt, либо литерал `internal`
      для self-signed сертификата;
    - `RUCORD_CORS_ORIGINS` — конечный allow-list оригинов клиента
-     (без `*`), например `https://chat.example.com,tauri://localhost`;
+     (без `*`). Для Windows-клиента обязательно все три Tauri-оригина:
+     `tauri://localhost,http://tauri.localhost,https://tauri.localhost`.
+     WebView2 на Windows ходит с `http://tauri.localhost`, и без него клиент
+     получит CORS-ошибку уже на экране «Подключение к серверу»;
    - `RUCORD_BOOTSTRAP_*` — данные первого администратора (создаётся один
-     раз на пустой БД, см. A.1).
+     раз на пустой БД, пакет `core-api/internal/bootstrap`).
    - `ICE_TURN_URLS`, `ICE_TURN_SHARED_SECRET` — TURN UDP/TCP и временные credentials;
    - `RUCORD_SFU_URL`, `RUCORD_SFU_PUBLIC_IP`, `RUCORD_SFU_UDP_PORT` — публичный SFU.
 
+`RUCORD_SFU_PUBLIC_IP` обязателен: в production (`RUCORD_ENV=production`) SFU
+без него не стартует, а `reverse-proxy` ждёт `sfu: service_healthy`, то есть
+не поднимется весь стек. В LAN-сценарии укажи LAN-адрес сервера.
+
 На роутере и host firewall открой `80/tcp`, `443/tcp`, `3478/tcp+udp`,
-`49160-49200/udp` и `50000/udp`.
+`49160-49200/udp` и `50000/udp`. UDP 443 не нужен: HTTP/3 в Caddyfile
+отключён (`protocols h1 h2`, из-за WebView2).
 
 ## Запуск инфраструктуры + edge
 
@@ -49,7 +57,9 @@ docker compose \
 - `postgres` (порт наружу не публикуется — доступ через сервисы);
 - `redis`;
 - `minio` (S3-совместимое хранилище);
-- `reverse-proxy` (Caddy на 80/443, HTTP/3 на 443/udp).
+- `reverse-proxy` (Caddy на 80/443);
+- `core-api`, `realtime`, `worker` — Go-сервисы, собираются из
+  `deploy/Dockerfile.service`;
 - `coturn` и `sfu` — основной production media path.
 
 Сервис `migrate` существует в compose-файле, но привязан к `profiles:
@@ -97,11 +107,17 @@ CORS allow-list инфорсится в core-api через `RUCORD_CORS_ORIGINS
 
 ## Обновление
 
+Go-сервисы собираются на хосте из исходников, поэтому `pull` их не обновляет.
+Обновление: забрать код, применить миграции, пересобрать контейнеры.
+
 ```bash
-docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env pull
+git pull
 docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env run --rm migrate
-docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env up -d
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env up -d --build
 ```
+
+Перед обновлением сделай бэкап (`deploy/backup.sh`). Клиенты обновляются
+отдельно, см. [desktop-release.md](desktop-release.md).
 
 Сертификаты Let's Encrypt живут в volume `caddy-data` и обновляются Caddy
 автоматически. При смене `RUCORD_DOMAIN` старые сертификаты не чистятся —

@@ -5,8 +5,8 @@
 ## Требования
 
 - Docker Desktop (с docker compose)
-- Go 1.23+
-- Node.js 20+
+- Go 1.25+
+- Node.js 20.19+ или 22.12+
 
 ## 1. Подготовка окружения
 
@@ -17,6 +17,7 @@ Copy-Item deploy/.env.example deploy/.env
 ```
 
 Минимум, что нужно проверить:
+- `RUCORD_SFU_URL` — для локального режима очистите значение (оставьте `RUCORD_SFU_URL=`). Иначе `core-api` анонсирует клиентам несуществующий SFU, и групповые звонки не соединятся. Локально работает mesh;
 - `RUCORD_JWT_SECRET` — должен быть длиной ≥32 символа (по умолчанию подходит)
 - `POSTGRES_PASSWORD` — пароль для локального Postgres
 
@@ -127,7 +128,7 @@ docker compose --env-file deploy/.env -f deploy/local/docker-compose.yml down -v
 |-----------|------|-----|
 | core-api  | 8080 | http://127.0.0.1:8080 |
 | realtime  | 8090 | ws://127.0.0.1:8090/ws |
-| Postgres  | 5432 | postgres://rucord:change-me@127.0.0.1:5432/rucord |
+| Postgres  | 5433 | postgres://rucord:change-me@127.0.0.1:5433/rucord |
 | Redis     | 6379 | redis://127.0.0.1:6379 |
 | MinIO     | 9000 / 9001 | http://127.0.0.1:9001 (UI) |
 | Desktop (Vite) | 1420 | http://127.0.0.1:1420 |

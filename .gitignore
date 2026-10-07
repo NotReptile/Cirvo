@@ -18,6 +18,8 @@ services/**/bin/
 *.exe
 *.test
 TASKS.md
+# Локальные планы, идеи и аудиты: в git не попадают
+dev-notes/
 backups/
 *.code-workspace
 /install.ps1

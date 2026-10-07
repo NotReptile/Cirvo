@@ -11,7 +11,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0NTI2NzQyOTJCMUYxQTkKUldTcDhiR1NRbWRTUk1uc1JzR2M5d3B1dXFBQ3JnVzBEdVpwRHFHYjhGeDVuWDF6bjJKQ0ZJaUEK",
       "endpoints": [
         "https://github.com/NotReptile/RuCord/releases/latest/download/latest.json"
       ]

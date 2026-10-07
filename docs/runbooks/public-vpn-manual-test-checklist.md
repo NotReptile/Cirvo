@@ -3,8 +3,12 @@
 Сценарий проверки: основной компьютер/сервер работает через чистый интернет со
 статическим IP, второй компьютер подключается из другой страны через VPN.
 
-Актуальный установщик для проверки:
-`apps/desktop/src-tauri/target/release/bundle/nsis/RuCord_0.1.0_x64-setup.exe`
+Установка и подключение: [windows-client.md](windows-client.md). Установщик
+берётся из GitHub Releases ([desktop-release.md](desktop-release.md)) либо
+собирается локально:
+`apps/desktop/src-tauri/target/release/bundle/nsis/RuCord_<версия>_x64-setup.exe`.
+Сервер на момент теста работает на Linux; про Windows-хост в старых разделах
+чек-листа можно не думать.
 
 ## Данные теста
 

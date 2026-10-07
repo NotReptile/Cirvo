@@ -1,5 +1,9 @@
 # Static IP HTTP mode
 
+> **Историческая заметка.** Описан сервер на Windows-ПК с запуском из VSCode.
+> Боевой сервер теперь работает на Linux, см. [single-node.md](single-node.md).
+> Режим остаётся полезным как быстрый тест без домена и TLS.
+
 Этот режим нужен для личного теста без домена: друзья подключаются к серверу
 по статическому IP.
 
@@ -7,12 +11,6 @@
 
 ```text
 http://<STATIC_IP>
-```
-
-Для текущего сервера:
-
-```text
-http://<PUBLIC_IP>
 ```
 
 Важно: это HTTP без TLS. Для теста с друзьями допустимо, особенно если доступ
@@ -23,7 +21,7 @@ http://<PUBLIC_IP>
 
 1. Выполнить task `Stop All`.
 2. Выполнить task `Run Desktop Static IP`.
-3. В клиенте указать `<PUBLIC_IP>` или явно `http://<PUBLIC_IP>`.
+3. В клиенте указать `<STATIC_IP>` или явно `http://<STATIC_IP>`.
 
 Task `Run Desktop Static IP` делает следующее:
 
@@ -52,7 +50,7 @@ Invoke-WebRequest http://127.0.0.1/healthz -UseBasicParsing
 С другого интернета или VPN-клиента:
 
 ```powershell
-Invoke-WebRequest http://<PUBLIC_IP>/readyz -UseBasicParsing
+Invoke-WebRequest http://<STATIC_IP>/readyz -UseBasicParsing
 ```
 
 Если локально `127.0.0.1` отвечает, а публичный IP дает timeout, проблема не в
@@ -79,7 +77,7 @@ New-NetFirewallRule `
 
 Новая версия клиента:
 
-- `<PUBLIC_IP>` автоматически нормализует в `http://<PUBLIC_IP>`;
+- `<STATIC_IP>` автоматически нормализуется в `http://<STATIC_IP>`;
 - `chat.example.com` автоматически нормализует в `https://chat.example.com`;
 - явные `http://...` и `https://...` сохраняются как введены.
 

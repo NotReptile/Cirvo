@@ -1,0 +1,35 @@
+# История изменений
+
+Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/). Версии:
+[SemVer](https://semver.org/lang/ru/). Версия приложения живёт в трёх файлах
+(`apps/desktop/package.json`, `apps/desktop/src-tauri/tauri.conf.json`,
+`apps/desktop/src-tauri/Cargo.toml`) и должна совпадать с тегом релиза.
+
+## [Не выпущено]
+
+### Добавлено
+
+- Ключ подписи обновлений клиента: публичная часть в `tauri.conf.json`.
+- Runbook'и: `windows-client.md` (установка и подключение), переписаны
+  `diagnostics.md` и `desktop-release.md`.
+- `AGENTS.md` и `CLAUDE.md` для ИИ-агентов.
+- Шаблоны issue и PR, `CONTRIBUTING.md`, `SECURITY.md`, Dependabot, `CODEOWNERS`.
+
+### Изменено
+
+- `desktop-release.yml`: по умолчанию собирается только Windows, добавлены ручной
+  запуск с выбором платформ, проверка совпадения версии с тегом, текст релиза с
+  инструкцией по установке.
+- Исправлена документация: Go-сервисы работают в контейнерах, добавлены
+  переменные SFU и TURN, CORS для Windows-клиента, порядок обновления и бэкапа.
+- Из `deploy/.env.example` удалены неиспользуемые `RUCORD_UPSTREAM_HOST`,
+  `RUCORD_API_BASE_URL`, `RUCORD_REALTIME_URL`.
+- В документации публичный IP и домен заменены плейсхолдерами.
+
+## [0.1.0]
+
+Первая рабочая версия: аутентификация и сессии, рабочие пространства, роли и
+права, текстовые каналы с вложениями и реакциями, треды и форум, личные
+сообщения, друзья, приглашения, журнал аудита, админ-панель, голосовые каналы
+(mesh и SFU), видео, демонстрация экрана, шумоподавление, десктоп-клиент на
+Tauri для Windows. Single-node развёртывание в Docker с Caddy и coturn.

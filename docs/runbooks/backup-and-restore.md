@@ -1,8 +1,8 @@
 # Backup and Restore
 
 Бэкап single-node инстанса = pg_dump + копия объектов MinIO. Конфигурацию
-(`deploy/.env`, Caddyfile, compose-файл) хранить отдельно — она в git и
-содержит секреты, которые в бэкап намеренно не попадают.
+(`deploy/.env`, Caddyfile, compose-файл) хранить отдельно: `.env` содержит
+секреты, в git он не попадает (он в `.gitignore`) и в бэкап намеренно не входит.
 
 ## Состав снапшота
 
@@ -60,8 +60,10 @@ Cron-пример (ежедневно в 03:00 UTC, ротация — хран�
 ВАЖНО: операция деструктивна. Останови сервисы перед restore:
 
 ```bash
-# Если core-api/realtime/worker запущены как host-процессы — останови их
-# обычным способом. Контейнеры compose не трогаем (нужны postgres/minio).
+# Останавливаем только прикладные сервисы. postgres и minio должны
+# остаться запущенными: restore пишет именно в них.
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env \
+  stop core-api realtime worker sfu
 
 deploy/restore.sh ./backups/20260518T120000Z
 ```
@@ -82,7 +84,7 @@ docker compose -f deploy/single-node/docker-compose.yml \
   --env-file deploy/.env run --rm migrate
 ```
 
-Затем поднять core-api/realtime/worker обратно.
+Затем поднять сервисы обратно: `docker compose ... up -d`.
 
 ## Проверка восстановления
 
@@ -102,8 +104,8 @@ docker compose -f deploy/single-node/docker-compose.yml \
 - содержимое Redis — короткоживущие данные (сессии presence,
   rate-limit-счётчики). После restore все онлайн-статусы сбросятся, и
   это ожидаемо;
-- `deploy/.env` и Caddyfile — секреты и конфиг. Хранить в git
-  (.env — приватный, encrypted-storage / vault);
+- `deploy/.env` и Caddyfile — секреты и конфиг. `.env` в git не хранить:
+  держи копию в менеджере паролей или в зашифрованном архиве вне сервера;
 - TLS-сертификаты Caddy. Лежат в named volume `caddy-data`. Для
   Let's Encrypt — Caddy перевыпустит при первом обращении. Для
   `internal` self-signed CA — корневой сертификат пропадёт, клиентам
