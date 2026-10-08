@@ -1,4 +1,11 @@
-import { checkServerReachable, normalizeServerUrl, setStoredServerUrl } from "./serverConfig";
+import {
+  INSECURE_SERVER_WARNING,
+  ServerCheckError,
+  checkServerReachable,
+  isInsecureServerUrl,
+  normalizeServerUrl,
+  setStoredServerUrl
+} from "./serverConfig";
 
 export function renderOnboarding(container: HTMLElement, onDone: (url: string) => void): void {
   container.innerHTML = `
@@ -13,11 +20,12 @@ export function renderOnboarding(container: HTMLElement, onDone: (url: string) =
         <form id="onboarding-form" class="onboarding-form" autocomplete="off">
           <label for="onboarding-url">Адрес сервера</label>
           <input id="onboarding-url" name="url" placeholder="chat.example.com или 203.0.113.10" spellcheck="false" required />
-          <div class="onboarding-error" id="onboarding-error" hidden></div>
+          <div class="onboarding-warning" id="onboarding-warning" role="status" hidden></div>
+          <div class="onboarding-error" id="onboarding-error" role="alert" aria-live="polite" hidden></div>
           <button type="submit" class="primary" id="onboarding-submit">Подключиться</button>
         </form>
         <div class="onboarding-footer">
-          <span>Адрес сохранится локально. Сменить можно будет в настройках.</span>
+          <span>Адрес сохранится локально. Сменить его можно в настройках (раздел «Сервер») или на экране входа.</span>
         </div>
       </div>
     </div>
@@ -26,9 +34,18 @@ export function renderOnboarding(container: HTMLElement, onDone: (url: string) =
   const form = container.querySelector<HTMLFormElement>("#onboarding-form")!;
   const input = container.querySelector<HTMLInputElement>("#onboarding-url")!;
   const errorEl = container.querySelector<HTMLDivElement>("#onboarding-error")!;
+  const warningEl = container.querySelector<HTMLDivElement>("#onboarding-warning")!;
   const submit = container.querySelector<HTMLButtonElement>("#onboarding-submit")!;
 
   input.focus();
+
+  // Предупреждение о http показывается сразу, пока адрес набирается.
+  input.addEventListener("input", () => {
+    const raw = input.value.trim();
+    const insecure = raw !== "" && isInsecureServerUrl(raw);
+    warningEl.textContent = insecure ? INSECURE_SERVER_WARNING : "";
+    warningEl.hidden = !insecure;
+  });
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -43,8 +60,9 @@ export function renderOnboarding(container: HTMLElement, onDone: (url: string) =
       setStoredServerUrl(url);
       onDone(url);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Не удалось достучаться до сервера";
-      errorEl.textContent = `Не удалось подключиться: ${message}. Проверь адрес и попробуй ещё раз.`;
+      errorEl.textContent = err instanceof ServerCheckError
+        ? err.message
+        : "Не удалось подключиться к серверу. Проверь адрес и попробуй ещё раз.";
       errorEl.hidden = false;
       submit.disabled = false;
       submit.textContent = "Подключиться";

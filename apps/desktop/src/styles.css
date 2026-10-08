@@ -23,6 +23,7 @@
   --text-channel: #b5bac1;
   --text-strong: #ffffff;
   --danger: #e35d6a;
+  --warn: #e0a43a;
 }
 
 :root[data-theme="light"] {
@@ -38,6 +39,7 @@
   --text-channel: #4f5660;
   --text-strong: #060607;
   --danger: #d83c3e;
+  --warn: #9a6200;
 }
 
 /* I.5: density=compact — режем вертикальные отступы и аватары,
@@ -3147,6 +3149,21 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   font-size: 13px;
   line-height: 1.4;
 }
+.connection-lost-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.onboarding-warning,
+.settings-server-warning {
+  background: color-mix(in srgb, var(--warn) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--warn);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
 .onboarding-footer {
   font-size: 12px;
   color: var(--text-mute);
@@ -4651,19 +4668,17 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   .settings-content-body { padding: 16px 20px 32px; }
 }
 
-.settings-stub {
-  padding: 40px 0;
-  text-align: center;
-  color: var(--text-mute);
+.settings-server-url {
+  margin: 12px 0;
+  font-size: 15px;
+  word-break: break-all;
 }
-.settings-stub-title {
-  font-size: 16px;
-  font-weight: 600;
+.settings-server-ok {
   color: var(--text);
-  margin-bottom: 8px;
 }
-.settings-stub-text {
-  font-size: 13px;
+.settings-server-actions {
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 /* I.2: Voice & video settings tab. Секции с заголовками, ряды

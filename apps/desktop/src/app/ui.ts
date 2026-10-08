@@ -1,6 +1,7 @@
 import type { CallManager, CallSnapshot } from "../call/callManager";
 import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelManager";
 import type { ApiError, HttpClient } from "../network/httpClient";
+import { isSessionRejected, isTransientError } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent, ConnectionState } from "../realtime/realtimeClient";
 import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
@@ -9,7 +10,15 @@ import { checkForUpdate, relaunchApp, type UpdateHandle } from "./tauriUpdater";
 import { openLightbox } from "./lightbox";
 import { openEmojiPicker } from "./emojiPicker";
 import { highlightCode } from "./codeHighlight";
-import { clearStoredServerUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
+import {
+  INSECURE_SERVER_WARNING,
+  ServerCheckError,
+  checkServerReachable,
+  clearStoredServerUrl,
+  getStoredServerUrl,
+  isInsecureServerUrl,
+  isProductionShell
+} from "./serverConfig";
 import {
   applyAppearance,
   getAppearance,
@@ -438,7 +447,7 @@ type SettingsTab =
   | "hotkeys"
   | "language"
   | "appearance"
-  | "advanced";
+  | "server";
 
 interface SettingsState {
   tab: SettingsTab;
@@ -718,6 +727,9 @@ interface AppState {
   selectedChannelId: string | null;
   messages: Message[];
   authError: string | null;
+  // Ошибка старта сессии без отказа сервера (нет связи, таймаут, 5xx): сессию
+  // не сбрасываем, показываем экран «Сервер недоступен» с кнопкой «Повторить».
+  bootError: string | null;
   status: string;
   editingMessageId: string | null;
   invitesOpen: boolean;
@@ -933,6 +945,7 @@ const state: AppState = {
   selectedChannelId: null,
   messages: [],
   authError: null,
+  bootError: null,
   status: "",
   editingMessageId: null,
   invitesOpen: false,
@@ -1207,6 +1220,7 @@ export function renderApp(
     if (!tokens) {
       Object.assign(state, {
         me: null,
+        bootError: null,
         workspaces: [],
         selectedWorkspaceId: null,
         channels: [],
@@ -1259,11 +1273,30 @@ async function bootstrapSession(): Promise<void> {
     startIdleAutoDetect();
     void initUpdateCheck();
     state.status = "";
+    state.bootError = null;
     render();
   } catch (err) {
     state.status = "";
-    await httpClient.logout();
-    state.authError = describeError(err);
+    if (isSessionRejected(err)) {
+      // Сервер отклонил сессию (401/403): токены просрочены, отозваны или аккаунт заблокирован.
+      await httpClient.logout();
+      state.authError = describeError(err);
+    } else {
+      // Нет связи, таймаут или сбой сервера: сессия жива, выходить нельзя.
+      const transient = isTransientError(err);
+      // Профиль мог уже загрузиться, а список воркспейсов нет: при временном
+      // сбое сбрасываем его, иначе экран «Сервер недоступен» (он показывается
+      // только без профиля) не появится, и «Повторить» останется недоступной.
+      if (transient) state.me = null;
+      if (!state.me) {
+        const status = (err as ApiError | null)?.status ?? 0;
+        state.bootError = status >= 500 ? `Сервер вернул ошибку ${status}. Возможно, он перезапускается.` : describeError(err);
+      } else {
+        // Профиль есть, а один из запросов загрузки вернул ошибку (не сбой
+        // связи): оболочка остаётся доступной, причину показываем в статусе.
+        setTransientStatus(describeError(err));
+      }
+    }
     render();
   }
 }
@@ -3282,6 +3315,10 @@ function render(): void {
     renderAuth();
     return;
   }
+  if (state.bootError && !state.me) {
+    renderConnectionLost();
+    return;
+  }
   // C.4: фиксируем bottom-offset ДО уничтожения старого message-list,
   // чтобы после re-render позиция чтения не уехала. Если значение уже
   // задано (loadOlderMessages с pre-prepend высотой) — не перетираем.
@@ -3298,6 +3335,50 @@ function render(): void {
   restorePreservedInputs(inputSnap);
   // Wave 2: #typing-line пересоздан пустым — восстанавливаем из map.
   updateTypingLine();
+}
+
+// Смена сервера: стираем токены и сохранённый адрес, после перезагрузки
+// показывается экран «Подключение к серверу». Вызывается с экрана входа,
+// экрана «Сервер недоступен» и вкладки настроек «Сервер».
+async function switchServer(): Promise<void> {
+  const ok = await confirmDialog({
+    title: "Сменить сервер",
+    body: "Отключиться от текущего сервера и ввести новый адрес? Локальные токены будут удалены.",
+    confirmLabel: "Сменить",
+    danger: true
+  });
+  if (!ok) return;
+  try { localStorage.removeItem("rucord:tokens"); } catch {}
+  clearStoredServerUrl();
+  window.location.reload();
+}
+
+// Экран «Сервер недоступен»: токены целы, пользователь не разлогинен.
+function renderConnectionLost(): void {
+  const serverUrl = getStoredServerUrl() ?? httpClient.baseUrl;
+  rootEl.innerHTML = `
+    <div class="auth-screen">
+      <div class="auth-card">
+        <h1>Сервер недоступен</h1>
+        <p class="onboarding-hint">
+          Не удалось связаться с сервером${serverUrl ? ` <code>${escapeHtml(serverUrl)}</code>` : ""}.
+          Ты не вышел из аккаунта: как только связь вернётся, нажми «Повторить».
+        </p>
+        <div class="auth-error" role="alert">${escapeHtml(state.bootError ?? "")}</div>
+        <div class="connection-lost-actions">
+          <button type="button" class="primary" id="connection-retry">Повторить</button>
+          ${isProductionShell() ? `<button type="button" class="ghost" id="connection-switch">Сменить сервер</button>` : ""}
+        </div>
+      </div>
+    </div>
+  `;
+  rootEl.querySelector<HTMLButtonElement>("#connection-retry")?.addEventListener("click", () => {
+    state.bootError = null;
+    void bootstrapSession();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#connection-switch")?.addEventListener("click", () => {
+    void switchServer();
+  });
 }
 
 function renderAuth(): void {
@@ -3338,21 +3419,9 @@ function renderAuth(): void {
     </div>
   `;
   polishNativeControls(rootEl);
-  const switchBtn = rootEl.querySelector<HTMLButtonElement>(".auth-switch-server");
-  if (switchBtn) {
-    switchBtn.addEventListener("click", async () => {
-      const ok = await confirmDialog({
-        title: "Сменить сервер",
-        body: "Отключиться от текущего сервера и ввести новый адрес? Локальные токены будут удалены.",
-        confirmLabel: "Сменить",
-        danger: true
-      });
-      if (!ok) return;
-      try { localStorage.removeItem("rucord:tokens"); } catch {}
-      clearStoredServerUrl();
-      window.location.reload();
-    });
-  }
+  rootEl.querySelector<HTMLButtonElement>(".auth-switch-server")?.addEventListener("click", () => {
+    void switchServer();
+  });
   const form = rootEl.querySelector<HTMLFormElement>("#auth-form");
   const tabs = rootEl.querySelectorAll<HTMLButtonElement>(".auth-tab");
   if (!form) return;
@@ -8016,8 +8085,6 @@ async function exportAuditCsvFromServer(): Promise<void> {
 interface SettingsTabDef {
   id: SettingsTab;
   label: string;
-  // Номер пункта в TASKS.md для подсказки на placeholder'е.
-  todo?: string;
 }
 
 interface SettingsTabGroup {
@@ -8039,22 +8106,22 @@ function settingsTabGroups(): SettingsTabGroup[] {
     {
       title: t("settings.group.interact"),
       tabs: [
-        { id: "voice", label: t("settings.tab.voice"), todo: "I.2 / I.3" },
+        { id: "voice", label: t("settings.tab.voice") },
         { id: "notifications", label: t("settings.tab.notifications") },
-        { id: "hotkeys", label: t("settings.tab.hotkeys"), todo: "I.4" },
+        { id: "hotkeys", label: t("settings.tab.hotkeys") },
         { id: "language", label: t("settings.tab.language") }
       ]
     },
     {
       title: t("settings.group.appearance"),
       tabs: [
-        { id: "appearance", label: t("settings.tab.appearance"), todo: "I.5" }
+        { id: "appearance", label: t("settings.tab.appearance") }
       ]
     },
     {
-      title: t("settings.group.advanced"),
+      title: t("settings.group.connection"),
       tabs: [
-        { id: "advanced", label: t("settings.tab.advanced"), todo: "I.9" }
+        { id: "server", label: t("settings.tab.server") }
       ]
     }
   ];
@@ -8095,7 +8162,8 @@ function settingsSearchIndex(): SettingsSearchEntry[] {
     { tab: "appearance", label: t("ap.messages.title"), keywords: ["группировка", "role", "цвет ролей", "group"] },
     { tab: "appearance", label: t("ap.gif.title"), keywords: ["gif", "apng", "анимация", "hover", "наведение"] },
     { tab: "language", label: t("settings.language.title"), keywords: ["locale", "language", "russian", "english", "ru", "en", "перевод"] },
-    { tab: "language", label: t("settings.timeformat.title"), keywords: ["12-часовой", "24-часовой", "am", "pm", "часы", "time format"] }
+    { tab: "language", label: t("settings.timeformat.title"), keywords: ["12-часовой", "24-часовой", "am", "pm", "часы", "time format"] },
+    { tab: "server", label: t("sv.title"), keywords: ["адрес", "подключение", "https", "сертификат", "address", "connection", "url", "tls"] }
   ];
 }
 
@@ -8194,16 +8262,65 @@ function renderSettingsTabContent(tab: SettingsTab): string {
   if (tab === "notifications") return renderSettingsNotificationsTab();
   if (tab === "privacy") return renderSettingsPrivacyTab();
   if (tab === "language") return renderSettingsLanguageTab();
-  const def = findSettingsTab(tab);
-  const todoHint = def.todo ? ` · ${def.todo}` : "";
+  return renderSettingsServerTab();
+}
+
+// Вкладка «Сервер»: адрес, проверка связи, смена. Результат проверки живёт в
+// модуле (как список сеансов на вкладке «Конфиденциальность»), а не в AppState.
+type ServerCheckState =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "ok" }
+  | { status: "error"; message: string };
+
+let _serverCheck: ServerCheckState = { status: "idle" };
+
+function renderSettingsServerTab(): string {
+  const production = isProductionShell();
+  const serverUrl = production ? (getStoredServerUrl() ?? "") : httpClient.baseUrl || window.location.origin;
+  const check = _serverCheck;
+  const checkResult = check.status === "checking"
+    ? `<div class="settings-hint">${t("sv.check.running")}</div>`
+    : check.status === "ok"
+      ? `<div class="settings-hint settings-server-ok">${t("sv.check.ok")}</div>`
+      : check.status === "error"
+        ? `<div class="modal-error">${escapeHtml(check.message)}</div>`
+        : "";
   return `
-    <div class="settings-stub">
-      <div class="settings-stub-title">${t("settings.stub.title")}${escapeHtml(todoHint)}</div>
-      <div class="settings-stub-text">
-        ${t("settings.stub.text")}
-      </div>
+    <div class="settings-section">
+      <h3>${t("sv.title")}</h3>
+      <small class="settings-hint">${production ? t("sv.hint") : t("sv.hint.dev")}</small>
+      <div class="settings-server-url"><code>${escapeHtml(serverUrl)}</code></div>
+      ${production && isInsecureServerUrl(serverUrl) ? `<div class="settings-server-warning" role="status">${escapeHtml(INSECURE_SERVER_WARNING)}</div>` : ""}
+      ${checkResult}
+      ${production ? `
+        <div class="admin-actions settings-server-actions">
+          <button id="server-check"${check.status === "checking" ? " disabled" : ""}>${t("sv.check.button")}</button>
+          <button id="server-switch" class="danger">${t("sv.switch.button")}</button>
+        </div>
+      ` : ""}
     </div>
   `;
+}
+
+function attachSettingsServerHandlers(): void {
+  if (state.modal !== "settings" || state.settings.tab !== "server") return;
+  rootEl.querySelector<HTMLButtonElement>("#server-check")?.addEventListener("click", async () => {
+    const url = getStoredServerUrl();
+    if (!url) return;
+    _serverCheck = { status: "checking" };
+    render();
+    try {
+      await checkServerReachable(url);
+      _serverCheck = { status: "ok" };
+    } catch (err) {
+      _serverCheck = { status: "error", message: err instanceof ServerCheckError ? err.message : describeError(err) };
+    }
+    render();
+  });
+  rootEl.querySelector<HTMLButtonElement>("#server-switch")?.addEventListener("click", () => {
+    void switchServer();
+  });
 }
 
 // I.4: state для capture-режима. Когда юзер кликнул на binding-кнопку,
@@ -9799,6 +9916,7 @@ function attachSettingsHandlers(): void {
   attachSettingsAppearanceHandlers();
   attachSettingsNotificationsHandlers();
   attachSettingsPrivacyHandlers();
+  attachSettingsServerHandlers();
   attachSettingsLanguageHandlers();
   attachSettingsSearchHandler();
 }
@@ -12715,6 +12833,8 @@ function applyChannelPick(input: HTMLInputElement, popup: HTMLDivElement, name: 
 function describeError(err: unknown): string {
   const api = err as ApiError;
   if (api && typeof api === "object" && "code" in api && "message" in api) {
+    // status 0: ответа не было (нет связи, таймаут). Код ошибки пользователю не нужен.
+    if (api.status === 0) return api.message;
     return `${api.message} (${api.code})`;
   }
   if (err instanceof Error) return err.message;
@@ -12910,8 +13030,8 @@ function renderAdminSettings(): string {
         ${numberField("maxChannelsPerWorkspace", "Каналов на воркспейс", "0 = безлимит")}
         ${numberField("maxMessageBytes", "Размер сообщения, байт", "0 = безлимит")}
         ${numberField("maxAttachmentBytes", "Размер вложения, байт", "0 = безлимит")}
-        ${numberField("storageQuotaBytes", "Квота хранилища, байт", "0 = безлимит (D.3)")}
-        ${numberField("messageRetentionDays", "Срок хранения сообщений, дни", "0 = бессрочно (D.3)")}
+        ${numberField("storageQuotaBytes", "Квота хранилища, байт", "0 = безлимит")}
+        ${numberField("messageRetentionDays", "Срок хранения сообщений, дни", "0 = бессрочно")}
         <label class="admin-field admin-field-bool">
           <input type="checkbox" name="registrationOpen" ${s.registrationOpen ? "checked" : ""} />
           <span>Открытая регистрация</span>
