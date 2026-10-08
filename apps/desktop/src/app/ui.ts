@@ -3318,6 +3318,12 @@ function restoreImageSlots(snap: Map<string, string>): void {
 }
 
 function render(): void {
+  // Временный пароль нового пользователя показывается один раз и живёт, пока
+  // открыта вкладка «Пользователи»: закрытие окна, смена вкладки и выход его
+  // стирают, как и введённое в форму.
+  if ((_adminCreate.result || _adminCreate.open) && (state.modal !== "admin" || state.admin.tab !== "users" || !httpClient.getTokens())) {
+    _adminCreate = newAdminCreate();
+  }
   armStatusAutoClear();
   // Пере-рендер уносит hover-элемент из DOM — открытый тултип залипал бы.
   hideTooltip();
@@ -3376,8 +3382,13 @@ async function loadPublicConfig(): Promise<void> {
       "GET", "/api/v1/server/public-config", undefined, { auth: false }
     );
     if (typeof cfg?.registrationOpen !== "boolean" || state.registrationOpen === cfg.registrationOpen) return;
+    const previous = state.registrationOpen;
     state.registrationOpen = cfg.registrationOpen;
-    if (!httpClient.getTokens()) render();
+    // Перерисовка формы входа стирает набранные логин и пароль, поэтому её
+    // делаем, только когда вид действительно меняется: вкладка «Регистрация»
+    // появляется или исчезает.
+    const tabVisibilityChanged = cfg.registrationOpen === false || previous === false;
+    if (tabVisibilityChanged && !httpClient.getTokens()) render();
   } catch {
     /* не критично */
   }
@@ -3452,7 +3463,7 @@ function renderForcedPasswordChange(): void {
 function describeForcedPasswordError(err: unknown): string {
   const api = err as ApiError | null;
   // Неверный временный пароль сервер сообщает кодом 403 authorization_denied.
-  if (api && typeof api === "object" && api.status === 403 && api.code !== "password_change_required") {
+  if (api && typeof api === "object" && api.status === 403 && api.code === "authorization_denied") {
     return "Временный пароль введён неверно";
   }
   return describeError(err);
@@ -10685,7 +10696,7 @@ function attachShellHandlers(): void {
     state.admin.tab = "settings";
     state.admin.error = null;
     // Временный пароль из прошлого создания не должен всплывать при повторном открытии.
-    _adminCreate = { open: false, busy: false, error: null, result: null };
+    _adminCreate = newAdminCreate();
     render();
     void loadAdminTab("settings");
   });
@@ -13181,12 +13192,38 @@ interface CreatedUserResult {
   temporaryPassword?: string;
 }
 
-let _adminCreate: { open: boolean; busy: boolean; error: string | null; result: CreatedUserResult | null } = {
-  open: false,
-  busy: false,
-  error: null,
-  result: null
-};
+// Введённое в форму хранится здесь, а не только в DOM: любая перерисовка
+// (ошибка создания, событие realtime) пересобирает форму из шаблона.
+interface AdminCreateDraft {
+  email: string;
+  username: string;
+  displayName: string;
+  password: string;
+  // null = по умолчанию выбранный сейчас воркспейс.
+  workspace: string | null;
+  mustChange: boolean;
+}
+
+interface AdminCreateState {
+  open: boolean;
+  busy: boolean;
+  error: string | null;
+  result: CreatedUserResult | null;
+  draft: AdminCreateDraft;
+}
+
+function newAdminCreate(patch: Partial<AdminCreateState> = {}): AdminCreateState {
+  return {
+    open: false,
+    busy: false,
+    error: null,
+    result: null,
+    draft: { email: "", username: "", displayName: "", password: "", workspace: null, mustChange: true },
+    ...patch
+  };
+}
+
+let _adminCreate: AdminCreateState = newAdminCreate();
 
 function renderAdminCreateUser(): string {
   const c = _adminCreate;
@@ -13211,28 +13248,30 @@ function renderAdminCreateUser(): string {
     `;
   }
   if (!c.open) return "";
+  const d = c.draft;
+  const chosenWorkspace = d.workspace ?? state.selectedWorkspaceId ?? "";
   const workspaceOptions = state.workspaces
-    .map((w) => `<option value="${escapeHtml(w.id)}"${w.id === state.selectedWorkspaceId ? " selected" : ""}>${escapeHtml(w.name)}</option>`)
+    .map((w) => `<option value="${escapeHtml(w.id)}"${w.id === chosenWorkspace ? " selected" : ""}>${escapeHtml(w.name)}</option>`)
     .join("");
   return `
     <form id="admin-create-user-form" class="admin-form admin-create-user" autocomplete="off">
       <div class="admin-grid">
         <label class="admin-field">
           <span class="admin-field-label">Email</span>
-          <input name="email" type="email" required />
+          <input name="email" type="email" required value="${escapeHtml(d.email)}" />
         </label>
         <label class="admin-field">
           <span class="admin-field-label">Имя пользователя</span>
-          <input name="username" required minlength="3" maxlength="32" pattern="[a-z0-9_]{3,32}" />
+          <input name="username" required minlength="3" maxlength="32" pattern="[a-z0-9_]{3,32}" value="${escapeHtml(d.username)}" />
           <span class="admin-field-hint">a–z, 0–9, _; 3–32 символа</span>
         </label>
         <label class="admin-field">
           <span class="admin-field-label">Отображаемое имя</span>
-          <input name="displayName" maxlength="64" />
+          <input name="displayName" maxlength="64" value="${escapeHtml(d.displayName)}" />
         </label>
         <label class="admin-field">
           <span class="admin-field-label">Пароль</span>
-          <input name="password" type="text" autocomplete="off" />
+          <input name="password" type="text" autocomplete="off" value="${escapeHtml(d.password)}" />
           <span class="admin-field-hint">Пусто: сервер создаст временный пароль</span>
         </label>
         <label class="admin-field">
@@ -13243,7 +13282,7 @@ function renderAdminCreateUser(): string {
           </select>
         </label>
         <label class="admin-field admin-field-bool">
-          <input type="checkbox" name="mustChange" checked />
+          <input type="checkbox" name="mustChange"${d.mustChange ? " checked" : ""} />
           <span>Сменить пароль при первом входе</span>
         </label>
       </div>
@@ -13258,15 +13297,15 @@ function renderAdminCreateUser(): string {
 
 function attachAdminCreateUserHandlers(): void {
   rootEl.querySelector<HTMLButtonElement>("#admin-create-toggle")?.addEventListener("click", () => {
-    _adminCreate = { open: true, busy: false, error: null, result: null };
+    _adminCreate = newAdminCreate({ open: true });
     render();
   });
   rootEl.querySelector<HTMLButtonElement>("#admin-create-cancel")?.addEventListener("click", () => {
-    _adminCreate = { open: false, busy: false, error: null, result: null };
+    _adminCreate = newAdminCreate();
     render();
   });
   rootEl.querySelector<HTMLButtonElement>("#admin-create-done")?.addEventListener("click", () => {
-    _adminCreate = { open: false, busy: false, error: null, result: null };
+    _adminCreate = newAdminCreate();
     render();
   });
   rootEl.querySelector<HTMLButtonElement>("#admin-temp-password-copy")?.addEventListener("click", async () => {
@@ -13280,9 +13319,24 @@ function attachAdminCreateUserHandlers(): void {
   });
 
   const form = rootEl.querySelector<HTMLFormElement>("#admin-create-user-form");
+  const syncDraft = (): void => {
+    if (!form) return;
+    const data = new FormData(form);
+    _adminCreate.draft = {
+      email: String(data.get("email") ?? ""),
+      username: String(data.get("username") ?? ""),
+      displayName: String(data.get("displayName") ?? ""),
+      password: String(data.get("password") ?? ""),
+      workspace: String(data.get("workspace") ?? ""),
+      mustChange: data.get("mustChange") === "on"
+    };
+  };
+  form?.addEventListener("input", syncDraft);
+  form?.addEventListener("change", syncDraft);
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (_adminCreate.busy) return;
+    syncDraft();
     const data = new FormData(form);
     const password = String(data.get("password") ?? "");
     const workspace = String(data.get("workspace") ?? "");
@@ -13306,21 +13360,25 @@ function attachAdminCreateUserHandlers(): void {
         mustChangePassword: boolean;
         temporaryPassword?: string;
       }>("/api/v1/server/users", body);
-      _adminCreate = {
-        open: false,
-        busy: false,
-        error: null,
+      _adminCreate = newAdminCreate({
         result: {
           username: created.username,
           mustChangePassword: created.mustChangePassword,
           temporaryPassword: created.temporaryPassword
         }
-      };
+      });
       render();
       void loadAdminUsers();
     } catch (err) {
       _adminCreate.busy = false;
-      _adminCreate.error = describeError(err);
+      if ((err as ApiError | null)?.status === 0) {
+        // Ответ не дошёл, но сервер мог создать пользователя (и его временный
+        // пароль уже потерян): повторное «Создать» даст конфликт.
+        _adminCreate.error = `${describeError(err)}. Пользователь мог быть создан: проверь список, прежде чем создавать снова.`;
+        void loadAdminUsers();
+      } else {
+        _adminCreate.error = describeError(err);
+      }
       render();
     }
   });
@@ -13551,8 +13609,13 @@ function attachAdminHandlers(): void {
       }
       // Размеры вводятся в МБ, на сервер уходят байты.
       for (const [field, key] of [["maxAttachmentMb", "maxAttachmentBytes"], ["storageQuotaMb", "storageQuotaBytes"]] as const) {
-        const bytes = mbToBytes(String(data.get(field) ?? ""));
-        if (bytes !== null) payload[key] = bytes;
+        const raw = String(data.get(field) ?? "");
+        const bytes = mbToBytes(raw);
+        // Поле показывает округлённое значение: нетронутое не отправляем, иначе
+        // «Сохранить» молча меняло бы лимит (1 000 000 байт стали бы 996 147,
+        // а значение меньше 5 КБ превратилось бы в 0, то есть в безлимит).
+        const untouched = raw.trim().replace(",", ".") === bytesToMb(Number(state.admin.settings?.[key] ?? 0));
+        if (bytes !== null && !untouched) payload[key] = bytes;
       }
       payload.registrationOpen = data.get("registrationOpen") === "on";
       state.admin.settingsSaving = true;
