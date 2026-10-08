@@ -1564,6 +1564,7 @@ func testAdminCreateUser(t *testing.T) {
 		"bad username":   {"email": email, "username": "A!"},
 		"bad email":      {"email": "not-an-email", "username": username},
 		"short password": {"email": email, "username": username, "password": "short"},
+		"long password":  {"email": email, "username": username, "password": strings.Repeat("p", 80)},
 		"bad workspace":  {"email": email, "username": username, "joinWorkspaceId": "not-a-uuid"},
 	} {
 		if code, raw = doReq(t, http.MethodPost, "/api/v1/server/users", root.AccessToken, body); code != http.StatusBadRequest {
@@ -1607,6 +1608,12 @@ func testAdminCreateUser(t *testing.T) {
 	).Scan(&auditCount); err != nil || auditCount != 1 {
 		t.Fatalf("audit user.created: count=%d err=%v", auditCount, err)
 	}
+	if err := dbPool.QueryRow(ctx,
+		`select count(*) from audit_log where action_code = 'workspace.member.added' and target_id = $1 and workspace_id = $2`,
+		created.ID, wsID,
+	).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("audit workspace.member.added: count=%d err=%v", auditCount, err)
+	}
 
 	// Вход временным паролем: флаг виден в ответе.
 	resetAuthLimits(t)
@@ -1636,8 +1643,32 @@ func testAdminCreateUser(t *testing.T) {
 		t.Fatalf("users/me before password change: %d %s", code, string(raw))
 	}
 
-	// Смена пароля: неверный текущий, такой же новый, затем успех.
+	// Другие методы под флагом тоже закрыты; выход разрешён и отзывает свою сессию.
+	if code, _ = doReq(t, http.MethodPut, "/api/v1/users/me", session.AccessToken, map[string]any{"displayName": "x"}); code != http.StatusForbidden {
+		t.Fatalf("PUT users/me before password change: expected 403, got %d", code)
+	}
+	var extra [2]struct {
+		AccessToken string `json:"accessToken"`
+	}
+	for i := range extra {
+		resetAuthLimits(t)
+		code, raw = doReq(t, http.MethodPost, "/api/v1/auth/login", "",
+			map[string]any{"login": username, "password": created.TemporaryPassword})
+		if code != http.StatusOK {
+			t.Fatalf("extra login %d: %d %s", i, code, string(raw))
+		}
+		mustJSON(t, raw, &extra[i])
+	}
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/auth/logout", extra[0].AccessToken, nil); code != http.StatusNoContent {
+		t.Fatalf("logout under password change: expected 204, got %d", code)
+	}
+
+	// Смена пароля: неверный текущий, такой же новый, слишком длинный, затем успех.
 	newPassword := "brand-new-password-" + suffix
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/users/me/password", session.AccessToken,
+		map[string]any{"currentPassword": created.TemporaryPassword, "newPassword": strings.Repeat("n", 80)}); code != http.StatusBadRequest {
+		t.Fatalf("change password to 80 bytes: expected 400, got %d", code)
+	}
 	if code, _ = doReq(t, http.MethodPost, "/api/v1/users/me/password", session.AccessToken,
 		map[string]any{"currentPassword": "wrong-password-xx", "newPassword": newPassword}); code != http.StatusForbidden {
 		t.Fatalf("change password with wrong current: expected 403, got %d", code)
@@ -1649,6 +1680,12 @@ func testAdminCreateUser(t *testing.T) {
 	if code, raw = doReq(t, http.MethodPost, "/api/v1/users/me/password", session.AccessToken,
 		map[string]any{"currentPassword": created.TemporaryPassword, "newPassword": newPassword}); code != http.StatusNoContent {
 		t.Fatalf("change password: %d %s", code, string(raw))
+	}
+
+	// Временный пароль мог попасть не в те руки: остальные сессии отозваны,
+	// сессия, которая меняла пароль, продолжает работать.
+	if code, _ = doReq(t, http.MethodGet, "/api/v1/users/me", extra[1].AccessToken, nil); code != http.StatusUnauthorized {
+		t.Fatalf("other session after forced password change: expected 401, got %d", code)
 	}
 
 	// После смены: API открыт, воркспейс из joinWorkspaceId виден, флаг снят.

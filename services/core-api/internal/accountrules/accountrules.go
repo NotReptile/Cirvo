@@ -13,13 +13,17 @@ import (
 
 const (
 	MinPasswordLength = 8
-	maxEmailLength    = 254
+	// MaxPasswordBytes — предел bcrypt: всё после 72-го байта он не учитывает
+	// и (в x/crypto) отказывается хешировать такой пароль.
+	MaxPasswordBytes = 72
+	maxEmailLength   = 254
 )
 
 var (
 	ErrInvalidEmail    = errors.New("invalid email")
 	ErrInvalidUsername = errors.New("username must be 3-32 chars of [a-z0-9_]")
 	ErrShortPassword   = errors.New("password must be at least 8 characters")
+	ErrLongPassword    = errors.New("password must be at most 72 bytes")
 
 	usernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
 )
@@ -47,6 +51,9 @@ func ValidateUsername(username string) error {
 func ValidatePassword(password string) error {
 	if len(password) < MinPasswordLength {
 		return ErrShortPassword
+	}
+	if len(password) > MaxPasswordBytes {
+		return ErrLongPassword
 	}
 	return nil
 }

@@ -40,6 +40,16 @@ func TestValidatePassword(t *testing.T) {
 	if err := ValidatePassword("1234567"); err != ErrShortPassword {
 		t.Errorf("7 символов: %v, want ErrShortPassword", err)
 	}
+	if err := ValidatePassword(strings.Repeat("a", 72)); err != nil {
+		t.Errorf("72 байта должны проходить: %v", err)
+	}
+	if err := ValidatePassword(strings.Repeat("a", 73)); err != ErrLongPassword {
+		t.Errorf("73 байта: %v, want ErrLongPassword", err)
+	}
+	// Предел считается в байтах, не в символах: 37 русских букв = 74 байта.
+	if err := ValidatePassword(strings.Repeat("я", 37)); err != ErrLongPassword {
+		t.Errorf("37 кириллических символов (74 байта): %v, want ErrLongPassword", err)
+	}
 }
 
 func TestNormalize(t *testing.T) {

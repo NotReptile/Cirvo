@@ -192,6 +192,16 @@ func (m *Module) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		TargetType: "user",
 		TargetID:   userID.String(),
 	})
+	// Как при вступлении по приглашению: в журнале воркспейса видно, кто и когда добавлен.
+	if workspaceID != uuid.Nil {
+		auditlog.Record(r.Context(), m.db, m.logger, auditlog.Entry{
+			ActorID:     actorID,
+			WorkspaceID: workspaceID,
+			Action:      auditlog.ActionWorkspaceMemberAdded,
+			TargetType:  "user",
+			TargetID:    userID.String(),
+		})
+	}
 
 	resp := createUserResponse{
 		adminUserView: adminUserView{

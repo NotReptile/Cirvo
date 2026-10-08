@@ -164,7 +164,7 @@ func (c Config) Validate() error {
 		return errors.New("RUCORD_BOOTSTRAP_USERNAME must be 3-32 chars of [a-z0-9_]")
 	}
 	if accountrules.ValidatePassword(c.Password) != nil {
-		return errors.New("RUCORD_BOOTSTRAP_PASSWORD must be at least 8 characters")
+		return errors.New("RUCORD_BOOTSTRAP_PASSWORD must be 8-72 bytes")
 	}
 	if c.WorkspaceSlug != "" && !slugRE.MatchString(c.WorkspaceSlug) {
 		return errors.New("RUCORD_BOOTSTRAP_WORKSPACE_SLUG must match [a-z0-9-], length 3-64")
