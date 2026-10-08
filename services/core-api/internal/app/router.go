@@ -55,11 +55,16 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 
 		ctx, cancel := context.WithTimeout(r.Context(), httpAuthTimeout)
 		defer cancel()
-		var revoked *string
+		var (
+			revoked    *string
+			mustChange bool
+		)
 		err = a.db.QueryRow(ctx,
-			`select revoked_at::text from user_sessions where id = $1 and user_id = $2`,
+			`select s.revoked_at::text, u.must_change_password
+			 from user_sessions s join users u on u.id = s.user_id
+			 where s.id = $1 and s.user_id = $2`,
 			claims.SessionID, claims.UserID,
-		).Scan(&revoked)
+		).Scan(&revoked, &mustChange)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session not found")
@@ -72,10 +77,29 @@ func (a *Authenticator) Middleware(next http.Handler) http.Handler {
 			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session revoked")
 			return
 		}
+		if mustChange && !allowedWhilePasswordChangePending(r.Pattern) {
+			sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodePasswordChangeRequired, "password change required")
+			return
+		}
 
 		ctx = authctx.With(r.Context(), claims.UserID, claims.SessionID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// Пока пользователь не сменил временный пароль, доступны только смена пароля,
+// чтение своего профиля (клиенту нужно узнать о флаге) и выход. Маршрут
+// определяется по шаблону ServeMux (r.Pattern), а не по сырому пути, чтобы
+// его нельзя было подделать лишними слешами или регистром.
+var passwordChangePendingAllowed = map[string]struct{}{
+	"POST /api/v1/users/me/password": {},
+	"GET /api/v1/users/me":           {},
+	"POST /api/v1/auth/logout":       {},
+}
+
+func allowedWhilePasswordChangePending(pattern string) bool {
+	_, ok := passwordChangePendingAllowed[pattern]
+	return ok
 }
 
 func extractBearer(r *http.Request) string {

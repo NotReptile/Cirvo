@@ -93,9 +93,16 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, userID, sessionID uuid.UUID) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	if !sessionAlive(ctx, m.db, sessionID, userID) {
+	alive, passwordPending := sessionStatus(ctx, m.db, sessionID, userID)
+	if !alive {
 		cancel()
 		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session not active")
+		return
+	}
+	// Временный пароль не заменён: события воркспейсов недоступны, как и API.
+	if passwordPending {
+		cancel()
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodePasswordChangeRequired, "password change required")
 		return
 	}
 	workspaces, err := loadUserWorkspaces(ctx, m.db, userID)
@@ -341,16 +348,20 @@ func bearerToken(r *http.Request) string {
 	return header[len(prefix):]
 }
 
-func sessionAlive(ctx context.Context, db *postgres.Pool, sessionID, userID uuid.UUID) bool {
+// sessionStatus сообщает, жива ли сессия и ждёт ли пользователь смены
+// временного пароля (users.must_change_password).
+func sessionStatus(ctx context.Context, db *postgres.Pool, sessionID, userID uuid.UUID) (alive, passwordPending bool) {
 	var revoked *time.Time
 	err := db.QueryRow(ctx,
-		`select revoked_at from user_sessions where id = $1 and user_id = $2`,
+		`select s.revoked_at, u.must_change_password
+		 from user_sessions s join users u on u.id = s.user_id
+		 where s.id = $1 and s.user_id = $2`,
 		sessionID, userID,
-	).Scan(&revoked)
-	if err != nil {
-		return false
+	).Scan(&revoked, &passwordPending)
+	if err != nil || revoked != nil {
+		return false, false
 	}
-	return revoked == nil
+	return true, passwordPending
 }
 
 func loadUserWorkspaces(ctx context.Context, db *postgres.Pool, userID uuid.UUID) ([]uuid.UUID, error) {

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +19,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
+	"github.com/NotReptile/RuCord/services/core-api/internal/accountrules"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
@@ -38,8 +38,6 @@ const (
 	refreshTokenBytes = 32
 	refreshTTL        = 30 * 24 * time.Hour
 )
-
-var usernamePattern = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
 
 type Module struct {
 	db       *postgres.Pool
@@ -107,6 +105,9 @@ type userView struct {
 	Bio           string `json:"bio,omitempty"`
 	BannerColor   string `json:"bannerColor,omitempty"`
 	BannerMediaID string `json:"bannerMediaId,omitempty"`
+	// true: пользователю выдан временный пароль, до его смены API отвечает
+	// 403 password_change_required (кроме смены пароля, /users/me и logout).
+	MustChangePassword bool `json:"mustChangePassword,omitempty"`
 }
 
 func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -134,20 +135,20 @@ func (m *Module) handleRegister(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "malformed request body")
 		return
 	}
-	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
-	req.Username = strings.ToLower(strings.TrimSpace(req.Username))
+	req.Email = accountrules.NormalizeEmail(req.Email)
+	req.Username = accountrules.NormalizeUsername(req.Username)
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 
-	if !strings.Contains(req.Email, "@") {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid email")
+	if err := accountrules.ValidateEmail(req.Email); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, err.Error())
 		return
 	}
-	if !usernamePattern.MatchString(req.Username) {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "username must be 3-32 chars of [a-z0-9_]")
+	if err := accountrules.ValidateUsername(req.Username); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, err.Error())
 		return
 	}
-	if len(req.Password) < 8 {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "password must be at least 8 characters")
+	if err := accountrules.ValidatePassword(req.Password); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, err.Error())
 		return
 	}
 
@@ -235,16 +236,17 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		bio          *string
 		bannerColor  *string
 		bannerID     *uuid.UUID
+		mustChange   bool
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select id, email, username, display_name, password_hash, banned_at, is_root,
 		        avatar_media_id, presence_mode, custom_status,
-		        bio, banner_color, banner_media_id
+		        bio, banner_color, banner_media_id, must_change_password
 		 from users where email = $1 or username = $1`,
 		req.Login,
 	).Scan(&userID, &email, &username, &displayName, &passwordHash, &bannedAt, &isRoot,
 		&avatarID, &presenceMode, &customStatus,
-		&bio, &bannerColor, &bannerID)
+		&bio, &bannerColor, &bannerID, &mustChange)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid credentials")
@@ -277,11 +279,12 @@ func (m *Module) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.User = userView{
-		ID:           userID.String(),
-		Email:        email,
-		Username:     username,
-		IsRoot:       isRoot,
-		PresenceMode: presenceMode,
+		ID:                 userID.String(),
+		Email:              email,
+		Username:           username,
+		IsRoot:             isRoot,
+		PresenceMode:       presenceMode,
+		MustChangePassword: mustChange,
 	}
 	if displayName != nil {
 		resp.User.DisplayName = *displayName
@@ -530,14 +533,15 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		bio          *string
 		bannerColor  *string
 		bannerID     *uuid.UUID
+		mustChange   bool
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select email, username, display_name, is_root, avatar_media_id, presence_mode, custom_status,
-		        bio, banner_color, banner_media_id
+		        bio, banner_color, banner_media_id, must_change_password
 		 from users where id = $1`,
 		userID,
 	).Scan(&email, &username, &displayName, &isRoot, &avatarID, &presenceMode, &customStatus,
-		&bio, &bannerColor, &bannerID)
+		&bio, &bannerColor, &bannerID, &mustChange)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -546,7 +550,7 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
-	view := userView{ID: userID.String(), Email: email, Username: username, IsRoot: isRoot, PresenceMode: presenceMode}
+	view := userView{ID: userID.String(), Email: email, Username: username, IsRoot: isRoot, PresenceMode: presenceMode, MustChangePassword: mustChange}
 	if displayName != nil {
 		view.DisplayName = *displayName
 	}

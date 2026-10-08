@@ -93,8 +93,13 @@ func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, us
 
 	checkCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	if !sessionAlive(checkCtx, m.db, sessionID, userID) {
+	alive, passwordPending := sessionStatus(checkCtx, m.db, sessionID, userID)
+	if !alive {
 		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeSessionRevoked, "session not active")
+		return
+	}
+	if passwordPending {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodePasswordChangeRequired, "password change required")
 		return
 	}
 	if !isVoiceParticipant(checkCtx, m.db, channelID, sessionID) {
@@ -218,16 +223,20 @@ func bearerToken(r *http.Request) string {
 	return header[len(prefix):]
 }
 
-func sessionAlive(ctx context.Context, db *postgres.Pool, sessionID, userID uuid.UUID) bool {
+// sessionStatus сообщает, жива ли сессия и ждёт ли пользователь смены
+// временного пароля (users.must_change_password).
+func sessionStatus(ctx context.Context, db *postgres.Pool, sessionID, userID uuid.UUID) (alive, passwordPending bool) {
 	var revoked *time.Time
 	err := db.QueryRow(ctx,
-		`select revoked_at from user_sessions where id = $1 and user_id = $2`,
+		`select s.revoked_at, u.must_change_password
+		 from user_sessions s join users u on u.id = s.user_id
+		 where s.id = $1 and s.user_id = $2`,
 		sessionID, userID,
-	).Scan(&revoked)
-	if err != nil {
-		return false
+	).Scan(&revoked, &passwordPending)
+	if err != nil || revoked != nil {
+		return false, false
 	}
-	return revoked == nil
+	return true, passwordPending
 }
 
 func isVoiceParticipant(ctx context.Context, db *postgres.Pool, channelID, sessionID uuid.UUID) bool {
