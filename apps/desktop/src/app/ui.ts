@@ -1,7 +1,7 @@
 import type { CallManager, CallSnapshot } from "../call/callManager";
 import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelManager";
 import type { ApiError, HttpClient } from "../network/httpClient";
-import { isSessionRejected } from "../network/httpClient";
+import { isSessionRejected, isTransientError } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent, ConnectionState } from "../realtime/realtimeClient";
 import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
@@ -1283,12 +1283,19 @@ async function bootstrapSession(): Promise<void> {
       state.authError = describeError(err);
     } else {
       // Нет связи, таймаут или сбой сервера: сессия жива, выходить нельзя.
-      // Профиль мог уже загрузиться, а список воркспейсов нет: сбрасываем его,
-      // иначе экран «Сервер недоступен» (он показывается только без профиля)
-      // не появится, и кнопка «Повторить» останется недоступной.
-      state.me = null;
-      const status = (err as ApiError | null)?.status ?? 0;
-      state.bootError = status >= 500 ? `Сервер вернул ошибку ${status}. Возможно, он перезапускается.` : describeError(err);
+      const transient = isTransientError(err);
+      // Профиль мог уже загрузиться, а список воркспейсов нет: при временном
+      // сбое сбрасываем его, иначе экран «Сервер недоступен» (он показывается
+      // только без профиля) не появится, и «Повторить» останется недоступной.
+      if (transient) state.me = null;
+      if (!state.me) {
+        const status = (err as ApiError | null)?.status ?? 0;
+        state.bootError = status >= 500 ? `Сервер вернул ошибку ${status}. Возможно, он перезапускается.` : describeError(err);
+      } else {
+        // Профиль есть, а один из запросов загрузки вернул ошибку (не сбой
+        // связи): оболочка остаётся доступной, причину показываем в статусе.
+        setTransientStatus(describeError(err));
+      }
     }
     render();
   }
