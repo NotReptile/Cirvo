@@ -24,6 +24,12 @@
   --text-strong: #ffffff;
   --danger: #e35d6a;
   --warn: #e0a43a;
+  /* Левая колонка воркспейсов и её кнопка «Личные сообщения». */
+  --bg-rail: #0b0d12;
+  --rail-home-bg: #1e2025;
+  --rail-home-fg: #c2c5ca;
+  /* Высота нижней панели активного звонка; на неё же уменьшается .shell. */
+  --call-bar-h: 56px;
 }
 
 :root[data-theme="light"] {
@@ -40,6 +46,10 @@
   --text-strong: #060607;
   --danger: #d83c3e;
   --warn: #9a6200;
+  --bg-rail: #e3e5e8;
+  --rail-home-bg: #ffffff;
+  --rail-home-fg: #4f5660;
+  --call-bar-h: 56px;
 }
 
 /* I.5: density=compact — режем вертикальные отступы и аватары,
@@ -280,7 +290,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Workspace rail — узкая колонка слева с иконками воркспейсов. */
 .ws-rail {
-  background: #0b0d12;
+  background: var(--bg-rail);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -468,6 +478,8 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   text-overflow: ellipsis;
 }
 .user-strip-actions { display: flex; gap: 2px; flex-shrink: 0; }
+/* Глобальное правило button даёт 6px 12px: три иконки отнимали у имени 130 из 240 px. */
+.user-strip-actions button { padding: 6px; }
 .sidebar {
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
@@ -697,6 +709,16 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 .inline-form { display: flex; gap: 6px; }
 .inline-form input { flex: 1; padding: 6px 8px; font-size: 12px; }
 .inline-form button { padding: 4px 10px; font-size: 12px; }
+.inline-form select {
+  flex-shrink: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.invite-list li.invite-expired { opacity: 0.55; }
 
 /* Контекстное меню канала (ПКМ на элементе списка каналов). */
 .channel-menu-backdrop {
@@ -1581,11 +1603,15 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 8px 16px;
-  background: #1a1d23;
-  border-top: 1px solid rgba(255,255,255,0.08);
-  box-shadow: 0 -4px 14px rgba(0,0,0,0.35);
+  padding: 0 16px;
+  height: var(--call-bar-h);
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 14px rgba(0,0,0,0.25);
 }
+/* Панель звонка фиксирована снизу: без этого она перекрывала бы композер и
+   панель пользователя, поэтому оболочка на время звонка становится короче. */
+.shell.has-call-bar { height: calc(100% - var(--call-bar-h)); }
 .call-bar-info { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .call-bar-avatar {
   width: 36px;
@@ -1622,7 +1648,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   height: 44px;
   border-radius: 50%;
   border: none;
-  background: rgba(255,255,255,0.08);
+  background: var(--bg-elev-2);
   color: var(--text);
   display: inline-flex;
   align-items: center;
@@ -1631,7 +1657,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   padding: 0;
   transition: background 0.12s ease, color 0.12s ease, transform 0.06s ease;
 }
-.call-icon-btn:hover:not([disabled]) { background: rgba(255,255,255,0.16); }
+.call-icon-btn:hover:not([disabled]) { background: var(--border); }
 .call-icon-btn:active:not([disabled]) { transform: scale(0.94); }
 /* Компактные контексты: voice-strip и call-bar в узком сайдбаре. */
 .voice-strip-actions .call-icon-btn,
@@ -3541,8 +3567,8 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 /* G.8 — личные сообщения (DM). DM-иконка над ws-rail, sidebar-список,
    home-экран «Найти или начать беседу», dedicated header DM-канала. */
 .ws-rail-home {
-  background: #1e2025;
-  color: #c2c5ca;
+  background: var(--rail-home-bg);
+  color: var(--rail-home-fg);
 }
 .ws-rail-home:hover { background: var(--accent); color: #fff; border-radius: 14px; }
 .ws-rail-home.active {
@@ -3559,7 +3585,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   padding: 0 5px;
   background: #ed4245;
   color: #fff;
-  border: 2px solid #0b0d12;
+  border: 2px solid var(--bg-rail);
   border-radius: 9px;
   font-size: 10px;
   font-weight: 700;
@@ -5505,7 +5531,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   border-radius: 8px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.4);
   z-index: 50;
-  animation: rucord-tooltip-in 120ms ease-out;
+  /* Без появления через анимацию: интерфейс перерисовывается целиком, и
+     попап мигал бы, проигрывая её заново при каждой перерисовке. */
 }
 .pins-popup-header {
   padding: 10px 14px;

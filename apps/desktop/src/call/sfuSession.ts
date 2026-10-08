@@ -14,12 +14,15 @@
 // клиент, на sub-PC — только сервер. Perfect-negotiation не нужен.
 
 import type { ScreenShareQuality } from "./voiceChannelManager";
+import { resolveSfuWsUrl } from "./sfuUrl";
 
 interface SfuSessionOptions {
-  // Абсолютный ws(s)://… адрес SFU-сигналинга (из /api/v1/ice-servers).
-  // Допускается и относительный путь (начинается с "/") — тогда хост
-  // берётся из window.location.
+  // Абсолютный ws(s)://… адрес SFU-сигналинга (из /api/v1/media/config).
+  // Допускается и относительный путь (начинается с "/") — тогда он строится
+  // от serverUrl.
   wsUrl: string;
+  // Адрес сервера RuCord (HttpClient.baseUrl); пусто в dev-режиме через прокси.
+  serverUrl: string;
   getAccessToken: () => string | null;
   getTicket?: () => Promise<string | null>;
   channelId: string;
@@ -312,12 +315,7 @@ export class SfuSession {
         reject(new Error("sfu access token unavailable"));
         return;
       }
-      let base = this.opts.wsUrl;
-      if (base.startsWith("/")) {
-        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        base = `${proto}//${window.location.host}${base}`;
-      }
-      const url = new URL(base);
+      const url = new URL(resolveSfuWsUrl(this.opts.wsUrl, this.opts.serverUrl));
       if (ticket) url.searchParams.set("ticket", ticket);
       else url.searchParams.set("access_token", token!);
       url.searchParams.set("channel_id", this.opts.channelId);

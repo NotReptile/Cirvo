@@ -736,6 +736,7 @@ export class VoiceChannelManager {
     if (!this.sfuUrl || !this.localStream) throw new Error("sfu configuration unavailable");
     const session = new SfuSession({
       wsUrl: this.sfuUrl,
+      serverUrl: this.http.baseUrl,
       getAccessToken: () => this.http.getTokens()?.accessToken ?? null,
       getTicket: async () => {
         const result = await this.http.post<{ ticket: string }>(
