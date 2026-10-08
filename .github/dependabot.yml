@@ -1,3 +1,8 @@
+# Минорные и патч-обновления приходят одним PR на экосистему раз в неделю.
+# Мажорные версии npm, cargo и Go-модулей Dependabot не предлагает: они ломают
+# сборку (TypeScript, vitest, windows-core, webview2-com) и обновляются вручную
+# отдельным PR с проверкой совместимости. Для GitHub Actions мажоры разрешены.
+
 version: 2
 
 updates:
@@ -5,7 +10,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
@@ -14,7 +22,10 @@ updates:
     directory: /apps/desktop/src-tauri
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       cargo-minor-patch:
         update-types: [minor, patch]
@@ -28,7 +39,10 @@ updates:
       - /services/worker
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       go-minor-patch:
         update-types: [minor, patch]
@@ -37,3 +51,4 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3

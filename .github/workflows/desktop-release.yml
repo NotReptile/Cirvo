@@ -21,7 +21,10 @@ name: desktop-release
 
 on:
   push:
-    tags: ["v*"]
+    # Теги с суффиксом (v0.1.1-test) автоматически не собираются: их запускают
+    # вручную через workflow_dispatch, иначе push тега и ручной запуск
+    # дублировали бы сборку.
+    tags: ["v*", "!v*-*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -55,6 +58,20 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
+      # Без этой проверки пустое поле tag при выбранной ветке давало неочевидную
+      # ошибку checkout на refs/tags/<имя ветки>.
+      - name: Validate tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Нужен существующий тег вида v0.1.1 (получено: '$RELEASE_TAG'). При ручном запуске заполни поле tag или выбери тег."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --silent \
+            || { echo "::error::Тег $RELEASE_TAG не найден в репозитории"; exit 1; }
+
       - id: matrix
         env:
           PLATFORMS: ${{ inputs.platforms }}

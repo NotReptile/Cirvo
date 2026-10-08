@@ -25,7 +25,6 @@
 | `libs/shared-ts` | Общие TypeScript-типы (`@rucord/shared-ts`). |
 | `deploy/local` | compose для разработки: Postgres, Redis, MinIO; профили `tools` (migrate), `turn` (coturn), `public-ip` (HTTP-прокси). Go-сервисы запускаются на хосте. |
 | `deploy/single-node` | Актуальный production-профиль: весь стек в одном compose, включая `sfu` и `coturn`. |
-| `deploy/internet-facing` | Исторический черновик, не поддерживается. См. [environments](../deployment/environments.md). |
 | `deploy/Dockerfile.service` | Один Dockerfile для `core-api`, `realtime`, `sfu`, `worker` (build-arg `SERVICE_NAME`, контекст - корень репозитория). |
 | `deploy/backup.sh`, `deploy/restore.sh` | Бэкап и восстановление Postgres и MinIO. |
 | `docs` | Wiki, ADR, runbooks. |
