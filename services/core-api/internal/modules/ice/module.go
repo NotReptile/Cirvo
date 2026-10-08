@@ -89,21 +89,18 @@ func (m *Module) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func loadFromEnv() Config {
-	stunRaw := strings.TrimSpace(os.Getenv("ICE_STUN_URLS"))
-	if stunRaw == "" {
-		stunRaw = "stun:stun.l.google.com:19302"
-	}
-	stuns := make([]string, 0, 2)
-	for _, s := range strings.Split(stunRaw, ",") {
-		if v := strings.TrimSpace(s); v != "" {
-			stuns = append(stuns, v)
-		}
-	}
 	turnRaw := strings.TrimSpace(os.Getenv("ICE_TURN_URLS"))
 	if turnRaw == "" {
 		turnRaw = strings.TrimSpace(os.Getenv("ICE_TURN_URL"))
 	}
 	turns := splitList(turnRaw)
+	// Публичные STUN-серверы по умолчанию не используются: сервер должен
+	// работать без внешних сервисов. Пока ICE_STUN_URLS не задан, STUN
+	// отвечает тот же coturn, что и TURN.
+	stuns := splitList(os.Getenv("ICE_STUN_URLS"))
+	if len(stuns) == 0 {
+		stuns = stunFromTURN(turns)
+	}
 	return Config{
 		STUNURLs:       stuns,
 		TURNURLs:       turns,
@@ -122,6 +119,31 @@ func splitList(raw string) []string {
 		}
 	}
 	return values
+}
+
+// stunFromTURN строит STUN-адреса из TURN-адресов: coturn отвечает на
+// STUN-запросы на том же порту. Адреса turns: (TLS) пропускаются.
+func stunFromTURN(turns []string) []string {
+	out := make([]string, 0, len(turns))
+	seen := make(map[string]bool, len(turns))
+	for _, u := range turns {
+		rest, ok := strings.CutPrefix(u, "turn:")
+		if !ok {
+			continue
+		}
+		if i := strings.IndexByte(rest, '?'); i >= 0 {
+			rest = rest[:i]
+		}
+		if rest == "" {
+			continue
+		}
+		stun := "stun:" + rest
+		if !seen[stun] {
+			seen[stun] = true
+			out = append(out, stun)
+		}
+	}
+	return out
 }
 
 // SFUEnabled сообщает, развёрнут ли SFU (для voice-лимита в app.go).

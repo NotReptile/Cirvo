@@ -1,0 +1,50 @@
+# Проверка сборки образов MinIO и mc из deploy/minio. Запускается только при
+# изменении самого Dockerfile, закреплённых коммитов или compose-файлов:
+# сборка с нуля занимает 3-5 минут и не нужна на каждый PR.
+
+name: minio-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/minio/**"
+      - "deploy/local/docker-compose.yml"
+      - "deploy/single-node/docker-compose.yml"
+      - ".github/workflows/minio-image.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "deploy/minio/**"
+      - "deploy/local/docker-compose.yml"
+      - "deploy/single-node/docker-compose.yml"
+      - ".github/workflows/minio-image.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build minio and mc images through compose
+        run: |
+          docker compose -f deploy/single-node/docker-compose.yml \
+            --env-file deploy/.env.example --profile tools build minio mc
+
+      - name: MinIO starts and answers the health check
+        run: |
+          docker run -d --name minio-check \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            -p 9000:9000 rucord-minio:local server /data
+          for i in {1..30}; do
+            curl -fsS http://127.0.0.1:9000/minio/health/ready && exit 0
+            sleep 1
+          done
+          docker logs minio-check || true
+          exit 1
+
+      - name: mc starts
+        run: docker run --rm rucord-minio-mc:local --version

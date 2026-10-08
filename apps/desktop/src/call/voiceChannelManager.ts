@@ -5,6 +5,7 @@ import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicke
 import { wrapMicStream, type MicPipeline } from "./denoiser";
 import { wrapCameraTrack, type CameraPipeline } from "./videoEffects";
 import { SfuSession } from "./sfuSession";
+import { MEDIA_CONFIG_UNAVAILABLE } from "./mediaConfig";
 
 // Voice-канал. Multi-peer mesh поверх отдельного `voice.*` сигналинга
 // (не `call.*` — иначе 1-к-1 CallManager подхватывает mesh-offer как
@@ -716,14 +717,16 @@ export class VoiceChannelManager {
 
   private async ensureIceServers(): Promise<void> {
     if (this.iceServers) return;
+    let r: IceServersResponse;
     try {
-      const r = await this.http.get<IceServersResponse>("/api/v1/media/config");
-      this.iceServers = r.iceServers ?? [];
-      this.sfuUrl = r.sfuUrl?.trim() ? r.sfuUrl.trim() : null;
+      r = await this.http.get<IceServersResponse>("/api/v1/media/config");
     } catch {
-      this.iceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
-      this.sfuUrl = null;
+      // Поля не трогаем: неудачный ответ не кэшируется, следующий вход в
+      // канал запросит конфигурацию заново.
+      throw new Error(MEDIA_CONFIG_UNAVAILABLE);
     }
+    this.iceServers = r.iceServers ?? [];
+    this.sfuUrl = r.sfuUrl?.trim() ? r.sfuUrl.trim() : null;
   }
 
   // SFU обязателен, когда сервер его анонсировал. Initial connect должен
