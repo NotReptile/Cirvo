@@ -220,6 +220,7 @@ func TestSmoke(t *testing.T) {
 	t.Run("notifications", testNotifications)
 	t.Run("server_settings", testServerSettings)
 	t.Run("admin_panel", testAdminPanel)
+	t.Run("admin_create_user", testAdminCreateUser)
 	t.Run("retention_sweep", testRetentionSweep)
 	t.Run("channel_overrides", testChannelOverrides)
 }
@@ -1515,6 +1516,201 @@ func testAdminPanel(t *testing.T) {
 	mustJSON(t, raw, &m)
 	if m.UserCount <= 0 || m.DatabaseSizeBytes <= 0 {
 		t.Fatalf("metrics zero: %+v", m)
+	}
+}
+
+// testAdminCreateUser: создание пользователя из админки и принудительная
+// смена временного пароля. Проверяем доступ (только root), валидацию,
+// дубликаты, лимит maxUsers, генерацию временного пароля, добавление в
+// воркспейс, блокировку API до смены пароля (403 password_change_required,
+// кроме смены пароля, /users/me и logout), сброс флага после смены и запись
+// в журнал аудита.
+func testAdminCreateUser(t *testing.T) {
+	root := registerFresh(t)
+	regular := registerFresh(t)
+	ctx := context.Background()
+	if _, err := dbPool.Exec(ctx, `update users set is_root = (id = $1) where id in ($1, $2)`,
+		root.User.ID, regular.User.ID); err != nil {
+		t.Fatalf("promote root: %v", err)
+	}
+	wsID := createWorkspace(t, root.AccessToken)
+
+	// Публичная конфигурация доступна без токена и отдаёт registrationOpen.
+	code, raw := doReq(t, http.MethodGet, "/api/v1/server/public-config", "", nil)
+	if code != http.StatusOK {
+		t.Fatalf("public-config: %d %s", code, string(raw))
+	}
+	var pub map[string]any
+	mustJSON(t, raw, &pub)
+	if _, ok := pub["registrationOpen"].(bool); !ok {
+		t.Fatalf("public-config без registrationOpen: %s", string(raw))
+	}
+
+	suffix := uniqSuffix()
+	username := "adm_" + suffix
+	email := username + "@example.test"
+	createBody := map[string]any{"email": email, "username": username, "displayName": "Created " + suffix, "joinWorkspaceId": wsID}
+
+	// Доступ: без токена 401, обычный пользователь 404.
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/server/users", "", createBody); code != http.StatusUnauthorized {
+		t.Fatalf("create without token: expected 401, got %d", code)
+	}
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/server/users", regular.AccessToken, createBody); code != http.StatusNotFound {
+		t.Fatalf("create by non-root: expected 404, got %d", code)
+	}
+
+	// Валидация.
+	for name, body := range map[string]map[string]any{
+		"bad username":   {"email": email, "username": "A!"},
+		"bad email":      {"email": "not-an-email", "username": username},
+		"short password": {"email": email, "username": username, "password": "short"},
+		"bad workspace":  {"email": email, "username": username, "joinWorkspaceId": "not-a-uuid"},
+	} {
+		if code, raw = doReq(t, http.MethodPost, "/api/v1/server/users", root.AccessToken, body); code != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d %s", name, code, string(raw))
+		}
+	}
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/server/users", root.AccessToken,
+		map[string]any{"email": email, "username": username, "joinWorkspaceId": uuid.NewString()}); code != http.StatusNotFound {
+		t.Fatalf("unknown workspace: expected 404, got %d", code)
+	}
+
+	// Создание: пароль генерируется, смена обязательна, пользователь не root.
+	code, raw = doReq(t, http.MethodPost, "/api/v1/server/users", root.AccessToken, createBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create user: %d %s", code, string(raw))
+	}
+	var created struct {
+		ID                 string `json:"id"`
+		Username           string `json:"username"`
+		IsRoot             bool   `json:"isRoot"`
+		MustChangePassword bool   `json:"mustChangePassword"`
+		TemporaryPassword  string `json:"temporaryPassword"`
+	}
+	mustJSON(t, raw, &created)
+	if created.ID == "" || created.Username != username || created.IsRoot || !created.MustChangePassword {
+		t.Fatalf("unexpected create response: %s", string(raw))
+	}
+	if len(created.TemporaryPassword) != 16 {
+		t.Fatalf("temporaryPassword length %d, want 16", len(created.TemporaryPassword))
+	}
+
+	// Повторное создание с теми же данными: 409.
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/server/users", root.AccessToken, createBody); code != http.StatusConflict {
+		t.Fatalf("duplicate create: expected 409, got %d", code)
+	}
+
+	// Запись в аудите.
+	var auditCount int
+	if err := dbPool.QueryRow(ctx,
+		`select count(*) from audit_log where action_code = 'user.created' and target_id = $1`, created.ID,
+	).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("audit user.created: count=%d err=%v", auditCount, err)
+	}
+
+	// Вход временным паролем: флаг виден в ответе.
+	resetAuthLimits(t)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/auth/login", "",
+		map[string]any{"login": username, "password": created.TemporaryPassword})
+	if code != http.StatusOK {
+		t.Fatalf("login with temporary password: %d %s", code, string(raw))
+	}
+	var session struct {
+		AccessToken string `json:"accessToken"`
+		User        struct {
+			MustChangePassword bool `json:"mustChangePassword"`
+		} `json:"user"`
+	}
+	mustJSON(t, raw, &session)
+	if !session.User.MustChangePassword {
+		t.Fatalf("login response without mustChangePassword: %s", string(raw))
+	}
+
+	// До смены пароля API закрыт, кроме трёх маршрутов.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/workspaces", session.AccessToken, nil)
+	if code != http.StatusForbidden || !strings.Contains(string(raw), "password_change_required") {
+		t.Fatalf("workspaces before password change: expected 403 password_change_required, got %d %s", code, string(raw))
+	}
+	code, raw = doReq(t, http.MethodGet, "/api/v1/users/me", session.AccessToken, nil)
+	if code != http.StatusOK || !strings.Contains(string(raw), `"mustChangePassword":true`) {
+		t.Fatalf("users/me before password change: %d %s", code, string(raw))
+	}
+
+	// Смена пароля: неверный текущий, такой же новый, затем успех.
+	newPassword := "brand-new-password-" + suffix
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/users/me/password", session.AccessToken,
+		map[string]any{"currentPassword": "wrong-password-xx", "newPassword": newPassword}); code != http.StatusForbidden {
+		t.Fatalf("change password with wrong current: expected 403, got %d", code)
+	}
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/users/me/password", session.AccessToken,
+		map[string]any{"currentPassword": created.TemporaryPassword, "newPassword": created.TemporaryPassword}); code != http.StatusBadRequest {
+		t.Fatalf("change password to the same: expected 400, got %d", code)
+	}
+	if code, raw = doReq(t, http.MethodPost, "/api/v1/users/me/password", session.AccessToken,
+		map[string]any{"currentPassword": created.TemporaryPassword, "newPassword": newPassword}); code != http.StatusNoContent {
+		t.Fatalf("change password: %d %s", code, string(raw))
+	}
+
+	// После смены: API открыт, воркспейс из joinWorkspaceId виден, флаг снят.
+	code, raw = doReq(t, http.MethodGet, "/api/v1/workspaces", session.AccessToken, nil)
+	if code != http.StatusOK || !strings.Contains(string(raw), wsID) {
+		t.Fatalf("workspaces after password change: %d %s (ожидался воркспейс %s)", code, string(raw), wsID)
+	}
+	code, raw = doReq(t, http.MethodGet, "/api/v1/users/me", session.AccessToken, nil)
+	if code != http.StatusOK || strings.Contains(string(raw), "mustChangePassword") {
+		t.Fatalf("users/me after password change: %d %s", code, string(raw))
+	}
+
+	// Старый пароль больше не подходит, новый подходит.
+	resetAuthLimits(t)
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/auth/login", "",
+		map[string]any{"login": username, "password": created.TemporaryPassword}); code != http.StatusUnauthorized {
+		t.Fatalf("login with old temporary password: expected 401, got %d", code)
+	}
+	if code, _ = doReq(t, http.MethodPost, "/api/v1/auth/login", "",
+		map[string]any{"login": username, "password": newPassword}); code != http.StatusOK {
+		t.Fatalf("login with new password: expected 200, got %d", code)
+	}
+
+	// Явный пароль и mustChangePassword=false: пароль постоянный, API сразу открыт.
+	permUsername := "adm_p_" + suffix
+	permPassword := "permanent-password-" + suffix
+	mustChange := false
+	code, raw = doReq(t, http.MethodPost, "/api/v1/server/users", root.AccessToken, map[string]any{
+		"email": permUsername + "@example.test", "username": permUsername,
+		"password": permPassword, "mustChangePassword": mustChange,
+	})
+	if code != http.StatusCreated || strings.Contains(string(raw), "temporaryPassword") {
+		t.Fatalf("create with explicit password: %d %s", code, string(raw))
+	}
+	resetAuthLimits(t)
+	code, raw = doReq(t, http.MethodPost, "/api/v1/auth/login", "",
+		map[string]any{"login": permUsername, "password": permPassword})
+	if code != http.StatusOK {
+		t.Fatalf("login with explicit password: %d %s", code, string(raw))
+	}
+	mustJSON(t, raw, &session)
+	if code, _ = doReq(t, http.MethodGet, "/api/v1/workspaces", session.AccessToken, nil); code != http.StatusOK {
+		t.Fatalf("workspaces for permanent password: expected 200, got %d", code)
+	}
+
+	// Лимит maxUsers действует и на создание из админки.
+	var users int
+	if err := dbPool.QueryRow(ctx, `select count(*) from users`).Scan(&users); err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if code, raw = doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken, map[string]any{"maxUsers": users}); code != http.StatusOK {
+		t.Fatalf("set maxUsers: %d %s", code, string(raw))
+	}
+	limitedUsername := "adm_l_" + suffix
+	code, _ = doReq(t, http.MethodPost, "/api/v1/server/users", root.AccessToken,
+		map[string]any{"email": limitedUsername + "@example.test", "username": limitedUsername})
+	// Возвращаем «без лимита» до проверки результата, чтобы не сломать другие тесты.
+	if restore, rawRestore := doReq(t, http.MethodPut, "/api/v1/server/settings", root.AccessToken, map[string]any{"maxUsers": 0}); restore != http.StatusOK {
+		t.Fatalf("restore maxUsers: %d %s", restore, string(rawRestore))
+	}
+	if code != http.StatusForbidden {
+		t.Fatalf("create over maxUsers: expected 403, got %d", code)
 	}
 }
 

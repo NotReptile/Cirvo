@@ -587,7 +587,7 @@ func (m *Module) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	if _, err := m.db.Exec(r.Context(),
-		`update users set password_hash = $1, updated_at = $2 where id = $3`,
+		`update users set password_hash = $1, must_change_password = false, updated_at = $2 where id = $3`,
 		newHash, now, userID,
 	); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update password")

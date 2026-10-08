@@ -14,8 +14,16 @@
   `diagnostics.md` и `desktop-release.md`.
 - `AGENTS.md` и `CLAUDE.md` для ИИ-агентов.
 - Шаблоны issue и PR, `CONTRIBUTING.md`, `SECURITY.md`, Dependabot, `CODEOWNERS`.
+- Сервер: `POST /api/v1/server/users` создание пользователя администратором (временный
+  пароль, добавление в воркспейс, запись в аудит) и принудительная смена пароля:
+  до смены API отвечает `403 password_change_required`, кроме смены пароля,
+  `GET /users/me` и выхода. Миграция `000041`.
+- Сервер: `GET /api/v1/server/public-config` (без авторизации): открыта ли регистрация.
 
 ### Изменено
+
+- Сервер: правила email, username и пароля вынесены в общий пакет `accountrules`
+  (раньше дублировались в `auth` и `bootstrap`).
 
 - Обновлены зависимости клиента, Rust-оболочки, Go-сервисов и GitHub Actions.
   TypeScript 7 использует относительные пути без `baseUrl`; Go workspace и

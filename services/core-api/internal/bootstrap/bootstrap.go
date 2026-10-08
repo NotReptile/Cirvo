@@ -17,6 +17,7 @@ import (
 
 	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/services/core-api/internal/accountrules"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
 )
 
@@ -28,10 +29,7 @@ const (
 	roleOwner = "owner"
 )
 
-var (
-	usernameRE = regexp.MustCompile(`^[a-z0-9_]{3,32}$`)
-	slugRE     = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{1,62}[a-z0-9])?$`)
-)
+var slugRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{1,62}[a-z0-9])?$`)
 
 // Config is read from env at startup.
 type Config struct {
@@ -159,13 +157,13 @@ func (c Config) HasCredentials() bool {
 }
 
 func (c Config) Validate() error {
-	if !strings.Contains(c.Email, "@") {
+	if accountrules.ValidateEmail(c.Email) != nil {
 		return errors.New("RUCORD_BOOTSTRAP_EMAIL must be a valid email")
 	}
-	if !usernameRE.MatchString(c.Username) {
+	if accountrules.ValidateUsername(c.Username) != nil {
 		return errors.New("RUCORD_BOOTSTRAP_USERNAME must be 3-32 chars of [a-z0-9_]")
 	}
-	if len(c.Password) < 8 {
+	if accountrules.ValidatePassword(c.Password) != nil {
 		return errors.New("RUCORD_BOOTSTRAP_PASSWORD must be at least 8 characters")
 	}
 	if c.WorkspaceSlug != "" && !slugRE.MatchString(c.WorkspaceSlug) {
