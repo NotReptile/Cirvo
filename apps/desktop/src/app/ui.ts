@@ -2,6 +2,9 @@ import type { CallManager, CallSnapshot } from "../call/callManager";
 import type { VoiceChannelManager, VoiceSnapshot } from "../call/voiceChannelManager";
 import type { ApiError, HttpClient } from "../network/httpClient";
 import { isSessionRejected, isTransientError } from "../network/httpClient";
+import { describeError } from "./errors";
+import { describeDeviceLabel, describeUserAgent } from "./userAgent";
+import { INVITE_TTL_OPTIONS, inviteExpiresAt, inviteExpiryLabel, isInviteExpired } from "./invites";
 import type { RealtimeClient, RealtimeEvent, ConnectionState } from "../realtime/realtimeClient";
 import { icon } from "./icons";
 import type { ScreenShareQuality } from "../call/voiceChannelManager";
@@ -2245,6 +2248,11 @@ function installGlobalKeyboardShortcuts(): void {
         render();
         return;
       }
+      if (state.pinsPopupOpen) {
+        state.pinsPopupOpen = false;
+        render();
+        return;
+      }
       if (state.modal) {
         state.modal = null;
         state.userProfileTarget = null;
@@ -3631,7 +3639,7 @@ function renderShell(): void {
       </div>
     ` : ""}
     ${me ? renderUpdateBanner() : ""}
-    <div class="shell${showMembers ? " with-members" : ""}">
+    <div class="shell${showMembers ? " with-members" : ""}${state.callSnapshot?.state === "active" ? " has-call-bar" : ""}">
       <aside class="ws-rail">
         <button id="ws-rail-dm" class="ws-rail-icon ws-rail-home${dmMode ? " active" : ""}" data-tooltip="Личные сообщения" aria-label="Личные сообщения">
           ${icon("users")}
@@ -5017,27 +5025,34 @@ function renderWorkspaceHeaderMenu(ws: Workspace, canManage: boolean): string {
   `;
 }
 
+function renderInviteRow(i: Invite): string {
+  const expiry = inviteExpiryLabel(i.expiresAt);
+  return `
+    <li data-invite="${i.id}"${isInviteExpired(i.expiresAt) ? ` class="invite-expired"` : ""}>
+      <code class="invite-code">${escapeHtml(i.code)}</code>
+      <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}${expiry ? ` · ${escapeHtml(expiry)}` : ""}</span>
+      <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" data-tooltip="Копировать код">⧉</button>
+      <button class="ghost invite-revoke" data-invite="${i.id}" data-tooltip="Отозвать">✕</button>
+    </li>
+  `;
+}
+
+function renderInviteTtlSelect(): string {
+  return `<select name="ttl" aria-label="Срок действия">${INVITE_TTL_OPTIONS.map(
+    (o) => `<option value="${o.value}">${o.label}</option>`
+  ).join("")}</select>`;
+}
+
 function renderInvitesModal(): string {
   const ws = state.workspaces.find((w) => w.id === state.selectedWorkspaceId);
+  // Отозванные не показываем, поэтому пустоту проверяем уже после фильтра:
+  // иначе при одних отозванных инвайтах получался пустой список без подписи.
+  const activeInvites = state.invites.filter((i) => !i.revokedAt);
   const list = state.invitesLoading
     ? `<div class="invites-empty">Загрузка…</div>`
-    : state.invites.length === 0
+    : activeInvites.length === 0
       ? `<div class="invites-empty">Активных инвайтов нет</div>`
-      : `<ul class="invite-list">
-          ${state.invites
-            .filter((i) => !i.revokedAt)
-            .map(
-              (i) => `
-            <li data-invite="${i.id}">
-              <code class="invite-code">${escapeHtml(i.code)}</code>
-              <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}</span>
-              <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" data-tooltip="Копировать код">⧉</button>
-              <button class="ghost invite-revoke" data-invite="${i.id}" data-tooltip="Отозвать">✕</button>
-            </li>
-          `
-            )
-            .join("")}
-        </ul>`;
+      : `<ul class="invite-list">${activeInvites.map(renderInviteRow).join("")}</ul>`;
   return `
     <div class="modal-backdrop" data-modal-close>
       <div class="modal" role="dialog">
@@ -5048,6 +5063,7 @@ function renderInvitesModal(): string {
         <div class="modal-body">
           <form id="create-invite" class="inline-form">
             <input name="maxUses" type="number" min="0" max="10000" placeholder="макс. использований (0 = ∞)" />
+            ${renderInviteTtlSelect()}
             <button type="submit" class="primary">Создать инвайт</button>
           </form>
           ${list}
@@ -7235,15 +7251,21 @@ function attachCreateChannelHandlers(): void {
     }
   });
 
+  nameInput?.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing || state.createChannel.saving) return;
+    e.preventDefault();
+    void submitCreateChannel();
+  });
+
   const privateToggle = rootEl.querySelector<HTMLInputElement>("#create-channel-private");
   privateToggle?.addEventListener("change", () => {
     state.createChannel.isPrivate = privateToggle.checked;
     render();
   });
 
-  // J.5: переключатель типа канала. Для forum перерендер НУЖЕН — блок
-  // приватности скрывается (Wave 9: приватные форумы не поддерживаются),
-  // для text/voice достаточно записи в state.
+  // J.5: переключатель типа канала. Перерисовка нужна всегда: от типа зависит
+  // заголовок окна («Создать голосовой канал»), а для forum ещё и блок
+  // приватности (Wave 9: приватные форумы не поддерживаются).
   rootEl.querySelectorAll<HTMLInputElement>('input[name="cc-kind"]').forEach((r) => {
     r.addEventListener("change", () => {
       if (!r.checked) return;
@@ -7253,7 +7275,7 @@ function attachCreateChannelHandlers(): void {
         state.createChannel.isPrivate = false;
         state.createChannel.selectedRoles = new Set();
       }
-      if (prev === "forum" || r.value === "forum") render();
+      if (prev !== state.createChannel.kind) render();
     });
   });
 
@@ -8997,10 +9019,10 @@ function renderSettingsPrivacyTab(): string {
               <li class="sessions-item${s.current ? " current" : ""}">
                 <div class="sessions-item-info">
                   <div class="sessions-item-label">
-                    ${escapeHtml(s.deviceLabel || t("pv.sessions.device"))}
+                    ${escapeHtml(describeDeviceLabel(s.deviceLabel) || t("pv.sessions.device"))}
                     ${s.current ? `<span class="sessions-current-badge">${t("pv.sessions.current")}</span>` : ""}
                   </div>
-                  ${s.userAgent ? `<div class="sessions-item-ua">${escapeHtml(s.userAgent)}</div>` : ""}
+                  ${describeUserAgent(s.userAgent) ? `<div class="sessions-item-ua">${escapeHtml(describeUserAgent(s.userAgent))}</div>` : ""}
                   <div class="sessions-item-meta">
                     ${t("pv.sessions.meta", { created: formatTimeSmart(s.createdAt), seen: formatTimeSmart(s.lastSeenAt) })}
                   </div>
@@ -12021,9 +12043,11 @@ function attachShellHandlers(): void {
     const form = e.currentTarget as HTMLFormElement;
     const data = new FormData(form);
     const maxUses = Number(data.get("maxUses") || 0);
+    const expiresAt = inviteExpiresAt(data.get("ttl"));
     try {
       const inv = await httpClient.post<Invite>(`/api/v1/workspaces/${state.selectedWorkspaceId}/invites`, {
-        maxUses
+        maxUses,
+        ...(expiresAt ? { expiresAt } : {})
       });
       state.invites = [inv, ...state.invites];
       form.reset();
@@ -12961,17 +12985,6 @@ function applyChannelPick(input: HTMLInputElement, popup: HTMLDivElement, name: 
   input.focus();
 }
 
-function describeError(err: unknown): string {
-  const api = err as ApiError;
-  if (api && typeof api === "object" && "code" in api && "message" in api) {
-    // status 0: ответа не было (нет связи, таймаут). Код ошибки пользователю не нужен.
-    if (api.status === 0) return api.message;
-    return `${api.message} (${api.code})`;
-  }
-  if (err instanceof Error) return err.message;
-  return "Неизвестная ошибка";
-}
-
 // Бэк-сигнал «body too long» (см. message/module.go) — единственная
 // валидационная ошибка POST /messages, которую UX обрабатывает отдельно
 // (предлагает отправить тело как .txt-вложение).
@@ -13891,16 +13904,7 @@ function renderChannelSettingsInvites(): string {
   );
   const list = channelInvites.length === 0
     ? `<div class="invites-empty">Нет персональных инвайтов на этот канал.</div>`
-    : `<ul class="invite-list">
-        ${channelInvites.map((i) => `
-          <li data-invite="${i.id}">
-            <code class="invite-code">${escapeHtml(i.code)}</code>
-            <span class="invite-meta">${i.usedCount}/${i.maxUses === 0 ? "∞" : i.maxUses}</span>
-            <button class="ghost invite-copy" data-code="${escapeHtml(i.code)}" data-tooltip="Копировать код">⧉</button>
-            <button class="ghost invite-revoke" data-invite="${i.id}" data-tooltip="Отозвать">✕</button>
-          </li>
-        `).join("")}
-      </ul>`;
+    : `<ul class="invite-list">${channelInvites.map(renderInviteRow).join("")}</ul>`;
   return `
     <div class="settings-section">
       <h3>Инвайты на этот канал</h3>
@@ -13910,6 +13914,7 @@ function renderChannelSettingsInvites(): string {
       </small>
       <form id="cs-create-channel-invite" class="inline-form" style="margin-top:12px">
         <input name="maxUses" type="number" min="0" max="10000" placeholder="макс. использований (0 = ∞)" />
+        ${renderInviteTtlSelect()}
         <button type="submit" class="primary">Создать инвайт</button>
       </form>
       <div style="margin-top:12px">${list}</div>
@@ -14114,10 +14119,11 @@ function attachChannelSettingsHandlers(): void {
     const form = e.currentTarget as HTMLFormElement;
     const maxUsesRaw = (form.elements.namedItem("maxUses") as HTMLInputElement)?.value;
     const maxUses = Math.max(0, parseInt(maxUsesRaw ?? "0", 10) || 0);
+    const expiresAt = inviteExpiresAt((form.elements.namedItem("ttl") as HTMLSelectElement | null)?.value);
     try {
       const created = await httpClient.post<Invite>(
         `/api/v1/workspaces/${wsId}/invites`,
-        { maxUses, channelId: chId }
+        { maxUses, channelId: chId, ...(expiresAt ? { expiresAt } : {}) }
       );
       state.invites = [created, ...state.invites];
       form.reset();
