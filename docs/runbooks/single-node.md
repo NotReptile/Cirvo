@@ -128,6 +128,28 @@ password_change_required`; WebSocket `/ws` и `/sfu/ws` тоже закрыты)
   (`/data/caddy/pki/authorities/local/root.crt`) — добавь его в trust-store
   клиента, иначе браузер/Tauri будет жаловаться.
 
+### Полностью без внешних служб (локальный домен)
+
+Схема для домашнего сервера, который не должен зависеть ни от DuckDNS, ни от
+Let's Encrypt: имя в зарезервированной зоне `home.arpa` (RFC 8375), которое
+отдаёт свой DNS (например, AdGuard с записью `*.home.arpa`), и внутренний УЦ Caddy.
+
+```ini
+RUCORD_DOMAIN=rucord.home.arpa
+RUCORD_TLS_EMAIL=internal
+RUCORD_CORS_ORIGINS=...,https://rucord.home.arpa
+ICE_TURN_URLS=turn:rucord.home.arpa:3478?transport=udp,turn:rucord.home.arpa:3478?transport=tcp
+RUCORD_SFU_URL=wss://rucord.home.arpa/sfu/ws
+RUCORD_SFU_PUBLIC_IP=192.168.1.10   # адрес сервера в локальной сети
+```
+
+- Голос из локальной сети и по VPN (например, WireGuard в ту же сеть) работает;
+  без VPN из интернета до `192.168.x.x` не достучаться.
+- Корневой сертификат Caddy (`root.crt`) нужно один раз установить в хранилище
+  доверенных корневых сертификатов Windows на каждом компьютере, где стоит клиент.
+- Имя `rucord.home.arpa` должно резолвиться на клиентах: через DNS роутера с
+  условной пересылкой зоны `home.arpa` на ваш DNS-сервер или напрямую через него в VPN.
+
 ## Что отдаёт edge
 
 - `GET /healthz`, `/readyz` — наружу для health-чека ALB/uptime;
@@ -173,8 +195,8 @@ CORS allow-list инфорсится в core-api через `RUCORD_CORS_ORIGINS
 
 | Что | Зачем | Когда нужно |
 | --- | --- | --- |
-| Let's Encrypt (Caddy) | Сертификат для `RUCORD_DOMAIN` | Публичный домен. В локальной сети поставьте `RUCORD_TLS_EMAIL=internal` |
-| DNS домена (например DuckDNS) | Имя сервера для клиентов | Если нет своего домена и статического IP |
+| Let's Encrypt (Caddy) | Сертификат для `RUCORD_DOMAIN` | Только публичный домен. Для локального домена поставьте `RUCORD_TLS_EMAIL=internal` (см. «Полностью без внешних служб») |
+| Внешний DNS (например DuckDNS) | Имя сервера для клиентов | Только если нет своего DNS. Локальный домен `*.home.arpa` его не требует |
 | GitHub Releases | Скачивание установщика, автообновление клиента | Только для обновления клиента; чат от него не зависит |
 | Предпросмотр ссылок (`worker`) | Сервер скачивает страницу по ссылке из сообщения | Только когда пользователь отправил внешнюю ссылку; без доступа в интернет просто нет превью |
 | Docker Hub, `proxy.golang.org` | Образы и зависимости | Только при сборке и обновлении |
