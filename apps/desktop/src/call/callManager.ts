@@ -4,6 +4,7 @@ import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
 import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
 import { wrapMicStream, type MicPipeline } from "./denoiser";
 import { wrapCameraTrack, type CameraPipeline } from "./videoEffects";
+import { MEDIA_CONFIG_UNAVAILABLE } from "./mediaConfig";
 
 export type CallState =
   | "idle"
@@ -137,6 +138,9 @@ export class CallManager {
     if (this.snapshot.state !== "idle" && this.snapshot.state !== "ended") {
       throw new Error("call already in progress");
     }
+    // Настройки соединения нужны до записи в БД: иначе при сбое останется
+    // звонок, который никто не закроет.
+    await this.ensureIceServers();
     // Сначала создаём запись в БД — её id служит call_id во ВСЕЙ
     // signaling-цепочке. Раньше клиент сам генерировал randomId() и
     // звонок не оставлял следа в истории; теперь у каждого звонка
@@ -154,7 +158,6 @@ export class CallManager {
     const callId = record.id;
     this.isInitiator = true;
 
-    await this.ensureIceServers();
     await this.acquireLocalStream();
     this.createPeerConnection();
 
@@ -424,11 +427,14 @@ export class CallManager {
 
   private async ensureIceServers(): Promise<void> {
     if (this.iceServers) return;
+    // Адреса STUN/TURN выдаёт только свой сервер. Публичных запасных
+    // серверов нет: без настроек звонок не начинается, а повторная попытка
+    // снова запросит конфигурацию.
     try {
       const resp = await this.http.get<IceServersResponse>("/api/v1/media/config");
       this.iceServers = resp.iceServers ?? [];
     } catch {
-      this.iceServers = [{ urls: ["stun:stun.l.google.com:19302"] }];
+      throw new Error(MEDIA_CONFIG_UNAVAILABLE);
     }
   }
 
@@ -598,7 +604,19 @@ export class CallManager {
       });
       return;
     }
-    await this.ensureIceServers();
+    try {
+      await this.ensureIceServers();
+    } catch {
+      // Без настроек соединения принять звонок нельзя: говорим об этом
+      // вызывающему, чтобы он не ждал ответа.
+      this.realtime.send("call.hangup", {
+        call_id: p.call_id,
+        target_user_id: p.from_user_id,
+        target_session_id: p.from_session_id,
+        reason: "unavailable"
+      });
+      return;
+    }
     this.createPeerConnection();
     this.isInitiator = false;
     // Synchronously start showing incoming. startedAt пытаемся подтянуть

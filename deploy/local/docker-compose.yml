@@ -42,8 +42,13 @@ services:
       timeout: 3s
       retries: 20
 
+  # Публичные образы MinIO больше не публикуются: собираем из исходников на
+  # закреплённом коммите (deploy/minio/Dockerfile, коммит в MINIO_REF).
   minio:
-    image: minio/minio:latest
+    build:
+      context: ../minio
+      target: minio
+    image: rucord-minio:local
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-change-me}
@@ -74,8 +79,8 @@ services:
 
   # TURN/STUN-сервер для WebRTC. Запускается под профилем `turn`:
   #   docker compose --profile turn up coturn
-  # На локальной 1-к-1 разработке обычно не нужен (хватает host candidates +
-  # Google STUN). Поднимай при тестах через NAT/мобильные сети.
+  # На локальной 1-к-1 разработке обычно не нужен (хватает host candidates).
+  # Поднимай при тестах через NAT/мобильные сети и задай ICE_TURN_URLS.
   coturn:
     image: coturn/coturn:latest
     profiles: ["turn"]

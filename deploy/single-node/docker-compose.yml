@@ -37,7 +37,8 @@ x-go-service-env: &go-service-env
   MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
   MINIO_BUCKET: ${MINIO_BUCKET:-rucord}
   MINIO_USE_SSL: "false"
-  ICE_STUN_URLS: ${ICE_STUN_URLS:-stun:stun.l.google.com:19302}
+  # Пусто = STUN отвечает тот же coturn, что и TURN (адрес берётся из ICE_TURN_URLS).
+  ICE_STUN_URLS: ${ICE_STUN_URLS:-}
   ICE_TURN_URLS: ${ICE_TURN_URLS:-turn:${RUCORD_DOMAIN}:3478?transport=udp,turn:${RUCORD_DOMAIN}:3478?transport=tcp}
   ICE_TURN_URL: ${ICE_TURN_URL:-}
   ICE_TURN_USERNAME: ${ICE_TURN_USERNAME:-}
@@ -249,8 +250,13 @@ services:
       timeout: 3s
       retries: 20
 
+  # Публичные образы MinIO больше не публикуются: собираем из исходников на
+  # закреплённом коммите (deploy/minio/Dockerfile, коммит в MINIO_REF).
   minio:
-    image: minio/minio:latest
+    build:
+      context: ../minio
+      target: minio
+    image: rucord-minio:local
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -259,15 +265,19 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 12
 
   # One-off контейнер для backup/restore MinIO бакета через mc mirror.
   # Используется скриптами deploy/backup.sh и deploy/restore.sh.
+  # Собирается из того же deploy/minio/Dockerfile (цель mc, коммит в MC_REF).
   mc:
-    image: minio/mc:latest
+    build:
+      context: ../minio
+      target: mc
+    image: rucord-minio-mc:local
     profiles: ["tools"]
     entrypoint: ["tail", "-f", "/dev/null"]
     environment:
