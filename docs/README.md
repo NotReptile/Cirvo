@@ -53,5 +53,4 @@
 
 ## Устаревшие и исторические материалы
 
-- [runbooks/internet-facing.md](runbooks/internet-facing.md): профиль `internet-facing` не поддерживается.
 - [runbooks/static-ip-http.md](runbooks/static-ip-http.md): тест по HTTP на голом IP, сервер был на Windows.

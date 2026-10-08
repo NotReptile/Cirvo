@@ -2,7 +2,7 @@
 
 Deployment profile and runtime stage are separate concerns. A profile describes topology, while a stage describes operational strictness such as `dev`, `test` or `prod`.
 
-Поддерживаются два профиля: `local` и `single-node`. Профиль `internet-facing` не поддерживается (см. ниже).
+Поддерживаются два профиля: `local` и `single-node`. Публичный деплой делается профилем `single-node`.
 
 ## Local
 
@@ -29,12 +29,10 @@ Deployment profile and runtime stage are separate concerns. A profile describes 
 - В `RUCORD_ENV=production` `sfu` не стартует без `RUCORD_SFU_PUBLIC_IP`; `reverse-proxy` ждёт `sfu` в состоянии healthy, поэтому без этой переменной не поднимется весь стек.
 - Маршруты Caddy: `/ws*` в `realtime:8090`, `/sfu/ws*` в `sfu:8095`, `/api/*`, `/healthz`, `/readyz` в `core-api:8080`, остальное `404`. Медиа (RTP на `RUCORD_SFU_UDP_PORT`, по умолчанию `50000/udp`) и TURN идут мимо Caddy напрямую.
 - Порты наружу: `80/tcp`, `443/tcp`, `3478/tcp+udp`, `49160-49200/udp` (relay coturn), `RUCORD_SFU_UDP_PORT/udp`. Подробно: [runbooks/single-node.md](../runbooks/single-node.md).
-- В комментариях `docker-compose.yml` и `Caddyfile` ещё встречается устаревшее упоминание профиля `sfu`. У сервиса `sfu` в compose профиля нет, он включён всегда.
+- У сервиса `sfu` в compose нет профиля, он включён всегда.
 
-## Internet-Facing (unsupported draft)
+## Публичный деплой
 
-Профиль не поддерживается. `deploy/internet-facing/` (`compose.yaml`, `Caddyfile`) - исторический черновик: Postgres, Redis, MinIO с паролями `change-me` и Caddy-заглушка, без Go-сервисов, SFU и coturn. Не использовать для запуска RuCord.
+Публичный деплой делается профилем `single-node`: публичный DNS, TLS (Let's Encrypt через `RUCORD_TLS_EMAIL`), проброс портов из списка выше. Пошагово: [runbooks/single-node.md](../runbooks/single-node.md).
 
-Публичный деплой делается профилем `single-node`: публичный DNS, TLS (Let's Encrypt через `RUCORD_TLS_EMAIL`), проброс портов из списка выше. См. [runbooks/internet-facing.md](../runbooks/internet-facing.md).
-
-Имя `internet-facing` ещё осталось как значение в `libs/shared-go/config` (`EnvironmentInternetFacing`) и в типе `EnvironmentMode` в `libs/shared-ts`, но код по нему не ветвится. Профиль в compose задаёт `RUCORD_ENV=production`, а не имя профиля; по значению `production` код различает только SFU (проверка `RUCORD_SFU_PUBLIC_IP`).
+Профиль в compose задаёт `RUCORD_ENV=production`, а не имя профиля; по значению `production` код различает только SFU (проверка `RUCORD_SFU_PUBLIC_IP`).
