@@ -30,7 +30,7 @@ workspace'ов.
 | `services/sfu` | Go SFU для группового голоса и видео (порт 8095, медиа по UDP 50000) |
 | `services/worker` | Go background jobs (thumbnails, retention…) |
 | `db/migrations` | golang-migrate миграции |
-| `deploy/` | compose-файлы: `local` (разработка) и `single-node` (продакшн); `internet-facing` — устаревший черновик |
+| `deploy/` | compose-файлы: `local` (разработка) и `single-node` (продакшн) |
 | `docs/` | wiki, ADR, runbooks |
 
 Кроме Go-сервисов стек включает Postgres, Redis, MinIO, coturn (TURN, порт 3478)

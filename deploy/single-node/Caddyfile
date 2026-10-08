@@ -64,10 +64,9 @@
 		}
 	}
 
-	# SFU WebSocket-сигналинг (F.2) → sfu (порт 8095). Медиа (RTP) идёт
-	# МИМО Caddy — напрямую на UDP-порт sfu (RUCORD_SFU_UDP_PORT). Если
-	# SFU не развёрнут (профиль `sfu` выключен) — core-api не анонсирует
-	# sfuUrl, и клиенты сюда не ходят (route остаётся неактивным).
+	# SFU WebSocket-сигналинг → sfu (порт 8095). Медиа (RTP) идёт МИМО Caddy,
+	# напрямую на UDP-порт sfu (RUCORD_SFU_UDP_PORT). Если core-api не
+	# анонсирует sfuUrl (mesh-режим deploy/local), клиенты сюда не ходят.
 	handle /sfu/ws* {
 		reverse_proxy {$RUCORD_SFU_HOST:sfu}:8095 {
 			transport http {
