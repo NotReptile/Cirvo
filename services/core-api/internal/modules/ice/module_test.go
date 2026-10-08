@@ -42,6 +42,34 @@ func TestMediaConfigIssuesTemporaryTurnCredentials(t *testing.T) {
 	}
 }
 
+func TestStunDerivedFromTurn(t *testing.T) {
+	t.Setenv("ICE_STUN_URLS", "")
+	t.Setenv("ICE_TURN_URLS", "turn:chat.example.com:3478?transport=udp,turn:chat.example.com:3478?transport=tcp,turns:chat.example.com:5349")
+	got := loadFromEnv().STUNURLs
+	if len(got) != 1 || got[0] != "stun:chat.example.com:3478" {
+		t.Fatalf("STUNURLs = %#v", got)
+	}
+}
+
+func TestStunExplicitListWins(t *testing.T) {
+	t.Setenv("ICE_STUN_URLS", "stun:a.example:3478, stun:b.example:3478")
+	t.Setenv("ICE_TURN_URLS", "turn:chat.example.com:3478")
+	got := loadFromEnv().STUNURLs
+	if len(got) != 2 || got[0] != "stun:a.example:3478" || got[1] != "stun:b.example:3478" {
+		t.Fatalf("STUNURLs = %#v", got)
+	}
+}
+
+// Без TURN и без явного списка внешних STUN-серверов быть не должно.
+func TestNoPublicStunByDefault(t *testing.T) {
+	t.Setenv("ICE_STUN_URLS", "")
+	t.Setenv("ICE_TURN_URLS", "")
+	t.Setenv("ICE_TURN_URL", "")
+	if got := loadFromEnv().STUNURLs; len(got) != 0 {
+		t.Fatalf("STUNURLs = %#v, ожидался пустой список", got)
+	}
+}
+
 func TestSplitList(t *testing.T) {
 	got := splitList(" turn:a , ,turn:b ")
 	if len(got) != 2 || got[0] != "turn:a" || got[1] != "turn:b" {
