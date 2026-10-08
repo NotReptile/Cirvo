@@ -6,9 +6,8 @@ type Environment string
 type Stage string
 
 const (
-	EnvironmentLocal          Environment = "local"
-	EnvironmentSingleNode     Environment = "single-node"
-	EnvironmentInternetFacing Environment = "internet-facing"
+	EnvironmentLocal      Environment = "local"
+	EnvironmentSingleNode Environment = "single-node"
 
 	StageDev  Stage = "dev"
 	StageTest Stage = "test"

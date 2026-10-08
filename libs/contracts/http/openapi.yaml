@@ -1,3 +1,7 @@
+# НЕПОЛНАЯ спецификация: описывает 4 пути из ~117 маршрутов core-api, и даже
+# они местами расходятся с кодом (например, register отвечает 201, а не 202).
+# Источник истины - код маршрутов в services/core-api/internal/modules/*.
+# См. docs/api/overview.md.
 openapi: 3.1.0
 info:
   title: RuCord Core API

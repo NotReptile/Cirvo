@@ -23,7 +23,7 @@ RuCord: self-host чат и голос (аналог Discord) для небол�
 | `libs/shared-go` | Общие Go-пакеты (config, jwtauth, ratelimit, retention, wsticket…) |
 | `libs/shared-ts`, `libs/contracts` | Общие TS-типы и контракты |
 | `db/migrations` | Нумерованные миграции golang-migrate (`up` и `down`) |
-| `deploy/` | `local/` (разработка) и `single-node/` (продакшн); `internet-facing/` не используется |
+| `deploy/` | `local/` (разработка) и `single-node/` (продакшн) |
 | `docs/` | Документация, индекс: `docs/README.md` |
 
 Go-проект использует `go.work` (модули в `services/*` и `libs/shared-go`).

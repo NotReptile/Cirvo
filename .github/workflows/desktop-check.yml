@@ -24,6 +24,10 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
       - run: npm ci
+      - name: Typecheck and unit tests
+        run: |
+          npm run check:desktop
+          npm --workspace apps/desktop test
       - uses: tauri-apps/tauri-action@v1
         with:
           projectPath: apps/desktop

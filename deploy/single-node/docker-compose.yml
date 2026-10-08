@@ -43,9 +43,10 @@ x-go-service-env: &go-service-env
   ICE_TURN_USERNAME: ${ICE_TURN_USERNAME:-}
   ICE_TURN_CREDENTIAL: ${ICE_TURN_CREDENTIAL:-}
   ICE_TURN_SHARED_SECRET: ${ICE_TURN_SHARED_SECRET:-}
-  # F.2: непустой → core-api анонсирует SFU клиентам (mesh-потолок снят),
-  # voice-канал держит до 50 участников. Пусто = mesh (до 5). Включается
-  # вместе с профилем `sfu` (см. сервис sfu ниже).
+  # core-api анонсирует SFU клиентам, voice-канал держит до 50 участников.
+  # Сервис sfu в этом compose включён всегда (профиля у него нет). Пустое
+  # значение не отключает SFU: `:-` подставит адрес по умолчанию. Mesh
+  # (до 5 участников) остаётся режимом deploy/local.
   RUCORD_SFU_URL: ${RUCORD_SFU_URL:-wss://${RUCORD_DOMAIN}/sfu/ws}
 
 services:
@@ -55,7 +56,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "443:443/udp" # HTTP/3
     environment:
       RUCORD_DOMAIN: ${RUCORD_DOMAIN:-localhost}
       RUCORD_TLS_EMAIL: ${RUCORD_TLS_EMAIL:-internal}
