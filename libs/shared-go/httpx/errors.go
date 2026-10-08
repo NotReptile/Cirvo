@@ -33,6 +33,9 @@ const (
 	CodeConflict             = "conflict"
 	CodeRateLimited          = "rate_limited"
 	CodeSessionRevoked       = "session_revoked"
-	CodeInternal             = "internal_error"
-	CodeMessageAlreadyExists = "message_already_processed"
+	// Пользователю выдан временный пароль: до его смены доступны только смена
+	// пароля, GET /users/me и logout (app.Authenticator.Middleware).
+	CodePasswordChangeRequired = "password_change_required"
+	CodeInternal               = "internal_error"
+	CodeMessageAlreadyExists   = "message_already_processed"
 )

@@ -27,6 +27,7 @@ const (
 	ActionInviteRevoked        = "invite.revoked"
 	ActionInviteUsed           = "invite.used"
 	ActionProfileUpdated       = "profile.updated"
+	ActionUserCreated          = "user.created"
 	ActionUserBanned           = "user.banned"
 	ActionUserUnbanned         = "user.unbanned"
 	ActionUserDeleted          = "user.deleted"
