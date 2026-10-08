@@ -249,8 +249,13 @@ services:
       timeout: 3s
       retries: 20
 
+  # Публичные образы MinIO больше не публикуются: собираем из исходников на
+  # закреплённом коммите (deploy/minio/Dockerfile, коммит в MINIO_REF).
   minio:
-    image: minio/minio:latest
+    build:
+      context: ../minio
+      target: minio
+    image: rucord-minio:local
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -259,15 +264,19 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 12
 
   # One-off контейнер для backup/restore MinIO бакета через mc mirror.
   # Используется скриптами deploy/backup.sh и deploy/restore.sh.
+  # Собирается из того же deploy/minio/Dockerfile (цель mc, коммит в MC_REF).
   mc:
-    image: minio/mc:latest
+    build:
+      context: ../minio
+      target: mc
+    image: rucord-minio-mc:local
     profiles: ["tools"]
     entrypoint: ["tail", "-f", "/dev/null"]
     environment:
