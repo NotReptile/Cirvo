@@ -1,3 +1,5 @@
+import { DEFAULT_FETCH_TIMEOUT_MS, FetchTimeoutError, fetchWithTimeout } from "./fetchWithTimeout";
+
 export interface AuthTokens {
   accessToken: string;
   accessExpiresAt: string;
@@ -15,6 +17,7 @@ export interface AuthSession extends AuthTokens {
 }
 
 export interface ApiError {
+  // 0 = ответа не было: нет связи с сервером или истёк таймаут (code: "network" | "timeout").
   status: number;
   code: string;
   message: string;
@@ -27,6 +30,51 @@ export interface ApiError {
 
 interface ErrorEnvelope {
   error: { code: string; message: string; requestId?: string };
+}
+
+export function isApiError(err: unknown): err is ApiError {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as Partial<ApiError>;
+  return typeof e.status === "number" && typeof e.code === "string" && typeof e.message === "string";
+}
+
+// Сервер недоступен или временно сбоит: сессию из-за этого сбрасывать нельзя,
+// запрос стоит повторить (идемпотентный GET повторяется автоматически).
+export function isTransientError(err: unknown): boolean {
+  return isApiError(err) && (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504);
+}
+
+// Сервер сказал, что сессия недействительна (токены просрочены, отозваны или
+// аккаунт заблокирован). Только в этом случае клиент должен разлогинить.
+export function isSessionRejected(err: unknown): boolean {
+  return isApiError(err) && (err.status === 401 || err.status === 403);
+}
+
+// Отказ именно на обновлении токена: refresh-токен недействителен.
+function isRefreshRejected(err: unknown): boolean {
+  return isApiError(err) && (err.status === 400 || err.status === 401 || err.status === 403);
+}
+
+const UPLOAD_TIMEOUT_MS = 120_000;
+const GET_RETRY_DELAY_MS = 400;
+
+function transportError(code: "network" | "timeout", message: string): ApiError {
+  return { status: 0, code, message };
+}
+
+async function sendRequest(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  try {
+    return await fetchWithTimeout(url, init, timeoutMs);
+  } catch (err) {
+    if (err instanceof FetchTimeoutError) {
+      throw transportError("timeout", `Сервер не отвечает (таймаут ${Math.round(timeoutMs / 1000)} с)`);
+    }
+    throw transportError("network", "Нет связи с сервером");
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 type TokenChangeListener = (tokens: AuthTokens | null) => void;
@@ -72,12 +120,7 @@ export class HttpClient {
     }
     let response = await this.doUpload(path, form);
     if (response.status === 401 && this.tokens) {
-      try {
-        await this.refresh();
-      } catch {
-        this.setTokens(null);
-        throw await toApiError(response);
-      }
+      await this.refreshAfter401(response);
       response = await this.doUpload(path, form);
     }
     if (!response.ok) {
@@ -92,12 +135,7 @@ export class HttpClient {
     }
     let response = await this.doFetch("GET", path, undefined, true);
     if (response.status === 401 && this.tokens) {
-      try {
-        await this.refresh();
-      } catch {
-        this.setTokens(null);
-        throw await toApiError(response);
-      }
+      await this.refreshAfter401(response);
       response = await this.doFetch("GET", path, undefined, true);
     }
     if (!response.ok) {
@@ -109,22 +147,31 @@ export class HttpClient {
   private async doUpload(path: string, form: FormData): Promise<Response> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (this.tokens) headers["Authorization"] = `Bearer ${this.tokens.accessToken}`;
-    return fetch(`${this.baseUrl}${path}`, { method: "POST", headers, body: form });
+    return sendRequest(`${this.baseUrl}${path}`, { method: "POST", headers, body: form }, UPLOAD_TIMEOUT_MS);
   }
 
+  // Идемпотентный GET при недоступности сервера (нет связи, таймаут, 502-504)
+  // повторяется один раз. Остальные методы не повторяются: сообщение или
+  // загрузка могли дойти до сервера.
   async request<T>(method: string, path: string, body?: unknown, init?: { auth?: boolean }): Promise<T> {
+    if (method !== "GET") return this.requestOnce<T>(method, path, body, init);
+    try {
+      return await this.requestOnce<T>(method, path, body, init);
+    } catch (err) {
+      if (!isTransientError(err)) throw err;
+      await delay(GET_RETRY_DELAY_MS);
+      return this.requestOnce<T>(method, path, body, init);
+    }
+  }
+
+  private async requestOnce<T>(method: string, path: string, body?: unknown, init?: { auth?: boolean }): Promise<T> {
     const needsAuth = init?.auth !== false;
     if (needsAuth && this.tokens && this.isAccessExpired()) {
       await this.refresh();
     }
     const response = await this.doFetch(method, path, body, needsAuth);
     if (response.status === 401 && needsAuth && this.tokens) {
-      try {
-        await this.refresh();
-      } catch {
-        this.setTokens(null);
-        throw await toApiError(response);
-      }
+      await this.refreshAfter401(response);
       const retry = await this.doFetch(method, path, body, true);
       if (!retry.ok) {
         throw await toApiError(retry);
@@ -183,8 +230,26 @@ export class HttpClient {
       if (this.tokens) {
         await this.post("/api/v1/auth/logout");
       }
+    } catch {
+      // Сервер недоступен или сессия уже закрыта: локальный выход всё равно нужен.
     } finally {
       this.setTokens(null);
+    }
+  }
+
+  // Ответ 401 на запрос с токеном: пробуем обновить токен. Если сервер отклонил
+  // refresh-токен, сессия закончилась и токены стираются. Если обновить не
+  // удалось из-за сети или сбоя сервера, токены остаются: это временная
+  // проблема, а не конец сессии.
+  private async refreshAfter401(original: Response): Promise<void> {
+    try {
+      await this.refresh();
+    } catch (err) {
+      if (isRefreshRejected(err)) {
+        this.setTokens(null);
+        throw await toApiError(original);
+      }
+      throw err;
     }
   }
 
@@ -193,14 +258,21 @@ export class HttpClient {
     if (!this.tokens) throw new Error("no refresh token");
     const refreshToken = this.tokens.refreshToken;
     this.refreshPromise = (async () => {
-      const response = await fetch(`${this.baseUrl}/api/v1/auth/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken })
-      });
+      const response = await sendRequest(
+        `${this.baseUrl}/api/v1/auth/refresh`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refreshToken })
+        },
+        DEFAULT_FETCH_TIMEOUT_MS
+      );
       if (!response.ok) {
-        this.setTokens(null);
-        throw await toApiError(response);
+        const apiError = await toApiError(response);
+        // Токены стираются только если сервер отклонил сам refresh-токен.
+        // 5xx, 429 и прочее: сессия жива, стоит повторить позже.
+        if (isRefreshRejected(apiError)) this.setTokens(null);
+        throw apiError;
       }
       const next = (await response.json()) as AuthTokens;
       this.setTokens({
@@ -228,11 +300,15 @@ export class HttpClient {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (withAuth && this.tokens) headers["Authorization"] = `Bearer ${this.tokens.accessToken}`;
-    return fetch(`${this.baseUrl}${path}`, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body)
-    });
+    return sendRequest(
+      `${this.baseUrl}${path}`,
+      {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body)
+      },
+      DEFAULT_FETCH_TIMEOUT_MS
+    );
   }
 }
 
