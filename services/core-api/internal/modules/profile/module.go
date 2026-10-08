@@ -18,6 +18,7 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
+	"github.com/NotReptile/RuCord/services/core-api/internal/accountrules"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
@@ -538,11 +539,13 @@ func (m *Module) handleRemoveBanner(w http.ResponseWriter, r *http.Request) {
 
 // handleChangePassword — G.10. Смена своего пароля: требует current-проверки
 // (защита от случая угнанной активной сессии — атакующий не знает старого
-// пароля и не сменит на свой). Минимальная длина нового — 8 (синхронно с
-// auth.handleRegister). После успеха существующие refresh-токены не
-// инвалидируем — это семантически удобно (юзер сменил пароль на своём
-// девайсе, не хочет логиниться заново), но можно добавить отдельным шагом
-// «выйти со всех устройств» в backlog.
+// пароля и не сменит на свой). Длина нового проверяется общими правилами
+// (accountrules), как при регистрации. После обычной смены существующие
+// refresh-токены не инвалидируем — это семантически удобно (юзер сменил
+// пароль на своём девайсе, не хочет логиниться заново), но можно добавить
+// отдельным шагом «выйти со всех устройств» в backlog. Исключение — замена
+// временного пароля, выданного админом: он мог побывать в чужих руках, поэтому
+// все остальные сессии отзываются.
 type changePasswordRequest struct {
 	CurrentPassword string `json:"currentPassword"`
 	NewPassword     string `json:"newPassword"`
@@ -559,8 +562,8 @@ func (m *Module) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "currentPassword is required")
 		return
 	}
-	if len(req.NewPassword) < 8 {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "newPassword must be at least 8 chars")
+	if err := accountrules.ValidatePassword(req.NewPassword); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "newPassword: "+err.Error())
 		return
 	}
 	if req.NewPassword == req.CurrentPassword {
@@ -586,10 +589,38 @@ func (m *Module) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	if _, err := m.db.Exec(r.Context(),
-		`update users set password_hash = $1, updated_at = $2 where id = $3`,
+	tx, err := m.db.Begin(r.Context())
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	var wasPending bool
+	if err := tx.QueryRow(r.Context(),
+		`select must_change_password from users where id = $1 for update`, userID,
+	).Scan(&wasPending); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update password")
+		return
+	}
+	if _, err := tx.Exec(r.Context(),
+		`update users set password_hash = $1, must_change_password = false, updated_at = $2 where id = $3`,
 		newHash, now, userID,
 	); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update password")
+		return
+	}
+	if wasPending {
+		if sessionID, ok := authctx.SessionID(r.Context()); ok {
+			if _, err := tx.Exec(r.Context(),
+				`update user_sessions set revoked_at = $1 where user_id = $2 and id <> $3 and revoked_at is null`,
+				now, userID, sessionID,
+			); err != nil {
+				sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update password")
+				return
+			}
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update password")
 		return
 	}

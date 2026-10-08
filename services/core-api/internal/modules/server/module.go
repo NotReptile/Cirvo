@@ -31,6 +31,10 @@ func NewModule(db *postgres.Pool, settings *serversettings.Provider, store *obje
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
+	// Публичный минимум о сервере: клиент до входа решает, показывать ли
+	// вкладку «Регистрация». Больше ничего без авторизации не отдаётся.
+	router.Public("GET /api/v1/server/public-config", m.handlePublicConfig)
+	router.Protected("POST /api/v1/server/users", m.handleCreateUser)
 	router.Protected("GET /api/v1/server/settings", m.handleGet)
 	router.Protected("PUT /api/v1/server/settings", m.handleUpdate)
 	router.Protected("GET /api/v1/server/users", m.handleListUsers)
