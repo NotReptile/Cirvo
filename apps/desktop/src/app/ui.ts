@@ -1300,6 +1300,10 @@ async function bootstrapSession(): Promise<void> {
       state.authError = describeError(err);
     } else {
       // Нет связи, таймаут или сбой сервера: сессия жива, выходить нельзя.
+      // Профиль мог уже загрузиться, а список воркспейсов нет: сбрасываем его,
+      // иначе экран «Сервер недоступен» (он показывается только без профиля)
+      // не появится, и кнопка «Повторить» останется недоступной.
+      state.me = null;
       const status = (err as ApiError | null)?.status ?? 0;
       state.bootError = status >= 500 ? `Сервер вернул ошибку ${status}. Возможно, он перезапускается.` : describeError(err);
     }

@@ -1,0 +1,13 @@
+# Единые окончания строк: в репозитории LF, независимо от core.autocrlf
+# на машине разработчика (на Windows git иначе предупреждает о замене LF на CRLF).
+* text=auto eol=lf
+
+# Бинарные файлы: не нормализовать.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.tflite binary
+*.wasm binary
+*.woff2 binary

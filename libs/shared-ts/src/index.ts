@@ -1,4 +1,4 @@
-export type EnvironmentMode = "local" | "single-node" | "internet-facing";
+export type EnvironmentMode = "local" | "single-node";
 export type RuntimeStage = "dev" | "test" | "prod";
 
 export interface ApiEndpoints {

@@ -48,6 +48,14 @@
 - Из `deploy/.env.example` удалены неиспользуемые `RUCORD_UPSTREAM_HOST`,
   `RUCORD_API_BASE_URL`, `RUCORD_REALTIME_URL`.
 - В документации публичный IP и домен заменены плейсхолдерами.
+- Удалён неподдерживаемый профиль `internet-facing` (каталог `deploy/internet-facing`,
+  константа и тип окружения, runbook); публичный деплой описан в `single-node.md`.
+- `deploy/single-node`: убран проброс `443/udp` (HTTP/3 отключён в Caddyfile).
+- Единая версия Go (1.26) во всех модулях; `.gitattributes` с LF.
+- `desktop-check` дополнительно запускает `tsc` и тесты клиента; `smoke` использует Node 22.
+- `desktop-release`: теги с суффиксом (`v0.1.1-test`) не собираются автоматически,
+  пустой или несуществующий тег отклоняется на первом шаге.
+- Dependabot не предлагает мажорные обновления npm, cargo и Go-модулей.
 
 ## [0.1.0]
 

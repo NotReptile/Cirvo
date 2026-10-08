@@ -113,6 +113,17 @@ describe("checkServerReachable", () => {
     expect(err.kind).toBe("timeout");
   });
 
+  it("сервер прислал заголовки и замолчал: timeout, а не вечная проверка", async () => {
+    vi.useFakeTimers();
+    // Тело ответа никогда не заканчивается.
+    const stalled = new Response(new ReadableStream({ start() {} }), { status: 200 });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(stalled));
+    const failure = failureOf(checkServerReachable("chat.example.com", undefined, 5_000));
+    await vi.advanceTimersByTimeAsync(5_000);
+    const err = await failure;
+    expect(err.kind).toBe("timeout");
+  });
+
   it("явная отмена пользователем пробрасывается как есть", async () => {
     const controller = new AbortController();
     vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
