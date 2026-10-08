@@ -79,13 +79,27 @@ jobs:
           npm --workspace apps/desktop test
           npm run build:desktop
 
-      # Build the upstream source at a fixed revision: public MinIO container
-      # registries no longer allow anonymous pulls. This binary is CI-only.
+      # Публичные образы MinIO больше не отдаются анонимно, поэтому собираем из
+      # исходников на закреплённом коммите. Коммит один на всех: файл
+      # deploy/minio/MINIO_REF читают и этот workflow, и deploy/minio/Dockerfile.
+      # Бинарник кэшируется по коммиту: сборка без кэша занимает около 2,5 минут.
+      - name: Read pinned MinIO commit
+        id: minio_ref
+        run: echo "sha=$(tr -d '\r\n' < deploy/minio/MINIO_REF)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache MinIO binary
+        id: minio_cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/minio-bin
+          key: minio-${{ runner.os }}-${{ steps.minio_ref.outputs.sha }}
+
       - name: Build MinIO
+        if: steps.minio_cache.outputs.cache-hit != 'true'
         env:
           GOBIN: ${{ runner.temp }}/minio-bin
           GOWORK: 'off'
-        run: go install github.com/minio/minio@7aac2a2c5b7c882e68c1ce017d8256be2feea27f
+        run: go install "github.com/minio/minio@${{ steps.minio_ref.outputs.sha }}"
 
       - name: Start MinIO
         run: |
