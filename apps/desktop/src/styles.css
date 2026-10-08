@@ -2165,11 +2165,47 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   font-family: inherit;
   font-size: 14px;
 }
-.admin-field-bool {
+.admin-field input:not([type="checkbox"]),
+.admin-field select {
+  width: 100%;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 14px;
+}
+/* Двойной класс: иначе .modal-body label { flex-direction: column } выигрывает
+   по специфичности и подпись флажка оказывается под ним. */
+.admin-field.admin-field-bool {
   flex-direction: row;
   align-items: center;
   gap: 8px;
 }
+.admin-create-user,
+.admin-create-result {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+}
+.admin-create-user .admin-actions { justify-content: flex-end; }
+.admin-temp-password {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.admin-temp-password code {
+  padding: 6px 10px;
+  font-size: 16px;
+  letter-spacing: 0.04em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+.auth-closed-note { margin-bottom: 8px; }
 .admin-actions {
   margin-top: 16px;
   display: flex;
