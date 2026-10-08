@@ -134,6 +134,41 @@ describe("HttpClient: обновление токена", () => {
     expect(client.getTokens()).not.toBeNull();
   });
 
+  it("токены уже обновлены другим запросом: второй refresh не делается", async () => {
+    let refreshCalls = 0;
+    let releaseB!: () => void;
+    const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit) => {
+      const auth = (init.headers as Record<string, string>).Authorization;
+      if (url.endsWith("/api/v1/auth/refresh")) {
+        refreshCalls += 1;
+        return json({ ...TOKENS, accessToken: "access-2", refreshToken: "refresh-2" });
+      }
+      if (auth === "Bearer access-2") return json({ ok: true });
+      // Запрос B получает 401 только после того, как A уже обновил токены.
+      if (url.endsWith("/b")) await gateB;
+      return json({ error: { code: "unauthorized", message: "expired" } }, 401);
+    }));
+    const client = newClient();
+    const a = client.get<{ ok: boolean }>("/a");
+    const b = client.get<{ ok: boolean }>("/b");
+    await expect(a).resolves.toEqual({ ok: true });
+    releaseB();
+    await expect(b).resolves.toEqual({ ok: true });
+    expect(refreshCalls).toBe(1);
+    expect(client.getTokens()?.accessToken).toBe("access-2");
+  });
+
+  it("ответ refresh оборвался: токены остаются, ошибка временная", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(json({ error: { code: "unauthorized", message: "expired" } }, 401))
+      .mockResolvedValueOnce(new Response("не json", { status: 200 })));
+    const client = newClient();
+    const err = await catchError(client.post("/api/v1/users/me", {}));
+    expect(isTransientError(err)).toBe(true);
+    expect(client.getTokens()).not.toBeNull();
+  });
+
   it("logout при недоступном сервере не бросает исключение и стирает токены", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
     const client = newClient();

@@ -133,13 +133,37 @@ export async function checkServerReachable(
 
   let payload: unknown = null;
   try {
-    payload = await response.json();
-  } catch {
+    payload = await readJsonWithin(response, timeoutMs);
+  } catch (err) {
+    if (err instanceof FetchTimeoutError) {
+      throw new ServerCheckError("timeout", `Сервер не ответил за ${Math.round(timeoutMs / 1000)} с`);
+    }
     /* тело не JSON */
   }
   if (!isReadyPayload(payload)) {
     throw new ServerCheckError("not-rucord", "Это не сервер RuCord: ответ на /readyz не распознан");
   }
+}
+
+// Таймер fetchWithTimeout снимается после получения заголовков, поэтому
+// сервер, который прислал заголовки и замолчал, подвесил бы проверку навсегда.
+function readJsonWithin(response: Response, timeoutMs: number): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      void response.body?.cancel().catch(() => undefined);
+      reject(new FetchTimeoutError(timeoutMs));
+    }, timeoutMs);
+    response.json().then(
+      (value: unknown) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
 }
 
 function isReadyPayload(payload: unknown): boolean {

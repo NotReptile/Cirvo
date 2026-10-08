@@ -118,9 +118,10 @@ export class HttpClient {
     if (this.tokens && this.isAccessExpired()) {
       await this.refresh();
     }
+    const usedToken = this.tokens?.accessToken ?? null;
     let response = await this.doUpload(path, form);
     if (response.status === 401 && this.tokens) {
-      await this.refreshAfter401(response);
+      await this.refreshAfter401(response, usedToken);
       response = await this.doUpload(path, form);
     }
     if (!response.ok) {
@@ -133,9 +134,10 @@ export class HttpClient {
     if (this.tokens && this.isAccessExpired()) {
       await this.refresh();
     }
+    const usedToken = this.tokens?.accessToken ?? null;
     let response = await this.doFetch("GET", path, undefined, true);
     if (response.status === 401 && this.tokens) {
-      await this.refreshAfter401(response);
+      await this.refreshAfter401(response, usedToken);
       response = await this.doFetch("GET", path, undefined, true);
     }
     if (!response.ok) {
@@ -169,9 +171,10 @@ export class HttpClient {
     if (needsAuth && this.tokens && this.isAccessExpired()) {
       await this.refresh();
     }
+    const usedToken = this.tokens?.accessToken ?? null;
     const response = await this.doFetch(method, path, body, needsAuth);
     if (response.status === 401 && needsAuth && this.tokens) {
-      await this.refreshAfter401(response);
+      await this.refreshAfter401(response, usedToken);
       const retry = await this.doFetch(method, path, body, true);
       if (!retry.ok) {
         throw await toApiError(retry);
@@ -241,7 +244,11 @@ export class HttpClient {
   // refresh-токен, сессия закончилась и токены стираются. Если обновить не
   // удалось из-за сети или сбоя сервера, токены остаются: это временная
   // проблема, а не конец сессии.
-  private async refreshAfter401(original: Response): Promise<void> {
+  private async refreshAfter401(original: Response, usedAccessToken: string | null): Promise<void> {
+    // Пока запрос шёл, другой запрос уже обновил токены: второй refresh не
+    // нужен (с ротацией он лишний, а потерянный ответ мог бы разлогинить),
+    // достаточно повторить сам запрос с новым токеном.
+    if (usedAccessToken !== null && this.tokens && this.tokens.accessToken !== usedAccessToken) return;
     try {
       await this.refresh();
     } catch (err) {
@@ -255,7 +262,7 @@ export class HttpClient {
 
   private async refresh(): Promise<void> {
     if (this.refreshPromise) return this.refreshPromise;
-    if (!this.tokens) throw new Error("no refresh token");
+    if (!this.tokens) throw { status: 401, code: "authentication_failed", message: "no refresh token" } satisfies ApiError;
     const refreshToken = this.tokens.refreshToken;
     this.refreshPromise = (async () => {
       const response = await sendRequest(
@@ -274,7 +281,13 @@ export class HttpClient {
         if (isRefreshRejected(apiError)) this.setTokens(null);
         throw apiError;
       }
-      const next = (await response.json()) as AuthTokens;
+      let next: AuthTokens;
+      try {
+        next = (await response.json()) as AuthTokens;
+      } catch {
+        // Ответ оборвался или пришёл не JSON: токены остаются, это временный сбой.
+        throw transportError("network", "Ответ сервера не распознан");
+      }
       this.setTokens({
         accessToken: next.accessToken,
         accessExpiresAt: next.accessExpiresAt,
