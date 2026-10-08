@@ -74,8 +74,8 @@ services:
 
   # TURN/STUN-сервер для WebRTC. Запускается под профилем `turn`:
   #   docker compose --profile turn up coturn
-  # На локальной 1-к-1 разработке обычно не нужен (хватает host candidates +
-  # Google STUN). Поднимай при тестах через NAT/мобильные сети.
+  # На локальной 1-к-1 разработке обычно не нужен (хватает host candidates).
+  # Поднимай при тестах через NAT/мобильные сети и задай ICE_TURN_URLS.
   coturn:
     image: coturn/coturn:latest
     profiles: ["turn"]

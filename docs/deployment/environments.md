@@ -13,7 +13,7 @@ Deployment profile and runtime stage are separate concerns. A profile describes 
 
 Состав (`deploy/local/docker-compose.yml`): Postgres (на хосте порт `5433`), Redis, MinIO. Профили compose: `tools` (контейнер `migrate`), `turn` (coturn со статическими credentials), `public-ip` (HTTP-прокси Caddy без TLS для проверки с удалённых клиентов по статическому IP). Go-сервисы `core-api`, `realtime`, `worker` запускаются на хосте, клиент - через `npm run dev`. `RUCORD_ENV=local`, `RUCORD_STAGE=dev` по умолчанию.
 
-Медиа: SFU и coturn в compose по умолчанию не входят. Пока `RUCORD_SFU_URL` пуст, `core-api` отдаёт `mode: "mesh"`, voice-каналы работают в mesh (до 5 участников), а 1-к-1 звонкам хватает host-кандидатов и STUN. Прокси `public-ip` не маршрутизирует `/sfu/ws` (только `/ws`, `/api/*`, `/healthz`, `/readyz`).
+Медиа: SFU и coturn в compose по умолчанию не входят. Пока `RUCORD_SFU_URL` пуст, `core-api` отдаёт `mode: "mesh"`, voice-каналы работают в mesh (до 5 участников), а 1-к-1 звонкам в одной сети хватает host-кандидатов; через NAT нужен свой coturn (`--profile turn`) и `ICE_TURN_URLS`. Прокси `public-ip` не маршрутизирует `/sfu/ws` (только `/ws`, `/api/*`, `/healthz`, `/readyz`).
 
 ## Single-Node
 

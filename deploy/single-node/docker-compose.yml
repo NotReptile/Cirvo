@@ -37,7 +37,8 @@ x-go-service-env: &go-service-env
   MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
   MINIO_BUCKET: ${MINIO_BUCKET:-rucord}
   MINIO_USE_SSL: "false"
-  ICE_STUN_URLS: ${ICE_STUN_URLS:-stun:stun.l.google.com:19302}
+  # Пусто = STUN отвечает тот же coturn, что и TURN (адрес берётся из ICE_TURN_URLS).
+  ICE_STUN_URLS: ${ICE_STUN_URLS:-}
   ICE_TURN_URLS: ${ICE_TURN_URLS:-turn:${RUCORD_DOMAIN}:3478?transport=udp,turn:${RUCORD_DOMAIN}:3478?transport=tcp}
   ICE_TURN_URL: ${ICE_TURN_URL:-}
   ICE_TURN_USERNAME: ${ICE_TURN_USERNAME:-}

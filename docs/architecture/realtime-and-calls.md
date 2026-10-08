@@ -57,13 +57,13 @@ It is not responsible for canonical message persistence, workspace membership or
 
 Переменные `core-api`:
 
-- `ICE_STUN_URLS` - comma-separated; defaults to `stun:stun.l.google.com:19302`.
+- `ICE_STUN_URLS` - comma-separated. По умолчанию пуст: тогда STUN-адреса строятся из `ICE_TURN_URLS` (`turn:host:3478?...` даёт `stun:host:3478`, coturn отвечает на оба протокола). Публичных STUN-серверов по умолчанию нет.
 - `ICE_TURN_URLS` - comma-separated UDP/TCP/TLS endpoints. Если пусто, берётся одиночный `ICE_TURN_URL`.
 - `ICE_TURN_SHARED_SECRET` - coturn REST secret used to issue per-user one-hour HMAC credentials: `username = "<unix expiry>:<userId>"`, `credential = base64(HMAC-SHA1(secret, username))`.
 - Static `ICE_TURN_USERNAME` / `ICE_TURN_CREDENTIAL` values are legacy fallback only (используются, пока секрет пуст).
 - `RUCORD_SFU_URL` - адрес SFU-сигналинга, например `wss://<domain>/sfu/ws`.
 
-Если запрос конфигурации не удался, клиент падает обратно на Google STUN и режим mesh (`voiceChannelManager.ensureIceServers`).
+Если запрос конфигурации не удался, клиент не подставляет запасные серверы: вход в голосовой канал и звонок завершаются ошибкой «Голос недоступен», а следующая попытка запросит конфигурацию заново (`ensureIceServers` в `voiceChannelManager.ts` и `callManager.ts`). Голос работает только через серверы вашего развёртывания.
 
 ## TURN
 
