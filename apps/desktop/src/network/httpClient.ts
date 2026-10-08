@@ -47,7 +47,15 @@ export function isTransientError(err: unknown): boolean {
 // Сервер сказал, что сессия недействительна (токены просрочены, отозваны или
 // аккаунт заблокирован). Только в этом случае клиент должен разлогинить.
 export function isSessionRejected(err: unknown): boolean {
-  return isApiError(err) && (err.status === 401 || err.status === 403);
+  if (!isApiError(err)) return false;
+  if (isPasswordChangeRequired(err)) return false;
+  return err.status === 401 || err.status === 403;
+}
+
+// 403 password_change_required: пользователю выдан временный пароль, сессия
+// жива, но до смены пароля API закрыт. Это не отказ сессии.
+export function isPasswordChangeRequired(err: unknown): boolean {
+  return isApiError(err) && err.status === 403 && err.code === "password_change_required";
 }
 
 // Отказ именно на обновлении токена: refresh-токен недействителен.

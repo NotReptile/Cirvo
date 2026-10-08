@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpClient, isApiError, isSessionRejected, isTransientError, type ApiError } from "./httpClient";
+import {
+  HttpClient,
+  isApiError,
+  isPasswordChangeRequired,
+  isSessionRejected,
+  isTransientError,
+  type ApiError
+} from "./httpClient";
 
 // Окружение vitest: node без DOM. localStorage и fetch подменяются стабами.
 
@@ -139,6 +146,26 @@ describe("HttpClient: обновление токена", () => {
     const client = newClient();
     await expect(client.logout()).resolves.toBeUndefined();
     expect(client.getTokens()).toBeNull();
+  });
+});
+
+describe("isSessionRejected и isPasswordChangeRequired", () => {
+  it("401 и 403 разлогинивают", () => {
+    expect(isSessionRejected({ status: 401, code: "authentication_failed", message: "x" })).toBe(true);
+    expect(isSessionRejected({ status: 403, code: "authorization_denied", message: "account banned" })).toBe(true);
+  });
+
+  it("403 password_change_required не разлогинивает: сессия жива", () => {
+    const err = { status: 403, code: "password_change_required", message: "password change required" };
+    expect(isPasswordChangeRequired(err)).toBe(true);
+    expect(isSessionRejected(err)).toBe(false);
+  });
+
+  it("сеть, 5xx и не-ошибки не разлогинивают", () => {
+    expect(isSessionRejected({ status: 0, code: "network", message: "x" })).toBe(false);
+    expect(isSessionRejected({ status: 503, code: "unavailable", message: "x" })).toBe(false);
+    expect(isSessionRejected(new Error("x"))).toBe(false);
+    expect(isPasswordChangeRequired(null)).toBe(false);
   });
 });
 
