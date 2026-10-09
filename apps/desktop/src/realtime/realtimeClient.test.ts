@@ -57,11 +57,13 @@ describe("RealtimeClient cursor", () => {
     vi.stubGlobal("localStorage", new MemoryStorage());
   });
 
-  it("deduplicates durable events and advances on sync.ready", () => {
-    const client = new RealtimeClient("ws://example.test/ws");
+  it("deduplicates durable events and advances on sync.ready", async () => {
+    const client = new RealtimeClient("ws://example.test/ws", async () => "ticket");
     const received: string[] = [];
     client.subscribe((event) => received.push(event.event));
     client.setAccessToken(tokenFor("user-a"));
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
 
     const ws = FakeWebSocket.instances[0];
     ws.open();
@@ -83,5 +85,33 @@ describe("RealtimeClient cursor", () => {
     expect(url.searchParams.get("ticket")).toBe("ticket-value");
     expect(url.searchParams.has("access_token")).toBe(false);
     client.disconnect();
+  });
+
+  it("retries a ticket failure without opening a socket or leaking the token", async () => {
+    vi.useFakeTimers();
+    try {
+      const issue = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValue("retry-ticket");
+      const client = new RealtimeClient("wss://example.test/ws", issue);
+      client.setAccessToken(tokenFor("user-c"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(FakeWebSocket.instances).toHaveLength(0);
+      expect(client.getConnectionState()).toBe("reconnecting");
+      await vi.advanceTimersByTimeAsync(500);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      expect(new URL(FakeWebSocket.instances[0].url).searchParams.get("ticket")).toBe("retry-ticket");
+      expect(FakeWebSocket.instances[0].url).not.toContain("access_token");
+      client.disconnect();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not connect after logout while a ticket request is pending", async () => {
+    let resolveTicket!: (value: string) => void;
+    const client = new RealtimeClient("wss://example.test/ws", () => new Promise(resolve => { resolveTicket = resolve; }));
+    client.setAccessToken(tokenFor("user-d"));
+    client.setAccessToken(null);
+    resolveTicket("late-ticket");
+    await Promise.resolve();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(client.getConnectionState()).toBe("offline");
   });
 });

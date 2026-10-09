@@ -16,8 +16,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="$ROOT/deploy/.env"
-COMPOSE_FILE="$ROOT/deploy/single-node/docker-compose.yml"
+ENV_FILE="${RUCORD_BACKUP_ENV_FILE:-$ROOT/deploy/.env}"
+COMPOSE_FILE="${RUCORD_BACKUP_COMPOSE_FILE:-$ROOT/deploy/single-node/docker-compose.yml}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "backup: $ENV_FILE not found" >&2
@@ -39,6 +39,9 @@ OUT="$OUT_ROOT/$TS"
 mkdir -p "$OUT/minio"
 
 DC=(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE")
+if [[ -n "${RUCORD_BACKUP_COMPOSE_OVERRIDE:-}" ]]; then
+  DC+=(-f "$RUCORD_BACKUP_COMPOSE_OVERRIDE")
+fi
 
 echo "[backup] target: $OUT"
 

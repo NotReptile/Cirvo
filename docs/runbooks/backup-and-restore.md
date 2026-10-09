@@ -38,6 +38,17 @@ deploy/backup.sh /mnt/external/rucord  # либо в любой каталог
 
 На Windows запускать через WSL или Git Bash. На Linux/macOS — нативно.
 
+Если инстанс использует отдельный env-файл или compose override, передай одинаковые параметры и бэкапу, и восстановлению:
+
+```bash
+export RUCORD_BACKUP_ENV_FILE=/etc/rucord/instance.env
+export RUCORD_BACKUP_COMPOSE_FILE=/opt/rucord/deploy/single-node/docker-compose.yml
+export RUCORD_BACKUP_COMPOSE_OVERRIDE=/etc/rucord/compose.override.yml
+deploy/backup.sh /var/backups/rucord
+```
+
+Переменные необязательны; без них используются прежние пути. Для проверки восстановления в отдельном compose-проекте также задай отдельный `COMPOSE_PROJECT_NAME` и отдельные БД, тома и бакет.
+
 Бэкап **не блокирует** core-api / realtime / worker. pg_dump использует
 MVCC-снапшот; mc mirror отлично переживает параллельную запись (новые
 объекты могут попасть в следующий снапшот, не в этот).

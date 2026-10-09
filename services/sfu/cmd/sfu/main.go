@@ -5,7 +5,7 @@
 //
 // Сигналинг — собственный WebSocket /sfu/ws (не realtime-relay: SFU сам
 // сторона переговоров, а не посредник между клиентами). Авторизация —
-// тот же JWT, что у core-api/realtime + проверка, что сессия уже
+// одноразовый тикет от core-api + проверка, что сессия уже
 // сделала POST /voice/join (строка в channel_participants).
 //
 // Медиа — один UDP-порт (UDPMux, RUCORD_SFU_UDP_PORT) — простой

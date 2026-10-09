@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -263,26 +264,54 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		limit = parsed
 	}
 
-	var before time.Time
-	if raw := r.URL.Query().Get("before"); raw != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, raw)
+	query := r.URL.Query()
+	beforeRaw, afterRaw, aroundRaw := query.Get("before"), query.Get("after"), query.Get("around")
+	if (beforeRaw != "" && afterRaw != "") || (aroundRaw != "" && (beforeRaw != "" || afterRaw != "")) {
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "use only one message cursor")
+		return
+	}
+	var sql string
+	var args []any
+	if aroundRaw != "" {
+		anchorID, err := uuid.Parse(aroundRaw)
 		if err != nil {
-			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid before cursor")
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid around cursor")
 			return
 		}
-		before = parsed
+		var anchorTime time.Time
+		if err := m.db.QueryRow(r.Context(), "select created_at from messages where id=$1 and channel_id=$2 and deleted_at is null", anchorID, channelID).Scan(&anchorTime); err != nil {
+			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "message not found")
+			return
+		}
+		sql = "select " + messageSelectColumns + ` from messages m where m.channel_id=$2 and m.deleted_at is null and m.id in (
+			(select id from messages where channel_id=$2 and deleted_at is null and (created_at,id)<=($3,$5) order by created_at desc,id desc limit $4)
+			union all
+			(select id from messages where channel_id=$2 and deleted_at is null and (created_at,id)>($3,$5) order by created_at,id limit $6)
+		) order by m.created_at desc,m.id desc`
+		args = []any{userID, channelID, anchorTime, (limit + 1) / 2, anchorID, limit / 2}
 	} else {
-		before = time.Now().UTC().Add(time.Hour)
+		cursorTime := time.Now().UTC().Add(time.Hour)
+		cursorID := uuid.Nil
+		raw := beforeRaw
+		comparison, order := "<", "desc"
+		if afterRaw != "" {
+			raw = afterRaw
+			comparison = ">"
+			order = "asc"
+		}
+		if raw != "" {
+			var err error
+			cursorTime, cursorID, err = parseMessageCursor(raw)
+			if err != nil {
+				sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid message cursor")
+				return
+			}
+		}
+		sql = "select " + messageSelectColumns + " from messages m where m.channel_id=$2 and m.deleted_at is null and (m.created_at,m.id) " + comparison + " ($3,$5) order by m.created_at " + order + ",m.id " + order + " limit $4"
+		args = []any{userID, channelID, cursorTime, limit, cursorID}
 	}
+	rows, err := m.db.Query(r.Context(), sql, args...)
 
-	rows, err := m.db.Query(r.Context(),
-		`select `+messageSelectColumns+`
-		 from messages m
-		 where m.channel_id = $2 and m.deleted_at is null and m.created_at < $3
-		 order by m.created_at desc
-		 limit $4`,
-		userID, channelID, before, limit,
-	)
 	if err != nil {
 		m.logger.Error("list messages query failed", "error", err, "channelId", channelID)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
@@ -301,13 +330,24 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		items = append(items, v)
 	}
 
-	var nextCursor string
+	if afterRaw != "" {
+		slices.Reverse(items)
+	}
+	if err := rows.Err(); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "message history unavailable")
+		return
+	}
+	var nextCursor, afterCursor string
+	if len(items) > 0 {
+		afterCursor = formatMessageCursor(items[0].CreatedAt, items[0].ID)
+	}
 	if len(items) == limit {
-		nextCursor = items[len(items)-1].CreatedAt.Format(time.RFC3339Nano)
+		nextCursor = formatMessageCursor(items[len(items)-1].CreatedAt, items[len(items)-1].ID)
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{
-		"items":      items,
-		"nextCursor": nextCursor,
+		"items":       items,
+		"nextCursor":  nextCursor,
+		"afterCursor": afterCursor,
 	})
 }
 
@@ -1956,4 +1996,24 @@ func decodeEmoji(raw string) (string, bool) {
 		return "", false
 	}
 	return decoded, true
+}
+
+// The UUID tie-breaker prevents equal timestamps from losing messages between pages.
+func parseMessageCursor(raw string) (time.Time, uuid.UUID, error) {
+	parts := strings.SplitN(raw, "|", 2)
+	stamp, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, uuid.Nil, err
+	}
+	id := uuid.Nil
+	if len(parts) == 2 {
+		id, err = uuid.Parse(parts[1])
+		if err != nil {
+			return time.Time{}, uuid.Nil, err
+		}
+	}
+	return stamp, id, nil
+}
+func formatMessageCursor(stamp time.Time, id string) string {
+	return stamp.Format(time.RFC3339Nano) + "|" + id
 }

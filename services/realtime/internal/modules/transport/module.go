@@ -74,20 +74,7 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 		m.connectAuthenticated(w, r, claims.UserID, claims.SessionID)
 		return
 	}
-	token := r.URL.Query().Get("access_token")
-	if token == "" {
-		token = bearerToken(r)
-	}
-	if token == "" {
-		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "missing access token")
-		return
-	}
-	claims, err := m.jwt.Parse(token)
-	if err != nil {
-		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid token")
-		return
-	}
-	m.connectAuthenticated(w, r, claims.UserID, claims.SessionID)
+	sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "websocket ticket required")
 }
 
 func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, userID, sessionID uuid.UUID) {

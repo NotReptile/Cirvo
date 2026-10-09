@@ -21,6 +21,12 @@ mod screen_audio;
 #[cfg(target_os = "windows")]
 mod webview_tweaks;
 
+#[cfg(target_os = "windows")]
+mod token_store;
+
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+mod server_updater;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -31,7 +37,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             screen_capture::screen_list_sources,
             screen_capture::screen_capture_frame,
-            screen_capture::screen_capture_stop_all
+            screen_capture::screen_capture_stop_all,
+            server_updater::check_server_update,
+            server_updater::install_server_update
         ]);
 
     #[cfg(target_os = "windows")]
@@ -42,14 +50,20 @@ pub fn run() {
             screen_capture::screen_capture_frame,
             screen_capture::screen_capture_stop_all,
             screen_audio::screen_audio_start,
-            screen_audio::screen_audio_stop
+            screen_audio::screen_audio_stop,
+            token_store::load_auth_tokens,
+            token_store::save_auth_tokens,
+            server_updater::check_server_update,
+            server_updater::install_server_update
         ]);
 
     // F.8: auto-update + relaunch. Только desktop — updater на mobile
     // не существует (там обновления через сторы).
     #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
     let builder = builder
+        .manage(server_updater::PendingUpdate::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init());
 
     // on_page_load, а не setup: PlatformWebview готов гарантированно, и хук

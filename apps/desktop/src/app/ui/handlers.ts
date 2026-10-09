@@ -1,0 +1,46 @@
+import { uiContext } from "../state";
+import { attachAuditRegion } from "./handlersAudit";
+import { attachCallsRegion } from "./handlersCalls";
+import { attachCategoriesRegion } from "./handlersCategories";
+import { attachChannelMenuRegion } from "./handlersChannelMenu";
+import { attachComposerRegion } from "./handlersComposer";
+import { attachFriendsRegion } from "./handlersFriends";
+import { attachInvitesRegion } from "./handlersInvites";
+import { attachMemberMenuRegion } from "./handlersMemberMenu";
+import { attachMembersRegion } from "./handlersMembers";
+import { attachMessageNavigationRegion } from "./handlersMessageNavigation";
+import { attachMessagesRegion } from "./handlersMessages";
+import { attachNavigationRegion } from "./handlersNavigation";
+import { attachNotificationsRegion } from "./handlersNotifications";
+import { attachPreferencesRegion } from "./handlersPreferences";
+import { attachPresenceRegion } from "./handlersPresence";
+import { attachProfileRegion } from "./handlersProfile";
+import { attachSidebarRegion } from "./handlersSidebar";
+import { attachVoiceVolumeRegion } from "./handlersVoiceVolume";
+import { attachWorkspaceCreateRegion } from "./handlersWorkspaceCreate";
+import { attachWorkspaceMenuRegion } from "./handlersWorkspaceMenu";
+import { hydrateMedia } from "./media";
+
+export function attachShellHandlers(): void {
+  attachPreferencesRegion();
+  attachPresenceRegion();
+  attachAuditRegion();
+  attachNotificationsRegion();
+  attachNavigationRegion();
+  attachProfileRegion();
+  attachMembersRegion();
+  attachCategoriesRegion();
+  attachMemberMenuRegion();
+  attachCallsRegion();
+  attachSidebarRegion();
+  attachFriendsRegion();
+  attachWorkspaceMenuRegion();
+  attachVoiceVolumeRegion();
+  attachChannelMenuRegion();
+  attachWorkspaceCreateRegion();
+  attachInvitesRegion();
+  attachMessagesRegion();
+  attachComposerRegion();
+  attachMessageNavigationRegion();
+  hydrateMedia(uiContext.rootEl);
+}

@@ -1,4 +1,5 @@
 import { DEFAULT_FETCH_TIMEOUT_MS, FetchTimeoutError, fetchWithTimeout } from "./fetchWithTimeout";
+import { browserTokenStore, type TokenStore } from "./tokenStore";
 
 export interface AuthTokens {
   accessToken: string;
@@ -87,15 +88,14 @@ function delay(ms: number): Promise<void> {
 
 type TokenChangeListener = (tokens: AuthTokens | null) => void;
 
-const TOKEN_STORAGE_KEY = "rucord:tokens";
-
 export class HttpClient {
   private tokens: AuthTokens | null = null;
   private refreshPromise: Promise<void> | null = null;
   private listeners = new Set<TokenChangeListener>();
+  private persistence: Promise<void> = Promise.resolve();
 
-  constructor(readonly baseUrl: string) {
-    this.tokens = readStoredTokens();
+  constructor(readonly baseUrl: string, private readonly tokenStore: TokenStore = browserTokenStore()) {
+    this.tokens = tokenStore.read();
   }
 
   onTokensChanged(listener: TokenChangeListener): () => void {
@@ -110,15 +110,15 @@ export class HttpClient {
 
   setTokens(tokens: AuthTokens | null): void {
     this.tokens = tokens;
-    if (tokens) {
-      localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(tokens));
-    } else {
-      localStorage.removeItem(TOKEN_STORAGE_KEY);
-    }
+    this.persistence = this.persistence.catch(() => {}).then(() => this.tokenStore.write(tokens));
+    // Explicit flushes at login/refresh/logout report failures without leaking tokens.
+    void this.persistence.catch(() => {});
     for (const listener of this.listeners) {
       listener(tokens);
     }
   }
+
+  flushTokens(): Promise<void> { return this.persistence; }
 
   async uploadFile<T>(path: string, file: File): Promise<T> {
     const form = new FormData();
@@ -218,6 +218,7 @@ export class HttpClient {
       { auth: false }
     );
     this.setTokens(extractTokens(session));
+    await this.flushTokens();
     return session;
   }
 
@@ -233,6 +234,7 @@ export class HttpClient {
       { auth: false }
     );
     this.setTokens(extractTokens(session));
+    await this.flushTokens();
     return session;
   }
 
@@ -245,6 +247,7 @@ export class HttpClient {
       // Сервер недоступен или сессия уже закрыта: локальный выход всё равно нужен.
     } finally {
       this.setTokens(null);
+      await this.flushTokens();
     }
   }
 
@@ -302,6 +305,7 @@ export class HttpClient {
         refreshToken: next.refreshToken,
         sessionId: next.sessionId
       });
+      await this.flushTokens();
     })();
     try {
       await this.refreshPromise;
@@ -340,16 +344,6 @@ function extractTokens(session: AuthSession): AuthTokens {
     refreshToken: session.refreshToken,
     sessionId: session.sessionId
   };
-}
-
-function readStoredTokens(): AuthTokens | null {
-  try {
-    const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as AuthTokens;
-  } catch {
-    return null;
-  }
 }
 
 async function parseBody<T>(response: Response): Promise<T> {

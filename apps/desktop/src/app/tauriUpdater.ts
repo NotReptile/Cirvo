@@ -1,6 +1,6 @@
-// F.8: auto-update через `tauri-plugin-updater`. Манифест latest.json
-// (подписанный Tauri-keypair'ом) раздаётся из GitHub Releases — endpoint
-// задан в tauri.conf.json. Web-сборка / mobile / dev без плагина / битая
+// Обновления с выбранного RuCord-сервера: /updates/latest.json и установщик
+// требуют активную сессию. Подпись проверяет нативный tauri-plugin-updater.
+// Web-сборка / mobile / dev без плагина / битая
 // подпись — тихий no-op: checkForUpdate() возвращает null, UI ничего
 // не показывает.
 //
@@ -32,34 +32,22 @@ async function loadUpdater(): Promise<typeof import("@tauri-apps/plugin-updater"
   return updaterPromise;
 }
 
-export async function checkForUpdate(): Promise<UpdateHandle | null> {
+export async function checkForUpdate(serverUrl: string, accessToken: string | null): Promise<UpdateHandle | null> {
   const plugin = await loadUpdater();
   if (!plugin) return null;
   try {
-    const update = await plugin.check();
+    if (!accessToken || !serverUrl.startsWith("https://")) return null;
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
+    const update = await invoke<{ version: string; notes: string | null } | null>("check_server_update", { serverUrl, accessToken });
     if (!update) return null;
-    console.info(`[updater] доступно обновление ${update.version} (текущая ${update.currentVersion})`);
+    console.info(`[updater] доступно обновление ${update.version}`);
     return {
       version: update.version,
-      notes: update.body ?? null,
+      notes: update.notes,
       async install(onProgress) {
-        let total: number | null = null;
-        let downloaded = 0;
-        await update.downloadAndInstall((event) => {
-          switch (event.event) {
-            case "Started":
-              total = event.data.contentLength ?? null;
-              onProgress(total ? 0 : null);
-              break;
-            case "Progress":
-              downloaded += event.data.chunkLength;
-              onProgress(total ? Math.min(100, Math.round((downloaded / total) * 100)) : null);
-              break;
-            case "Finished":
-              onProgress(100);
-              break;
-          }
-        });
+        const progress = new Channel<number | null>();
+        progress.onmessage = onProgress;
+        await invoke("install_server_update", { progress });
       }
     };
   } catch (err) {

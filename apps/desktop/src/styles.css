@@ -273,7 +273,15 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 .shell {
   display: grid;
   grid-template-columns: 72px 240px 1fr;
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
+}
+/* Региональные контейнеры сохраняют DOM для частичных обновлений, но их
+   фиксированные панели не должны создавать дополнительную строку сетки. */
+.shell > #region-status,
+.shell > #region-modal,
+.shell > #region-call {
+  display: contents;
 }
 .shell.with-members {
   grid-template-columns: 72px 240px 1fr 220px;
@@ -1074,6 +1082,9 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   background: rgba(250, 166, 26, 0.22);
   color: #ffd980;
 }
+:root[data-theme="light"] .mention { color: #3b45a5; }
+:root[data-theme="light"] .mention.mention-self,
+:root[data-theme="light"] .mention.mention-everyone { color: #795100; }
 /* Wave 8: кликабельная #channel-ссылка в сообщении — визуально как mention. */
 .channel-link {
   color: #b4c2ff;
@@ -1677,10 +1688,11 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 .call-video-overlay {
   position: fixed;
   right: 16px;
-  bottom: 64px;
+  bottom: calc(var(--call-bar-h) + 80px);
   z-index: 49;
   pointer-events: none;
 }
+.call-video-overlay[hidden] { display: none; }
 .call-video-stack {
   position: relative;
   width: 360px;

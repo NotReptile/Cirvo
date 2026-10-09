@@ -1,5 +1,4 @@
-// WS-сигналинг SFU. Авторизация повторяет realtime: JWT в
-// ?access_token= (или Authorization: Bearer) + живая сессия в
+// WS-сигналинг SFU. Авторизация: одноразовый тикет и живая сессия в
 // user_sessions. Дополнительно — членство в voice-канале: клиент обязан
 // сначала сделать POST /voice/join в core-api (строка в
 // channel_participants), иначе 403. Так ACL-логика (видимость канала,
@@ -67,26 +66,7 @@ func (m *Module) handleConnect(w http.ResponseWriter, r *http.Request) {
 		m.connectAuthenticated(w, r, claims.UserID, claims.SessionID, claims.ChannelID)
 		return
 	}
-	token := r.URL.Query().Get("access_token")
-	if token == "" {
-		token = bearerToken(r)
-	}
-	if token == "" {
-		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "missing access token")
-		return
-	}
-	claims, err := m.jwt.Parse(token)
-	if err != nil {
-		sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "invalid token")
-		return
-	}
-
-	channelID, err := uuid.Parse(r.URL.Query().Get("channel_id"))
-	if err != nil {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid channel id")
-		return
-	}
-	m.connectAuthenticated(w, r, claims.UserID, claims.SessionID, channelID)
+	sharedhttp.WriteError(w, r, http.StatusUnauthorized, sharedhttp.CodeAuthenticationFailed, "websocket ticket required")
 }
 
 func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, userID, sessionID, channelID uuid.UUID) {

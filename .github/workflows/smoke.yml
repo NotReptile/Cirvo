@@ -79,6 +79,11 @@ jobs:
           npm --workspace apps/desktop test
           npm run build:desktop
 
+      - name: Browser interaction and rendering checks
+        run: |
+          npm --workspace apps/desktop exec -- playwright install --with-deps chromium
+          npm --workspace apps/desktop run test:browser
+
       # Публичные образы MinIO больше не отдаются анонимно, поэтому собираем из
       # исходников на закреплённом коммите. Коммит один на всех: файл
       # deploy/minio/MINIO_REF читают и этот workflow, и deploy/minio/Dockerfile.

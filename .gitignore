@@ -4,6 +4,8 @@ dist/
 .DS_Store
 Thumbs.db
 coverage/
+apps/desktop/test-results/
+apps/desktop/playwright-report/
 *.log
 *.tmp
 *.out

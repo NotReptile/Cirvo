@@ -1,18 +1,16 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
 import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
-import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
+import {
+  acquireScreenShareStream,
+  releaseScreenAudio,
+} from "./screenSharePicker";
 import { wrapMicStream, type MicPipeline } from "./denoiser";
 import { wrapCameraTrack, type CameraPipeline } from "./videoEffects";
 import { MEDIA_CONFIG_UNAVAILABLE } from "./mediaConfig";
 
 export type CallState =
-  | "idle"
-  | "outgoing"
-  | "incoming"
-  | "connecting"
-  | "active"
-  | "ended";
+  "idle" | "outgoing" | "incoming" | "connecting" | "active" | "ended";
 
 export interface CallSnapshot {
   state: CallState;
@@ -71,7 +69,7 @@ const IDLE_SNAPSHOT: CallSnapshot = {
   screenSharing: false,
   startedAt: null,
   endedReason: null,
-  via: null
+  via: null,
 };
 
 export class CallManager {
@@ -99,6 +97,15 @@ export class CallManager {
   // initiator пишет запись в БД (POST /calls) и завершает её (POST /calls/{id}/end).
   // receiver не пишет — он узнаёт исход через `call.ended` realtime-эвент.
   private isInitiator = false;
+  private signalingQueue: Promise<void> = Promise.resolve();
+  private incomingOffer: {
+    promise: Promise<boolean>;
+    resolve(ready: boolean): void;
+  } | null = null;
+  private acceptingCall: string | null = null;
+  private generation = 0;
+  private disposed = false;
+  private placingCall = false;
 
   getLocalStream(): MediaStream | null {
     return this.localStream;
@@ -109,12 +116,32 @@ export class CallManager {
 
   constructor(
     private readonly http: HttpClient,
-    private readonly realtime: RealtimeClient
+    private readonly realtime: RealtimeClient,
   ) {
-    this.unsubscribeRealtime = realtime.subscribe((event) => this.onRealtimeEvent(event));
+    this.unsubscribeRealtime = realtime.subscribe((event) => {
+      if (!event.event.startsWith("call.")) return;
+      // Invite waits for ICE configuration. Keep the subsequent offer/candidates
+      // in wire order instead of dropping them before the peer exists.
+      this.signalingQueue = this.signalingQueue
+        .then(() => {
+          if (!this.disposed) return this.onRealtimeEvent(event);
+        })
+        .catch(() => {
+          const callId = (event.payload as RelayPayload | undefined)?.call_id;
+          if (
+            callId &&
+            this.snapshot.callId === callId &&
+            this.snapshot.state !== "ended"
+          ) {
+            this.sendHangup("signaling_failed");
+            this.teardown("signaling_failed");
+          }
+        });
+    });
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.unsubscribeRealtime) {
       this.unsubscribeRealtime();
       this.unsubscribeRealtime = null;
@@ -135,78 +162,102 @@ export class CallManager {
   // ---------- outgoing ------------------------------------------------------
 
   async placeCall(targetUserId: string, channelId?: string): Promise<void> {
-    if (this.snapshot.state !== "idle" && this.snapshot.state !== "ended") {
+    if (
+      this.placingCall ||
+      this.disposed ||
+      (this.snapshot.state !== "idle" && this.snapshot.state !== "ended")
+    ) {
       throw new Error("call already in progress");
     }
-    // Настройки соединения нужны до записи в БД: иначе при сбое останется
-    // звонок, который никто не закроет.
-    await this.ensureIceServers();
-    // Сначала создаём запись в БД — её id служит call_id во ВСЕЙ
-    // signaling-цепочке. Раньше клиент сам генерировал randomId() и
-    // звонок не оставлял следа в истории; теперь у каждого звонка
-    // server-side row, который и закрывается в teardown.
-    let record: CallRecord;
+    this.placingCall = true;
+    const generation = this.generation;
     try {
-      record = await this.http.post<CallRecord>("/api/v1/calls", {
+      // Get configuration and microphone before creating the server record:
+      // denied permissions must not leave an unfinished call in history.
+      await this.ensureIceServers();
+      if (generation !== this.generation) return;
+      await this.acquireLocalStream();
+      if (generation !== this.generation) return;
+      const record = await this.http.post<CallRecord>("/api/v1/calls", {
         kind: "one_to_one",
         peerUserId: targetUserId,
-        channelId: channelId ?? undefined
+        channelId: channelId ?? undefined,
+      });
+      if (generation !== this.generation) {
+        void this.http
+          .post(`/api/v1/calls/${record.id}/end`, { reason: "cancelled" })
+          .catch(() => {});
+        return;
+      }
+      const callId = record.id;
+      this.isInitiator = true;
+      this.createPeerConnection();
+      this.update({
+        state: "outgoing",
+        callId,
+        peerUserId: targetUserId,
+        peerSessionId: null,
+        channelId: channelId ?? null,
+        muted: false,
+        startedAt: Date.parse(record.startedAt) || null,
+        endedReason: null,
+      });
+      const pc = this.pc!;
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
+      await pc.setLocalDescription(offer);
+      if (generation !== this.generation || this.pc !== pc) return;
+      this.realtime.send("call.invite", {
+        call_id: callId,
+        target_user_id: targetUserId,
+        channel_id: channelId ?? "",
+      });
+      this.realtime.send("call.offer", {
+        call_id: callId,
+        target_user_id: targetUserId,
+        sdp: offer,
       });
     } catch (err) {
+      if (generation === this.generation) this.teardown("start_failed");
       throw err instanceof Error ? err : new Error("could not start call");
+    } finally {
+      this.placingCall = false;
     }
-    const callId = record.id;
-    this.isInitiator = true;
-
-    await this.acquireLocalStream();
-    this.createPeerConnection();
-
-    this.update({
-      state: "outgoing",
-      callId,
-      peerUserId: targetUserId,
-      peerSessionId: null,
-      channelId: channelId ?? null,
-      muted: false,
-      // startedAt из БД — единый источник; UI не пляшет от Date.now() оппонента.
-      startedAt: Date.parse(record.startedAt) || null,
-      endedReason: null
-    });
-
-    const offer = await this.pc!.createOffer({ offerToReceiveAudio: true });
-    await this.pc!.setLocalDescription(offer);
-
-    this.realtime.send("call.invite", {
-      call_id: callId,
-      target_user_id: targetUserId,
-      channel_id: channelId ?? ""
-    });
-    this.realtime.send("call.offer", {
-      call_id: callId,
-      target_user_id: targetUserId,
-      sdp: offer
-    });
   }
 
   // ---------- incoming ------------------------------------------------------
 
   async acceptIncoming(): Promise<void> {
-    if (this.snapshot.state !== "incoming" || !this.pc || !this.snapshot.callId) {
+    if (
+      this.snapshot.state !== "incoming" ||
+      !this.pc ||
+      !this.snapshot.callId
+    ) {
       return;
     }
-    await this.acquireLocalStream();
-    this.attachLocalTracks();
+    const pc = this.pc,
+      callId = this.snapshot.callId;
+    if (this.acceptingCall === callId) return;
+    this.acceptingCall = callId;
+    try {
+      if (!(await this.incomingOffer?.promise)) return;
+      if (this.pc !== pc || this.snapshot.callId !== callId) return;
+      await this.acquireLocalStream();
+      if (this.pc !== pc || this.snapshot.callId !== callId) return;
+      this.attachLocalTracks();
 
-    const answer = await this.pc.createAnswer();
-    await this.pc.setLocalDescription(answer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
 
-    this.realtime.send("call.answer", {
-      call_id: this.snapshot.callId,
-      target_user_id: this.snapshot.peerUserId,
-      target_session_id: this.snapshot.peerSessionId,
-      sdp: answer
-    });
-    this.update({ state: "connecting" });
+      this.realtime.send("call.answer", {
+        call_id: callId,
+        target_user_id: this.snapshot.peerUserId,
+        target_session_id: this.snapshot.peerSessionId,
+        sdp: answer,
+      });
+      this.update({ state: "connecting" });
+    } finally {
+      if (this.acceptingCall === callId) this.acceptingCall = null;
+    }
   }
 
   rejectIncoming(): void {
@@ -218,7 +269,8 @@ export class CallManager {
   // ---------- common --------------------------------------------------------
 
   hangup(): void {
-    if (this.snapshot.state === "idle" || this.snapshot.state === "ended") return;
+    if (this.snapshot.state === "idle" || this.snapshot.state === "ended")
+      return;
     this.sendHangup("hangup");
     this.teardown("hangup");
   }
@@ -271,7 +323,9 @@ export class CallManager {
     if (!this.cameraTrack) {
       let videoStream: MediaStream;
       try {
-        videoStream = await navigator.mediaDevices.getUserMedia({ video: buildVideoConstraints() });
+        videoStream = await navigator.mediaDevices.getUserMedia({
+          video: buildVideoConstraints(),
+        });
       } catch {
         return false;
       }
@@ -354,7 +408,9 @@ export class CallManager {
       }
       this.localStream.addTrack(track);
       if (hadCamera) {
-        const sender = this.pc.getSenders().find((s) => s.track?.kind === "video");
+        const sender = this.pc
+          .getSenders()
+          .find((s) => s.track?.kind === "video");
         if (sender) {
           try {
             await sender.replaceTrack(track);
@@ -372,7 +428,11 @@ export class CallManager {
       }
       if (audioTrack) {
         this.localStream.addTrack(audioTrack);
-        try { this.pc.addTrack(audioTrack, this.localStream); } catch { /* ignore */ }
+        try {
+          this.pc.addTrack(audioTrack, this.localStream);
+        } catch {
+          /* ignore */
+        }
         await this.renegotiate();
       }
       this.update({ screenSharing: true, cameraOn: false });
@@ -387,7 +447,11 @@ export class CallManager {
     this.screenAudioTrack = null;
     if (screenAudio) {
       this.localStream.removeTrack(screenAudio);
-      try { screenAudio.stop(); } catch { /* ignore */ }
+      try {
+        screenAudio.stop();
+      } catch {
+        /* ignore */
+      }
     }
     for (const sender of this.pc.getSenders()) {
       if (sender.track && sender.track.kind === "video") {
@@ -398,7 +462,11 @@ export class CallManager {
         }
       }
       if (screenAudio && sender.track === screenAudio) {
-        try { this.pc.removeTrack(sender); } catch { /* ignore */ }
+        try {
+          this.pc.removeTrack(sender);
+        } catch {
+          /* ignore */
+        }
       }
     }
     void releaseScreenAudio();
@@ -408,7 +476,8 @@ export class CallManager {
   }
 
   private async renegotiate(): Promise<void> {
-    if (!this.pc || !this.snapshot.callId || !this.snapshot.peerSessionId) return;
+    if (!this.pc || !this.snapshot.callId || !this.snapshot.peerSessionId)
+      return;
     try {
       const offer = await this.pc.createOffer();
       await this.pc.setLocalDescription(offer);
@@ -416,7 +485,7 @@ export class CallManager {
         call_id: this.snapshot.callId,
         target_user_id: this.snapshot.peerUserId,
         target_session_id: this.snapshot.peerSessionId,
-        sdp: offer
+        sdp: offer,
       });
     } catch {
       /* ignore — peer мог закрыться */
@@ -431,7 +500,9 @@ export class CallManager {
     // серверов нет: без настроек звонок не начинается, а повторная попытка
     // снова запросит конфигурацию.
     try {
-      const resp = await this.http.get<IceServersResponse>("/api/v1/media/config");
+      const resp = await this.http.get<IceServersResponse>(
+        "/api/v1/media/config",
+      );
       this.iceServers = resp.iceServers ?? [];
     } catch {
       throw new Error(MEDIA_CONFIG_UNAVAILABLE);
@@ -440,15 +511,21 @@ export class CallManager {
 
   private async acquireLocalStream(): Promise<void> {
     if (this.localStream) return;
+    const generation = this.generation;
     // I.2: constraints из voiceSettings (deviceId + ec/agc/ns).
     const raw = await navigator.mediaDevices.getUserMedia({
       audio: buildAudioConstraints(),
-      video: false
+      video: false,
     });
     // N.4: rucord-режимы оборачивают микрофон в RNNoise-worklet; для
     // off/browser pipeline прозрачный. При ошибке — fallback на raw внутри.
-    this.micPipeline = await wrapMicStream(raw);
-    this.localStream = this.micPipeline.stream;
+    const pipeline = await wrapMicStream(raw);
+    if (generation !== this.generation || this.disposed) {
+      pipeline.dispose();
+      throw new Error("Звонок уже завершён");
+    }
+    this.micPipeline = pipeline;
+    this.localStream = pipeline.stream;
   }
 
   private createPeerConnection(): void {
@@ -461,7 +538,7 @@ export class CallManager {
         call_id: this.snapshot.callId,
         target_user_id: this.snapshot.peerUserId,
         target_session_id: this.snapshot.peerSessionId,
-        candidate: event.candidate.toJSON()
+        candidate: event.candidate.toJSON(),
       });
     };
 
@@ -475,6 +552,7 @@ export class CallManager {
           this.remoteStream.addTrack(track);
         }
       }
+      this.emit();
     };
 
     pc.onconnectionstatechange = () => {
@@ -485,12 +563,15 @@ export class CallManager {
           // длительность звонка у пиров разъедется.
           this.update({
             state: "active",
-            startedAt: this.snapshot.startedAt ?? Date.now()
+            startedAt: this.snapshot.startedAt ?? Date.now(),
           });
         }
         // После коннекта (и после ICE-restart'ов) — определяем путь медиа.
         void this.detectConnectionVia();
-      } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      } else if (
+        pc.connectionState === "failed" ||
+        pc.connectionState === "disconnected"
+      ) {
         this.teardown(`peer_${pc.connectionState}`);
       }
     };
@@ -513,7 +594,8 @@ export class CallManager {
       stats.forEach((s) => {
         if (s.type === "transport") {
           const t = s as RTCTransportStats;
-          if (t.selectedCandidatePairId) selectedPairId = t.selectedCandidatePairId;
+          if (t.selectedCandidatePairId)
+            selectedPairId = t.selectedCandidatePairId;
         } else if (s.type === "candidate-pair") {
           pairs.push(s as RTCIceCandidatePairStats);
         }
@@ -521,15 +603,26 @@ export class CallManager {
       // Chromium даёт selectedCandidatePairId на transport; Firefox — флаг
       // selected на самой паре; fallback — nominated+succeeded.
       const pair =
-        (selectedPairId ? pairs.find((p) => p.id === selectedPairId) : undefined) ??
-        pairs.find((p) => (p as unknown as { selected?: boolean }).selected && p.state === "succeeded") ??
+        (selectedPairId
+          ? pairs.find((p) => p.id === selectedPairId)
+          : undefined) ??
+        pairs.find(
+          (p) =>
+            (p as unknown as { selected?: boolean }).selected &&
+            p.state === "succeeded",
+        ) ??
         pairs.find((p) => p.nominated && p.state === "succeeded");
       if (!pair?.localCandidateId) return;
-      const local = stats.get(pair.localCandidateId) as { candidateType?: string } | undefined;
+      const local = stats.get(pair.localCandidateId) as
+        { candidateType?: string } | undefined;
       const remote = pair.remoteCandidateId
-        ? (stats.get(pair.remoteCandidateId) as { candidateType?: string } | undefined)
+        ? (stats.get(pair.remoteCandidateId) as
+            { candidateType?: string } | undefined)
         : undefined;
-      const via = local?.candidateType === "relay" || remote?.candidateType === "relay" ? "relay" : "direct";
+      const via =
+        local?.candidateType === "relay" || remote?.candidateType === "relay"
+          ? "relay"
+          : "direct";
       if (this.snapshot.via !== via) this.update({ via });
     } catch {
       /* stats недоступны — индикатор просто не покажется */
@@ -566,7 +659,8 @@ export class CallManager {
     if (event.event === "call.ended") {
       const rec = event.payload as CallRecord | undefined;
       if (!rec || !rec.id || rec.id !== this.snapshot.callId) return;
-      if (this.snapshot.state === "idle" || this.snapshot.state === "ended") return;
+      if (this.snapshot.state === "idle" || this.snapshot.state === "ended")
+        return;
       this.teardown(rec.reason || "remote_ended");
       return;
     }
@@ -594,13 +688,17 @@ export class CallManager {
   }
 
   private async handleInvite(p: RelayPayload): Promise<void> {
-    if (this.snapshot.state !== "idle" && this.snapshot.state !== "ended") {
+    const generation = this.generation;
+    if (
+      this.placingCall ||
+      (this.snapshot.state !== "idle" && this.snapshot.state !== "ended")
+    ) {
       // занят — отвечаем hangup busy
       this.realtime.send("call.hangup", {
         call_id: p.call_id,
         target_user_id: p.from_user_id,
         target_session_id: p.from_session_id,
-        reason: "busy"
+        reason: "busy",
       });
       return;
     }
@@ -613,12 +711,25 @@ export class CallManager {
         call_id: p.call_id,
         target_user_id: p.from_user_id,
         target_session_id: p.from_session_id,
-        reason: "unavailable"
+        reason: "unavailable",
       });
       return;
     }
+    if (generation !== this.generation || this.disposed) return;
     this.createPeerConnection();
     this.isInitiator = false;
+    let resolveOffer!: (ready: boolean) => void;
+    const promise = new Promise<boolean>((resolve) => {
+      resolveOffer = resolve;
+    });
+    this.incomingOffer = { promise, resolve: resolveOffer };
+    const offerTimeout = setTimeout(() => {
+      if (this.incomingOffer?.promise === promise) {
+        this.sendHangup("offer_timeout");
+        this.teardown("offer_timeout");
+      }
+    }, 15_000);
+    void promise.then(() => clearTimeout(offerTimeout));
     // Synchronously start showing incoming. startedAt пытаемся подтянуть
     // с сервера (initiator уже создал запись) — это нужно для синхронной
     // длительности в финальном UI. Если запрос упал — не критично,
@@ -633,22 +744,25 @@ export class CallManager {
       cameraOn: false,
       screenSharing: false,
       startedAt: null,
-      endedReason: null
+      endedReason: null,
     });
-    try {
-      const rec = await this.http.get<CallRecord>(`/api/v1/calls/${p.call_id}`);
-      if (this.snapshot.callId === p.call_id) {
-        this.update({ startedAt: Date.parse(rec.startedAt) || null });
-      }
-    } catch {
-      /* ignore */
-    }
+    void this.http
+      .get<CallRecord>(`/api/v1/calls/${p.call_id}`)
+      .then((rec) => {
+        if (this.snapshot.callId === p.call_id) {
+          this.update({ startedAt: Date.parse(rec.startedAt) || null });
+        }
+      })
+      .catch(() => {
+        /* Metadata must not delay SDP negotiation. */
+      });
   }
 
   private async handleOffer(p: RelayPayload): Promise<void> {
     if (!this.pc || !p.sdp || p.call_id !== this.snapshot.callId) return;
     await this.pc.setRemoteDescription(p.sdp);
     await this.drainPendingCandidates();
+    this.incomingOffer?.resolve(true);
     // Renegotiation — повторный offer уже на установленном соединении
     // (например, оппонент включил камеру). Отвечаем answer'ом
     // автоматически, без UI-подтверждения.
@@ -660,7 +774,7 @@ export class CallManager {
           call_id: p.call_id,
           target_user_id: p.from_user_id ?? this.snapshot.peerUserId,
           target_session_id: p.from_session_id ?? this.snapshot.peerSessionId,
-          sdp: answer
+          sdp: answer,
         });
       } catch {
         /* peer мог закрыться */
@@ -672,9 +786,14 @@ export class CallManager {
     if (!this.pc || !p.sdp || p.call_id !== this.snapshot.callId) return;
     await this.pc.setRemoteDescription(p.sdp);
     if (p.from_session_id && !this.snapshot.peerSessionId) {
-      this.update({ peerSessionId: p.from_session_id, state: "connecting" });
+      this.update({
+        peerSessionId: p.from_session_id,
+        state: this.snapshot.state === "active" ? "active" : "connecting",
+      });
     } else {
-      this.update({ state: "connecting" });
+      this.update({
+        state: this.snapshot.state === "active" ? "active" : "connecting",
+      });
     }
     await this.drainPendingCandidates();
   }
@@ -716,11 +835,15 @@ export class CallManager {
       call_id: this.snapshot.callId,
       target_user_id: this.snapshot.peerUserId,
       target_session_id: this.snapshot.peerSessionId,
-      reason
+      reason,
     });
   }
 
   private teardown(reason: string): void {
+    this.generation++;
+    this.incomingOffer?.resolve(false);
+    this.incomingOffer = null;
+    this.acceptingCall = null;
     // Закрыть БД-запись (только initiator). Сбрасываем флаг до POST,
     // чтобы повторный teardown не дублировал запрос.
     if (this.isInitiator && this.snapshot.callId) {
@@ -774,7 +897,7 @@ export class CallManager {
     if (this.snapshot.state === "idle") return;
     this.update({
       state: "ended",
-      endedReason: reason
+      endedReason: reason,
     });
     // через секунду возвращаемся в idle, чтобы UI успел показать причину
     setTimeout(() => {

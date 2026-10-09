@@ -7,8 +7,8 @@
 #
 # Результат — draft-релиз в GitHub Releases. Проверяешь артефакты руками и
 # публикуешь сам. tauri-action дополнительно генерирует подписанный latest.json
-# для auto-update (доступен клиентам только после Publish и только если
-# репозиторий публичный — подробности в docs/runbooks/desktop-release.md).
+# для auto-update. Для приватного репозитория подписанные артефакты размещаются
+# на сервере за авторизацией — подробности в docs/runbooks/desktop-release.md.
 #
 # Требуемые Secrets:
 #   TAURI_SIGNING_PRIVATE_KEY          — приватный ключ updater-подписи
@@ -149,7 +149,8 @@ jobs:
             libxcb1-dev \
             libxrandr-dev \
             libdbus-1-dev \
-            libpipewire-0.3-dev
+            libpipewire-0.3-dev \
+            libssl-dev
 
       - name: Install frontend dependencies
         run: npm ci

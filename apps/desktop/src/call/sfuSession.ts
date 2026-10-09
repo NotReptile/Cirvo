@@ -301,23 +301,13 @@ export class SfuSession {
   // ---- internals -----------------------------------------------------------
 
   private async openSocket(): Promise<void> {
-    let ticket: string | null = null;
-    if (this.opts.getTicket) {
-      try {
-        ticket = await this.opts.getTicket();
-      } catch {
-        // Compatibility fallback below.
-      }
-    }
+    const ticket = await this.opts.getTicket?.();
+    if (!ticket) throw new Error("Не удалось получить разрешение на подключение к голосу");
+    if (this.closed) return;
     return new Promise((resolve, reject) => {
-      const token = this.opts.getAccessToken();
-      if (!ticket && !token) {
-        reject(new Error("sfu access token unavailable"));
-        return;
-      }
       const url = new URL(resolveSfuWsUrl(this.opts.wsUrl, this.opts.serverUrl));
-      if (ticket) url.searchParams.set("ticket", ticket);
-      else url.searchParams.set("access_token", token!);
+      url.searchParams.delete("access_token");
+      url.searchParams.set("ticket", ticket);
       url.searchParams.set("channel_id", this.opts.channelId);
       const ws = new WebSocket(url.toString());
       this.ws = ws;

@@ -1,6 +1,6 @@
 [package]
 name = "rucord-desktop"
-version = "0.1.1"
+version = "0.2.0"
 description = "RuCord desktop shell"
 authors = ["RuCord"]
 edition = "2021"
@@ -35,14 +35,16 @@ cpal = "0.18"
 # F.8: auto-update. Клиент проверяет подписанный latest.json из GitHub
 # Releases и ставит обновление без переустановки; process — для relaunch
 # после установки. Только desktop (на mobile — сторы).
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "system-proxy", "zip"] }
 tauri-plugin-process = "2"
+tauri-plugin-opener = "2"
 
 # Убираем нативные плашки WebView2 (разрешение микрофона/камеры, «сохранить
 # пароль») — см. webview_tweaks.rs. Версии строго те, что уже в графе у wry
 # (Cargo.lock: webview2-com 0.39.x, windows-core 0.62.x) — второе дерево
 # `windows` даст несовместимые COM-типы.
 [target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
 webview2-com = "0.39"
 windows-core = "0.62"
 

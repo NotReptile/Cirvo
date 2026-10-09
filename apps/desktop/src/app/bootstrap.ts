@@ -5,6 +5,8 @@ import { RealtimeClient } from "../realtime/realtimeClient";
 import { renderOnboarding } from "./onboarding";
 import { deriveRealtimeUrl, getStoredServerUrl, isProductionShell } from "./serverConfig";
 import { renderApp } from "./ui";
+import { createTokenStore } from "./tauriTokenStore";
+import { prepareMessageDateFormats } from "./util/dateFormat";
 
 function readApiBaseUrl(): string {
   return import.meta.env.VITE_API_BASE_URL ?? "";
@@ -34,7 +36,19 @@ export function bootstrapDesktopApp(container: HTMLElement): void {
 }
 
 function startApp(container: HTMLElement, apiBaseUrl: string, realtimeUrl: string): void {
-  const http = new HttpClient(apiBaseUrl);
+  void startAppAsync(container, apiBaseUrl, realtimeUrl).catch(() => {
+    container.replaceChildren();
+    const message = document.createElement("p");
+    message.textContent = "Не удалось открыть хранилище сессии. Перезапустите RuCord.";
+    container.append(message);
+  });
+}
+
+async function startAppAsync(container: HTMLElement, apiBaseUrl: string, realtimeUrl: string): Promise<void> {
+  const store = await createTokenStore(apiBaseUrl);
+  // Initialize ICU once while bootstrapping, before a channel response needs rendering.
+  prepareMessageDateFormats();
+  const http = new HttpClient(apiBaseUrl, store);
   const realtime = new RealtimeClient(realtimeUrl, async () => {
     const result = await http.post<{ ticket: string }>("/api/v1/realtime/ticket", {});
     return result.ticket || null;

@@ -32,6 +32,7 @@ export class RealtimeClient {
   private cursorKey: string | null = null;
   private tokenSubject: string | null = null;
   private connecting = false;
+  private connectGeneration = 0;
   private syncPending = false;
   private pendingEvents: RealtimeEvent[] = [];
 
@@ -130,6 +131,7 @@ export class RealtimeClient {
       return;
     }
     this.connecting = true;
+    const generation = ++this.connectGeneration;
     this.manualClose = false;
     this.setConnState(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
     let ticket: string | null = null;
@@ -137,16 +139,22 @@ export class RealtimeClient {
       try {
         ticket = await this.issueTicket();
       } catch {
-        // One-release compatibility: fall back to the access-token query.
+        // Never put a reusable token in the URL when ticket issuance fails.
       }
     }
+    if (generation !== this.connectGeneration) return;
     if (!this.accessToken || this.manualClose) {
       this.connecting = false;
       return;
     }
     const url = new URL(this.endpoint);
-    if (ticket) url.searchParams.set("ticket", ticket);
-    else url.searchParams.set("access_token", this.accessToken);
+    if (!ticket) {
+      this.connecting = false;
+      this.scheduleReconnect();
+      return;
+    }
+    url.searchParams.delete("access_token");
+    url.searchParams.set("ticket", ticket);
     if (this.cursor > 0) url.searchParams.set("cursor", String(this.cursor));
     const socket = new WebSocket(url.toString());
     this.connecting = false;
@@ -190,14 +198,21 @@ export class RealtimeClient {
         this.setConnState("offline");
         return;
       }
-      this.setConnState("reconnecting");
-      const delay = Math.min(30_000, 500 * 2 ** this.reconnectAttempts);
-      this.reconnectAttempts += 1;
-      this.reconnectTimer = setTimeout(() => void this.connect(), delay);
+      this.scheduleReconnect();
     };
     socket.onerror = () => {
       socket.close();
     };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.manualClose || !this.accessToken || this.reconnectTimer) return;
+    this.setConnState("reconnecting");
+    const delay = Math.min(30_000, 500 * 2 ** this.reconnectAttempts++);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect();
+    }, delay);
   }
 
   // G.6.b: попросить сервер перечитать workspace-membership без разрыва
@@ -210,6 +225,8 @@ export class RealtimeClient {
 
   disconnect(): void {
     this.manualClose = true;
+    this.connectGeneration += 1;
+    this.connecting = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

@@ -21,3 +21,15 @@ func TestParseCursor(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyCredentialsRejectedBeforeUpgrade(t *testing.T) {
+	for _, target := range []string{"/ws", "/ws?access_token=legacy"} {
+		r := httptest.NewRequest("GET", target, nil)
+		r.Header.Set("Authorization", "Bearer legacy")
+		w := httptest.NewRecorder()
+		(&Module{}).handleConnect(w, r)
+		if w.Code != 401 {
+			t.Fatalf("legacy credentials: got %d, want 401", w.Code)
+		}
+	}
+}

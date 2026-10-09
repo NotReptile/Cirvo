@@ -1,3 +1,4 @@
+import { escapeHtml } from "./util/html";
 // K.8: стилизованные confirm/prompt вместо browser-нативных. Живут в
 // отдельном DOM-контейнере поверх всего приложения, не требуют
 // перерисовки основного render()-цикла. Async-API: caller получает
@@ -11,15 +12,6 @@ function ensureContainer(): HTMLDivElement {
   container.id = "rucord-dialogs";
   document.body.appendChild(container);
   return container;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
 
 interface BaseOpts {

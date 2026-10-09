@@ -49,7 +49,18 @@
 
 Эти эндпоинты не входят в `core-api`:
 
-- `realtime` (порт `8090`): `GET /ws` - WebSocket, параметры `ticket` (одноразовый, из `POST /api/v1/realtime/ticket`) либо legacy `access_token`, и `cursor` для replay; `GET /healthz`; служебные `GET /api/v1/signaling/health`, `GET /api/v1/presence/stats`.
-- `sfu` (порт `8095`): `GET /sfu/ws` - WebSocket-сигналинг SFU, параметр `ticket` (из `POST /api/v1/channels/{id}/voice/sfu-ticket`) либо legacy `access_token` + `channel_id`; `GET /healthz`.
+- `realtime` (порт `8090`): `GET /ws` - WebSocket, обязательный одноразовый `ticket` (из `POST /api/v1/realtime/ticket`) и необязательный `cursor` для replay; `GET /healthz`; служебные `GET /api/v1/signaling/health`, `GET /api/v1/presence/stats`.
+- `sfu` (порт `8095`): `GET /sfu/ws` - WebSocket-сигналинг SFU, обязательный одноразовый `ticket` (из `POST /api/v1/channels/{id}/voice/sfu-ticket`); `GET /healthz`. Канал и пользователь берутся из тикета. `access_token` в URL больше не принимается обоими сервисами.
 
 В single-node Caddy направляет `/ws*` в `realtime`, `/sfu/ws*` в `sfu`, а `/api/*`, `/healthz`, `/readyz` в `core-api`. Поэтому служебные `/api/v1/signaling/health` и `/api/v1/presence/stats` через прокси недоступны. См. `deploy/single-node/Caddyfile`.
+
+## Окна истории сообщений
+
+`GET /api/v1/channels/{id}/messages` возвращает `items` от новых к старым и курсоры `nextCursor` (самое старое сообщение) и `afterCursor` (самое новое). Порядок стабилен по паре `created_at, id`, включая сообщения с одинаковым временем.
+
+- Без курсора: последние `limit` сообщений (по умолчанию 50, максимум 100).
+- `before=<createdAt>|<id>`: предыдущая страница. Старый формат с одним временем сохраняется для совместимости.
+- `after=<createdAt>|<id>`: ближайшая следующая страница. Допустим также UUID сообщения или время.
+- `around=<message UUID>`: окно вокруг указанного сообщения, включая его. Удалённый якорь, сообщение из другого канала или отсутствие доступа дают `404`.
+
+За один запрос разрешён только один из `before`, `after`, `around`. Значения нужно URL-кодировать. Клиент держит полную загруженную историю в памяти и отображает максимум 200 сообщений; переход по поиску, закрепу или ответу загружает отсутствующее окно через `around`.

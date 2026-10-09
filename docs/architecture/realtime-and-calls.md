@@ -4,7 +4,7 @@
 
 The realtime node (`services/realtime`) is limited to:
 
-- transport connection lifecycle (`/ws` WebSocket upgrade with a 30-second one-time ticket; legacy `access_token` remains temporarily);
+- transport connection lifecycle (`/ws` WebSocket upgrade requires a 30-second one-time ticket; credentials in URL are rejected);
 - durable `RealtimeEnvelopeV2` journal with a seven-day replay window;
 - presence events;
 - typing events (`typing.start`, transient);
