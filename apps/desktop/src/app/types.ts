@@ -19,6 +19,7 @@ export interface Me {
   avatarMediaId?: string;
   presenceMode?: PresenceMode;
   customStatus?: string;
+  updatedAt?: string;
   // I.6: расширенный профиль
   bio?: string;
   bannerColor?: string;
@@ -75,6 +76,8 @@ export interface Workspace {
 }
 
 export interface Channel {
+	// Present on servers exposing effective capabilities; absent on v0.2.0.
+	actions?: string[];
   id: string;
   workspaceId: string;
   kind: string;
@@ -715,6 +718,7 @@ export interface AppState {
   // по умолчанию, кнопка в channel-header сворачивает.
   memberSidebarOpen: boolean;
   userProfileTarget: string | null;
+  userProfileAnchor: { x: number; y: number; width: number; height: number } | null;
   // I.6: лениво загруженные расширенные поля профиля для user-profile-popup.
   userProfileData: UserProfileData | null;
   // Wave 7 (I.13): виджеты открытого в попапе профиля (лениво, GET /widgets).

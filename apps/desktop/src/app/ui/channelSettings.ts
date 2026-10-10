@@ -23,14 +23,19 @@ import {
 } from "./channelView";
 import { setTransientStatus } from "./helpers";
 import { loadInvites } from "./loaders";
+import { canWorkspace, unavailablePermissionsModal } from "./capabilities";
 
 export function renderChannelSettingsModal(): string {
   const cs = uiContext.state.channelSettings;
   const channel = uiContext.state.channels.find((c) => c.id === cs.channelId);
+  if (channel && !canWorkspace("channel.update", channel.workspaceId)) return unavailablePermissionsModal();
   const title = channel
     ? `Настройки · ${channelPrefix(channel)} ${escapeHtml(channel.name)}`
     : "Настройки канала";
-  const tabsHtml = uiContext.CHANNEL_SETTINGS_TABS.map(
+  const allowedTabs = uiContext.CHANNEL_SETTINGS_TABS.filter((tab) => !channel ||
+    canWorkspace(tab.id === "delete" ? "channel.delete" : tab.id === "invites" ? "invite.manage" : "channel.update", channel.workspaceId));
+  if (!allowedTabs.some((tab) => tab.id === cs.tab)) cs.tab = "overview";
+  const tabsHtml = allowedTabs.map(
     (t) => `
     <button class="ws-settings-tab ${cs.tab === t.id ? "active" : ""} ${t.danger ? "danger" : ""}"
             data-cs-tab="${t.id}">
@@ -212,8 +217,8 @@ export function renderPermGrid(
         .map((c) => {
           const value = draft[c.key]?.[a] ?? "inherit";
           return `
-        <td>
-          <select class="${selClass}" data-key="${escapeHtml(c.key)}" data-action="${escapeHtml(a)}">
+        <td data-permission-label="${escapeHtml(c.label)}">
+          <select class="${selClass}" aria-label="${escapeHtml(uiContext.ACTION_LABELS_RU[a] ?? a)}: ${escapeHtml(c.label)}" data-key="${escapeHtml(c.key)}" data-action="${escapeHtml(a)}">
             <option value="inherit" ${value === "inherit" ? "selected" : ""}>Наследовать</option>
             <option value="grant" ${value === "grant" ? "selected" : ""}>Разрешить</option>
             <option value="deny" ${value === "deny" ? "selected" : ""}>Запретить</option>
@@ -225,7 +230,7 @@ export function renderPermGrid(
       return `<tr><td class="perm-action-col">${escapeHtml(uiContext.ACTION_LABELS_RU[a] ?? a)}</td>${cells}</tr>`;
     })
     .join("");
-  return `<table class="perm-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  return `<div class="perm-grid-container"><table class="perm-table"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
 export function renderChannelPermissionsTable(): string {
@@ -296,6 +301,7 @@ export async function loadChannelPermissions(): Promise<void> {
         `/api/v1/channels/${cs.channelId}/user-permissions`,
       ),
     ]);
+    if (uiContext.state.channelSettings !== cs) return;
     uiContext.state.channelSettings.data = data;
     uiContext.state.channelSettings.draft = buildDraftFromOverrides(data);
     uiContext.state.channelSettings.userData = userData;
@@ -303,6 +309,7 @@ export async function loadChannelPermissions(): Promise<void> {
     uiContext.state.channelSettings.loading = false;
     uiContext.state.channelSettings.error = null;
   } catch (err) {
+    if (uiContext.state.channelSettings !== cs) return;
     uiContext.state.channelSettings.loading = false;
     uiContext.state.channelSettings.error = describeError(err);
   }
@@ -695,7 +702,7 @@ export async function saveChannelOverview(): Promise<void> {
 
 export async function saveChannelPermissions(): Promise<void> {
   const cs = uiContext.state.channelSettings;
-  if (!cs.channelId) return;
+  if (!cs.channelId || cs.saving) return;
   uiContext.state.channelSettings.saving = true;
   uiContext.state.channelSettings.error = null;
   render();
@@ -715,15 +722,16 @@ export async function saveChannelPermissions(): Promise<void> {
         },
       ),
     ]);
+    if (uiContext.state.channelSettings !== cs) return;
     uiContext.state.channelSettings.data = data;
     uiContext.state.channelSettings.draft = buildDraftFromOverrides(data);
     uiContext.state.channelSettings.userData = userData;
     uiContext.state.channelSettings.userDraft = buildUserDraft(userData);
     setTransientStatus("Права канала сохранены");
   } catch (err) {
-    uiContext.state.channelSettings.error = describeError(err);
+    cs.error = describeError(err);
   } finally {
-    uiContext.state.channelSettings.saving = false;
-    render();
+    cs.saving = false;
+    if (uiContext.state.channelSettings === cs) render();
   }
 }

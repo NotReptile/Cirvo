@@ -59,7 +59,7 @@ export function renderSettingsProfileTab(): string {
     ? ` data-banner-media="${escapeHtml(me.bannerMediaId)}"`
     : "";
   return `
-    <div class="profile-card-head">
+    <div class="profile-card-head settings-profile-head">
       <div class="profile-banner-area" style="${bannerStyle}"${bannerAttrs}>
         <div class="profile-banner-actions">
           <button id="profile-banner-upload" class="ghost profile-banner-btn" data-tooltip="${t("pf.banner.upload")}">

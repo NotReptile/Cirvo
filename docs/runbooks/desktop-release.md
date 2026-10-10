@@ -65,23 +65,24 @@ npm run tauri signer generate -- -w $HOME/.tauri/rucord.key
    - `apps/desktop/src-tauri/tauri.conf.json` → `version`;
    - `apps/desktop/src-tauri/Cargo.toml` → `version`.
 2. Дописать изменения в [CHANGELOG.md](../../CHANGELOG.md).
-3. Закоммитить, влить в `main`, затем поставить тег:
+3. Закоммитить, влить в `main`, затем поставить тег с той же версией:
 
    ```powershell
-   git tag v0.1.1
-   git push origin v0.1.1
+   $version = Read-Host "Новая версия из трёх файлов, например 0.2.1"
+   git tag "v$version"
+   git push origin "v$version"
    ```
 
 4. Actions → `desktop-release` собирает Windows-установщик (около 15–25 минут).
-5. В Releases появится **draft** «RuCord v0.1.1» с файлами `RuCord_0.1.1_x64-setup.exe`,
-   `RuCord_0.1.1_x64_en-US.msi`, `.sig` и `latest.json`.
+5. В Releases появится **draft** с файлами установщиков и подписями. Манифест
+   `/updates/latest.json` публикуется отдельно на сервере RuCord; см. выше.
 6. Скачать `.exe`, поставить на чистую машину, убедиться, что запускается и
    подключается к серверу (см. [windows-client.md](windows-client.md)).
 7. Нажать **Publish release**.
 
 ### Пробная сборка без релиза для пользователей
 
-Сначала создай тег вида `v0.1.1-test` на нужном коммите и отправь его в репозиторий.
+Сначала создай тег вида `v<версия>-test` на нужном коммите и отправь его в репозиторий.
 Теги с суффиксом после `-` автоматически **не** собираются, поэтому сборка не
 стартует сама. Actions → `desktop-release` → **Run workflow**. Укажи этот
 существующий тег и отметь `prerelease`. Суффикс при проверке версии
@@ -100,13 +101,14 @@ Windows-сборка.
 - Добавить их в репозиторий как collaborators (`Settings → Collaborators`) с
   правом Read. Тогда они скачают `.exe` со страницы Releases.
 - Либо скачать установщик самому и передать файл напрямую (облако, флешка).
-  Приложите SHA-256: `Get-FileHash RuCord_0.1.1_x64-setup.exe`.
+  Приложите SHA-256: `Get-FileHash RuCord_<версия>_x64-setup.exe`.
 
 ## Установка на Windows
 
 - Установщик `perMachine`: нужны права администратора.
-- SmartScreen предупредит о неизвестном издателе: **Подробнее → Выполнить в любом случае**.
-  Чтобы убрать предупреждение, нужен платный сертификат подписи кода.
+- Неподписанный установщик может вызвать предупреждение SmartScreen о неизвестном издателе.
+  Подпись Authenticode показывает проверенного издателя и помогает накапливать репутацию;
+  даже платный OV/EV-сертификат не гарантирует отсутствия предупреждения на первых скачиваниях.
 - Нужен WebView2 Runtime. В Windows 11 он есть, в Windows 10 установщик докачает его сам.
 
 ## Локальная сборка
@@ -127,8 +129,10 @@ npm run tauri build
 
 ## Что не настроено
 
-- **Windows Authenticode.** Нужен сертификат подписи кода (платный) и шаг
-  signtool в workflow.
+- **Windows Authenticode.** Нужен сертификат подписи кода и шаг
+  signtool в workflow. Даже подпись не гарантирует, что SmartScreen перестанет
+  предупреждать: он учитывает репутацию файла и издателя. См. официальную
+  [справку Microsoft о SmartScreen](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation).
 - **macOS notarization.** Нужен Apple Developer ID ($99 в год) и шаг notarytool.
 - **Установка следующей версии через updater.** Для полного прогона нужна
   следующая подписанная версия на сервере. Проверка manifest и подписи файла

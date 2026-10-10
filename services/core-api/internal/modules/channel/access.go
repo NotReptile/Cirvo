@@ -17,53 +17,55 @@ type Scope struct {
 }
 
 // Resolve returns the channel scope if the user is allowed to see the channel.
-// Для workspace-каналов: пользователь должен быть участником воркспейса, и
-// либо канал публичный, либо есть запись в channel_members.
+// Для workspace-каналов: членство и эффективное channel.view с общими
+// категорийными, канальными и персональными overrides.
 // Для DM-каналов (kind='dm', workspace_id IS NULL): проверка только через
 // channel_members — DM существует вне воркспейса, оба участника
 // прописаны в channel_members при создании.
 func Resolve(ctx context.Context, db *postgres.Pool, channelID, userID uuid.UUID) (Scope, bool) {
+	scope, _, ok := ResolveSnapshot(ctx, db, channelID, userID)
+	return scope, ok
+}
+
+func ResolveSnapshot(ctx context.Context, db *postgres.Pool, channelID, userID uuid.UUID) (Scope, permission.Snapshot, bool) {
 	var (
-		s          Scope
-		wsID       *uuid.UUID
+		s    Scope
+		wsID *uuid.UUID
 	)
 	err := db.QueryRow(ctx,
 		`select c.workspace_id, c.kind, c.is_private from channels c where c.id = $1`,
 		channelID,
 	).Scan(&wsID, &s.Kind, &s.IsPrivate)
 	if err != nil {
-		return Scope{}, false
+		return Scope{}, permission.Snapshot{}, false
 	}
 	if wsID != nil {
 		s.WorkspaceID = *wsID
-		// Workspace-канал: проверяем членство в воркспейсе.
-		var memberExists bool
-		if err := db.QueryRow(ctx,
-			`select exists(select 1 from workspace_members where workspace_id = $1 and user_id = $2)`,
-			s.WorkspaceID, userID,
-		).Scan(&memberExists); err != nil || !memberExists {
-			return Scope{}, false
+		base, err := permission.LoadWorkspace(ctx, db, s.WorkspaceID, userID)
+		if err != nil || !base.Member {
+			return Scope{}, permission.Snapshot{}, false
 		}
-		if s.IsPrivate {
-			// Видимость приватного канала: либо явное членство (channel_members,
-			// per-user grant), либо role-grant через channel_role_overrides
-			// (permission.AuthorizeChannel игнорирует base_action_mask для
-			// ChannelView на приватных каналах — нужен явный grant).
-			if !IsMember(ctx, db, channelID, userID) &&
-				!permission.CanInChannel(ctx, db, s.WorkspaceID, channelID, userID, permission.ChannelView) {
-				return Scope{}, false
-			}
+		channels, err := permission.LoadChannels(ctx, db, s.WorkspaceID, userID, channelID, base)
+		if err != nil {
+			return Scope{}, permission.Snapshot{}, false
 		}
-		return s, true
+		snapshot := channels[channelID]
+		if !snapshot.Allows(permission.ChannelView) {
+			return Scope{}, snapshot, false
+		}
+		return s, snapshot, true
 	}
 	// DM-канал — workspace_id отсутствует. Доступ только через channel_members.
 	if s.Kind != "dm" {
-		return Scope{}, false
+		return Scope{}, permission.Snapshot{}, false
 	}
 	if !IsMember(ctx, db, channelID, userID) {
-		return Scope{}, false
+		return Scope{}, permission.Snapshot{}, false
 	}
-	return s, true
+	return s, permission.Snapshot{Member: true, Base: map[permission.Action]bool{
+		permission.ChannelView: true, permission.MessageWrite: true,
+		permission.MessageReact: true, permission.MessageAttach: true, permission.MessageMention: true,
+	}}, true
 }
 
 // IsMember reports whether the user is explicitly listed in channel_members.

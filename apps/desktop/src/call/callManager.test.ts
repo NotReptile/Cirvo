@@ -165,4 +165,20 @@ describe("call signaling order", () => {
     expect(f.http.post).not.toHaveBeenCalled();
     f.manager.dispose();
   });
+  it("camera denial remains visible to the UI without ending an active call", async () => {
+    const f = fixture();
+    f.ice.resolve({ iceServers: [] });
+    f.emit("call.invite");
+    f.emit("call.offer", { sdp: { type: "offer", sdp: "remote" } });
+    await vi.waitFor(() => expect(Peer.instances[0]?.remoteDescription).toMatchObject({ type: "offer" }));
+    await f.manager.acceptIncoming();
+    const pc = Peer.instances[0];
+    pc.connectionState = "connected";
+    pc.onconnectionstatechange?.();
+    const denied = new DOMException("camera permission denied", "NotAllowedError");
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(denied);
+    await expect(f.manager.toggleCamera()).rejects.toBe(denied);
+    expect(f.manager.getSnapshot()).toMatchObject({ state: "active", cameraOn: false });
+    f.manager.dispose();
+  });
 });

@@ -48,26 +48,10 @@ export function attachCallsRegion(): void {
         "bind-449887",
       )
     : undefined;
-  uiContext.rootEl.querySelector<HTMLButtonElement>("#call-mute")
-    ? bindEvent(
-        uiContext.rootEl.querySelector<HTMLButtonElement>("#call-mute"),
-        "click",
-        () => {
-          manualToggleMute();
-        },
-        "bind-450008",
-      )
-    : undefined;
-  uiContext.rootEl.querySelector<HTMLButtonElement>("#call-deafen")
-    ? bindEvent(
-        uiContext.rootEl.querySelector<HTMLButtonElement>("#call-deafen"),
-        "click",
-        () => {
-          toggleDeafen();
-        },
-        "bind-450129",
-      )
-    : undefined;
+  for (const button of uiContext.rootEl.querySelectorAll<HTMLButtonElement>('[data-call-action="mute"]'))
+    bindEvent(button, "click", () => manualToggleMute(), "bind-450008");
+  for (const button of uiContext.rootEl.querySelectorAll<HTMLButtonElement>('[data-call-action="deafen"]'))
+    bindEvent(button, "click", () => toggleDeafen(), "bind-450129");
   uiContext.rootEl.querySelector<HTMLButtonElement>("#call-camera")
     ? bindEvent(
         uiContext.rootEl.querySelector<HTMLButtonElement>("#call-camera"),

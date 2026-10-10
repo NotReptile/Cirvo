@@ -223,6 +223,9 @@ func TestSmoke(t *testing.T) {
 	t.Run("admin_create_user", testAdminCreateUser)
 	t.Run("retention_sweep", testRetentionSweep)
 	t.Run("channel_overrides", testChannelOverrides)
+	t.Run("permission_capabilities", testPermissionCapabilities)
+	t.Run("notification_visibility", testNotificationVisibility)
+	t.Run("presence_status_consistency", testPresenceStatusConsistency)
 }
 
 // drainNotificationJobs прогоняет все pending-задачи из notification_jobs

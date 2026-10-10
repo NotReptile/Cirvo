@@ -229,6 +229,7 @@ func (m *Module) handleUpdatePermissions(w http.ResponseWriter, r *http.Request)
 	})
 
 	// Перечитываем для ответа — пользователь видит результат сохранения.
+	permission.PublishChanged(r.Context(), m.publisher, scope.WorkspaceID)
 	m.handleGetPermissions(w, r)
 }
 
@@ -408,5 +409,6 @@ func (m *Module) handleUpdateUserPermissions(w http.ResponseWriter, r *http.Requ
 		TargetID:    channelID.String(),
 	})
 
+	permission.PublishChanged(r.Context(), m.publisher, scope.WorkspaceID)
 	m.handleGetUserPermissions(w, r)
 }

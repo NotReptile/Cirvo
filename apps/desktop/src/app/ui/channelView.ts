@@ -1,5 +1,6 @@
 import { promptDialog } from "../dialogs";
 import { describeError } from "../errors";
+import { resolveUserPresence } from "../presence";
 import { t } from "../i18n";
 import { icon } from "../icons";
 import {
@@ -30,6 +31,7 @@ import {
 } from "./messageView";
 import { presenceDotClass, renderAvatar } from "./shell";
 import { renderVoiceChannelView } from "./voiceView";
+import { canChannel, canWorkspace } from "./capabilities";
 
 export function renderEmpty(): string {
   if (uiContext.state.workspaces.length === 0) {
@@ -50,7 +52,7 @@ export function renderChannelsBlock(): string {
   const ws = uiContext.state.workspaces.find(
     (w) => w.id === uiContext.state.selectedWorkspaceId,
   );
-  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  const canManage = !!ws && canWorkspace("channel.update", ws.id);
   const categories = [...uiContext.state.categories].sort(
     (a, b) => a.position - b.position || a.createdAt.localeCompare(b.createdAt),
   );
@@ -310,8 +312,8 @@ export function renderDMSidebarList(): string {
         d.unreadCount > 0
           ? `<span class="unread-badge">${d.unreadCount > 99 ? "99+" : d.unreadCount}</span>`
           : "";
-      const effMode =
-        d.peer.presenceMode ?? (d.peer.online ? "online" : "offline");
+      const presence = resolveUserPresence(d.peer.userId, d.peer);
+      const effMode = presence.mode;
       return `
         <li class="dm-item${active}${unread}${muted}" data-dm="${escapeHtml(d.channelId)}">
           <span class="dm-item-avatar">
@@ -324,7 +326,7 @@ export function renderDMSidebarList(): string {
           </span>
           <span class="dm-item-body">
             <span class="dm-item-name">${escapeHtml(name)}</span>
-            ${d.peer.customStatus ? `<span class="dm-item-sub">${escapeHtml(d.peer.customStatus)}</span>` : ""}
+            ${presence.customStatus ? `<span class="dm-item-sub">${escapeHtml(presence.customStatus)}</span>` : ""}
           </span>
           ${badge}
           <button class="ghost dm-item-close" data-dm-close="${escapeHtml(d.channelId)}" data-tooltip="Скрыть из списка" aria-label="Скрыть">${icon("x", { size: 14 })}</button>
@@ -365,7 +367,7 @@ export function renderFriendsSection(): string {
     tab === "all"
       ? accepted
       : tab === "online"
-        ? accepted.filter((f) => f.online)
+        ? accepted.filter((f) => resolveUserPresence(f.userId, f).online)
         : tab === "pending"
           ? pending
           : blocked;
@@ -389,7 +391,8 @@ export function renderFriendsSection(): string {
       : `<ul class="friends-list">${list
           .map((f) => {
             const name = f.displayName || f.username;
-            const effMode = f.presenceMode ?? (f.online ? "online" : "offline");
+            const presence = resolveUserPresence(f.userId, f);
+            const effMode = presence.mode;
             const sub =
               f.status === "pending_in"
                 ? t("friends.sub.pending_in")
@@ -397,7 +400,7 @@ export function renderFriendsSection(): string {
                   ? t("friends.sub.pending_out")
                   : f.status === "blocked"
                     ? t("friends.sub.blocked")
-                    : f.customStatus || "@" + f.username;
+                    : presence.customStatus || "@" + f.username;
             const actions =
               f.status === "pending_in"
                 ? `<button class="friends-act ok" data-friend-accept="${f.userId}" data-tooltip="${t("friends.accept")}">✓</button>
@@ -410,12 +413,12 @@ export function renderFriendsSection(): string {
                    <button class="friends-act danger" data-friend-remove-confirm="${f.userId}" data-tooltip="${t("friends.remove")}">✕</button>`;
             return `
           <li class="friends-row" data-friend-profile="${f.userId}">
-            <span class="dm-home-avatar">
+            <button class="dm-home-avatar profile-avatar-button" data-profile-user="${escapeHtml(f.userId)}" aria-label="Профиль ${escapeHtml(name)}">
               ${renderAvatar({ avatarMediaId: f.avatarMediaId, fallbackText: name, sizePx: 36 })}
               ${f.status === "blocked" ? "" : `<span class="presence-dot ${presenceDotClass(effMode)}"></span>`}
-            </span>
+            </button>
             <span class="friends-row-body">
-              <span class="friends-row-name">${escapeHtml(name)}</span>
+              <button class="friends-row-name profile-name-button" data-profile-user="${escapeHtml(f.userId)}">${escapeHtml(name)}</button>
               <span class="friends-row-sub">${escapeHtml(sub)}</span>
             </span>
             <span class="friends-row-actions">${actions}</span>
@@ -458,8 +461,8 @@ export function renderDMHome(): string {
         ${sorted
           .map((d) => {
             const name = d.peer.displayName || d.peer.username;
-            const effMode =
-              d.peer.presenceMode ?? (d.peer.online ? "online" : "offline");
+            const presence = resolveUserPresence(d.peer.userId, d.peer);
+            const effMode = presence.mode;
             return `
             <li class="dm-home-card" data-dm="${escapeHtml(d.channelId)}">
               <span class="dm-home-avatar">
@@ -468,7 +471,7 @@ export function renderDMHome(): string {
               </span>
               <span class="dm-home-card-body">
                 <span class="dm-home-card-name">${escapeHtml(name)}</span>
-                <span class="dm-home-card-sub">${d.peer.customStatus ? escapeHtml(d.peer.customStatus) : "@" + escapeHtml(d.peer.username)}</span>
+                <span class="dm-home-card-sub">${presence.customStatus ? escapeHtml(presence.customStatus) : "@" + escapeHtml(d.peer.username)}</span>
               </span>
               ${d.unreadCount > 0 ? `<span class="unread-badge">${d.unreadCount > 99 ? "99+" : d.unreadCount}</span>` : ""}
             </li>
@@ -504,18 +507,18 @@ export function renderDMHome(): string {
 // canSend всегда true — DM-канал всегда принимает сообщения.
 export function renderDMChannelView(dm: DMItem): string {
   const name = dm.peer.displayName || dm.peer.username;
-  const effMode =
-    dm.peer.presenceMode ?? (dm.peer.online ? "online" : "offline");
-  const sub = dm.peer.customStatus || "@" + dm.peer.username;
+  const presence = resolveUserPresence(dm.peer.userId, dm.peer);
+  const effMode = presence.mode;
+  const sub = presence.customStatus || "@" + dm.peer.username;
   return `
     <header class="channel-header dm-channel-header">
       <div class="dm-header-info">
-        <span class="dm-header-avatar">
+        <button class="dm-header-avatar profile-avatar-button" data-profile-user="${escapeHtml(dm.peer.userId)}" aria-label="Профиль ${escapeHtml(name)}">
           ${renderAvatar({ avatarMediaId: dm.peer.avatarMediaId, fallbackText: name, sizePx: 36 })}
           <span class="presence-dot ${presenceDotClass(effMode)}"></span>
-        </span>
+        </button>
         <div>
-          <h2>${escapeHtml(name)}</h2>
+          <h2><button class="profile-name-button" data-profile-user="${escapeHtml(dm.peer.userId)}">${escapeHtml(name)}</button></h2>
           <div class="topic">${escapeHtml(sub)}</div>
         </div>
       </div>
@@ -611,13 +614,13 @@ export function renderWorkspaceHeaderMenu(
   ws: Workspace,
   canManage: boolean,
 ): string {
-  const isOwnerOrAdmin = ["owner", "admin"].includes(ws.role ?? "");
+  const isOwnerOrAdmin = canWorkspace("workspace.update", ws.id);
   return `
     <div class="ws-menu" role="menu">
-      ${canManage ? `<button class="ws-menu-item" data-ws-menu="invite">${icon("plus", { size: 14 })}<span>Пригласить</span></button>` : ""}
+      ${canWorkspace("invite.manage", ws.id) ? `<button class="ws-menu-item" data-ws-menu="invite">${icon("plus", { size: 14 })}<span>Пригласить</span></button>` : ""}
       ${isOwnerOrAdmin ? `<button class="ws-menu-item" data-ws-menu="settings">${icon("settings", { size: 14 })}<span>Настройки сервера</span></button>` : ""}
-      ${canManage ? `<button class="ws-menu-item" data-ws-menu="create-channel">${icon("channel-text", { size: 14 })}<span>Создать канал</span></button>` : ""}
-      ${canManage ? `<button class="ws-menu-item" data-ws-menu="create-category">${icon("plus", { size: 14 })}<span>Создать категорию</span></button>` : ""}
+      ${canWorkspace("channel.create", ws.id) ? `<button class="ws-menu-item" data-ws-menu="create-channel">${icon("channel-text", { size: 14 })}<span>Создать канал</span></button>` : ""}
+      ${canWorkspace("channel.update", ws.id) ? `<button class="ws-menu-item" data-ws-menu="create-category">${icon("plus", { size: 14 })}<span>Создать категорию</span></button>` : ""}
     </div>
   `;
 }
@@ -784,12 +787,11 @@ export function renderChannelView(channel: Channel): string {
   const isArchived = !!channel.archivedAt;
   // Wave 9: в тредах (постах форума) композер работает как в тексте.
   const canSend =
-    (channel.kind === "text" || channel.kind === "thread") && !isArchived;
+    (channel.kind === "text" || channel.kind === "thread") && !isArchived && canChannel("message.write", channel.id);
   const ws = uiContext.state.workspaces.find(
     (w) => w.id === channel.workspaceId,
   );
-  const canModerate =
-    !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
+  const canModerate = !!ws && canWorkspace("audit.read", ws.id);
   // Wave 9/10: breadcrumb для треда — стрелка назад к родителю (форум или
   // text-канал для тредов на сообщениях).
   const parentForum =
@@ -842,9 +844,9 @@ export function renderChannelView(channel: Channel): string {
     <div id="slash-popup" class="mention-popup" hidden></div>
     <div id="typing-line" class="typing-line"></div>
     <form id="send-form" class="send-form">
-      <label class="attach-btn ${canSend ? "" : "disabled"}" data-tooltip="${t("chat.composer.attach", { max: uiContext.MAX_ATTACHMENTS })}">
+      <label class="attach-btn ${canSend && canChannel("message.attach", channel.id) ? "" : "disabled"}" data-tooltip="${t("chat.composer.attach", { max: uiContext.MAX_ATTACHMENTS })}">
         ${icon("paperclip")}
-        <input type="file" id="attach-input" multiple hidden ${canSend ? "" : "disabled"} />
+        <input type="file" id="attach-input" multiple hidden ${canSend && canChannel("message.attach", channel.id) ? "" : "disabled"} />
       </label>
       <input
         name="body"

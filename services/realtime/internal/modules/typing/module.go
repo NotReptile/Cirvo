@@ -4,11 +4,8 @@
 // `typing.stop` не нужно (отправка сообщения убивает строку через
 // message.created, а молчание — через TTL).
 //
-// Fan-out: workspace-канал → BroadcastWorkspace (клиенты фильтруют по
-// selectedChannelId — тот же паттерн, что message.created); DM →
-// per-user по channel_members. Известное ограничение (как у voice.joined
-// из B.1): для приватного канала событие уйдёт всему workspace'у —
-// немодифицированный клиент его отбросит, терпимо для MVP.
+// Получатели и отправитель проверяются через общий channel ACL на каждую
+// ретрансляцию. Смена прав применяется и к уже открытым соединениям.
 package typing
 
 import (
@@ -20,13 +17,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
 )
 
 const (
-	channelCacheTTL = 30 * time.Second
 	// Per-user+channel минимальный интервал ретрансляции — клиент и так
 	// троттлит, но серверная защита от спама обязательна.
 	relayThrottle = 2 * time.Second
@@ -37,7 +34,6 @@ type Module struct {
 	db       *postgres.Pool
 	hub      *hub.Hub
 	mu       sync.Mutex
-	channels map[uuid.UUID]*channelEntry
 	lastSent map[[2]uuid.UUID]time.Time // [user, channel] → последняя ретрансляция
 }
 
@@ -45,7 +41,6 @@ type channelEntry struct {
 	workspaceID uuid.UUID // uuid.Nil = DM
 	members     []uuid.UUID
 	memberSet   map[uuid.UUID]struct{}
-	expires     time.Time
 }
 
 func NewModule(logger *slog.Logger, db *postgres.Pool, h *hub.Hub) *Module {
@@ -53,7 +48,6 @@ func NewModule(logger *slog.Logger, db *postgres.Pool, h *hub.Hub) *Module {
 		logger:   logger,
 		db:       db,
 		hub:      h,
-		channels: make(map[uuid.UUID]*channelEntry),
 		lastSent: make(map[[2]uuid.UUID]time.Time),
 	}
 }
@@ -128,26 +122,13 @@ func (m *Module) Relay(ctx context.Context, event string, fromUser, _ uuid.UUID,
 		return
 	}
 
-	if entry.workspaceID != uuid.Nil {
-		m.hub.BroadcastWorkspace(entry.workspaceID, envelope)
-		return
-	}
 	for _, member := range entry.members {
 		m.hub.BroadcastUser(member, envelope)
 	}
 }
 
-// resolveChannel кеширует канал: workspace_id (NULL = DM) + участники.
-// Для workspace-канала «участники» = workspace_members (нужны только для
-// ACL отправителя); для DM — channel_members (нужны и для ACL, и для fan-out).
+// Членство не кешируется: отозванное право не должно переживать TTL.
 func (m *Module) resolveChannel(ctx context.Context, channelID uuid.UUID) (*channelEntry, error) {
-	m.mu.Lock()
-	if e, ok := m.channels[channelID]; ok && time.Now().Before(e.expires) {
-		m.mu.Unlock()
-		return e, nil
-	}
-	m.mu.Unlock()
-
 	qctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -161,6 +142,7 @@ func (m *Module) resolveChannel(ctx context.Context, channelID uuid.UUID) (*chan
 		Next() bool
 		Scan(dest ...any) error
 		Close()
+		Err() error
 	}
 	if workspaceID != nil {
 		r, err := m.db.Query(qctx, `select user_id from workspace_members where workspace_id = $1`, *workspaceID)
@@ -179,7 +161,6 @@ func (m *Module) resolveChannel(ctx context.Context, channelID uuid.UUID) (*chan
 
 	entry := &channelEntry{
 		memberSet: make(map[uuid.UUID]struct{}),
-		expires:   time.Now().Add(channelCacheTTL),
 	}
 	if workspaceID != nil {
 		entry.workspaceID = *workspaceID
@@ -193,8 +174,22 @@ func (m *Module) resolveChannel(ctx context.Context, channelID uuid.UUID) (*chan
 		entry.memberSet[id] = struct{}{}
 	}
 
-	m.mu.Lock()
-	m.channels[channelID] = entry
-	m.mu.Unlock()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	visible, err := channelacl.VisibleMembers(qctx, m.db, channelID, entry.members)
+	if err != nil {
+		return nil, err
+	}
+	filtered := entry.members[:0]
+	for _, member := range entry.members {
+		if visible[member] {
+			filtered = append(filtered, member)
+		} else {
+			delete(entry.memberSet, member)
+		}
+	}
+	entry.members = filtered
 	return entry, nil
 }

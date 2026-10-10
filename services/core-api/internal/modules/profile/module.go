@@ -19,8 +19,8 @@ import (
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/accountrules"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
+	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
 )
 
@@ -125,8 +125,10 @@ type meView struct {
 }
 
 type statusRequest struct {
-	Mode         *string `json:"mode"`
-	CustomStatus *string `json:"customStatus"`
+	Mode              *string    `json:"mode"`
+	CustomStatus      *string    `json:"customStatus"`
+	ExpectedMode      *string    `json:"expectedMode"`
+	ExpectedUpdatedAt *time.Time `json:"expectedUpdatedAt"`
 }
 
 // handleUpdateStatus — H.8: смена presence_mode и/или custom_status.
@@ -176,8 +178,26 @@ func (m *Module) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	args = append(args, userID)
 
 	q := "update users set " + strings.Join(setParts, ", ") + " where id = $" + strconv.Itoa(idx)
-	if _, err := m.db.Exec(r.Context(), q, args...); err != nil {
+	if req.ExpectedMode != nil || req.ExpectedUpdatedAt != nil {
+		if req.ExpectedMode == nil || req.ExpectedUpdatedAt == nil {
+			sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "both status preconditions required")
+			return
+		}
+		q += " and presence_mode = $" + strconv.Itoa(idx+1) + " and updated_at = $" + strconv.Itoa(idx+2)
+		args = append(args, *req.ExpectedMode, *req.ExpectedUpdatedAt)
+	}
+	tag, err := m.db.Exec(r.Context(), q, args...)
+	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not update status")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		view, err := m.loadMeView(r.Context(), userID, now)
+		if err != nil {
+			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload profile")
+			return
+		}
+		sharedhttp.WriteJSON(w, http.StatusOK, view)
 		return
 	}
 
@@ -194,7 +214,8 @@ func (m *Module) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.publishPresenceUpdated(r.Context(), userID, view.PresenceMode, view.CustomStatus)
+	sessionID, _ := authctx.SessionID(r.Context())
+	m.publishPresenceUpdated(r.Context(), userID, view.PresenceMode, view.CustomStatus, sessionID, view.UpdatedAt)
 
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
@@ -206,20 +227,29 @@ func (m *Module) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 // Если режим invisible — публикуем effective='offline' (другие видят
 // как офлайн), customStatus затирается. Сам юзер локально знает свой
 // реальный режим из ответа PUT /users/me/status.
-func (m *Module) publishPresenceUpdated(ctx context.Context, userID uuid.UUID, mode, customStatus string) {
+func (m *Module) publishPresenceUpdated(ctx context.Context, userID uuid.UUID, mode, customStatus string, sessionID uuid.UUID, updatedAt time.Time) {
 	if m.publisher == nil {
 		return
 	}
+	privatePayload, _ := json.Marshal(map[string]any{"userId": userID.String(), "mode": mode, "customStatus": customStatus, "sessionId": sessionID.String(), "updatedAt": updatedAt})
+	_ = m.publisher.Publish(ctx, realtimebus.Event{Event: "presence.self.updated", UserID: userID.String(), Payload: privatePayload})
 	effectiveMode := mode
 	effectiveStatus := customStatus
+	var connected bool
+	if err := m.db.QueryRow(ctx, `select exists(select 1 from user_sessions where user_id = $1 and revoked_at is null and last_seen_at > now() - interval '5 minutes')`, userID).Scan(&connected); err != nil {
+		return
+	}
 	if mode == "invisible" {
 		effectiveMode = "offline"
 		effectiveStatus = ""
+	} else if !connected {
+		effectiveMode = "offline"
 	}
 	payload, err := json.Marshal(map[string]any{
 		"userId":       userID.String(),
 		"mode":         effectiveMode,
 		"customStatus": effectiveStatus,
+		"updatedAt":    updatedAt,
 	})
 	if err != nil {
 		return
@@ -244,7 +274,9 @@ func (m *Module) publishPresenceUpdated(ctx context.Context, userID uuid.UUID, m
 	// DM peers
 	peerRows, err := m.db.Query(ctx,
 		`select case when user_a = $1 then user_b else user_a end as peer_id
-		   from dm_channels where user_a = $1 or user_b = $1`,
+		   from dm_channels where user_a = $1 or user_b = $1
+		 union select case when user_a = $1 then user_b else user_a end
+		   from friendships where (user_a = $1 or user_b = $1) and status = 'accepted'`,
 		userID,
 	)
 	if err == nil {
@@ -727,8 +759,9 @@ func (m *Module) handleRemoveAvatar(w http.ResponseWriter, r *http.Request) {
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 
-func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt time.Time) (meView, error) {
+func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, _ time.Time) (meView, error) {
 	var (
+		updatedAt    time.Time
 		email        string
 		username     string
 		display      *string
@@ -749,13 +782,13 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, updatedAt tim
 		`select email, username, display_name, avatar_media_id, presence_mode, custom_status,
 		        bio, banner_color, banner_media_id,
 		        profile_theme, name_gradient, badge_emoji, badge_label,
-		        avatar_decoration, profile_effect
+		        avatar_decoration, profile_effect, updated_at
 		 from users where id = $1`,
 		userID,
 	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus,
 		&bio, &bannerColor, &bannerID,
 		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel,
-		&avatarDeco, &profEffect); err != nil {
+		&avatarDeco, &profEffect, &updatedAt); err != nil {
 		return meView{}, err
 	}
 	view := meView{

@@ -12,6 +12,8 @@
 - форматы запросов и ответов: структуры и хендлеры рядом с регистрацией маршрутов;
 - ошибки: `libs/contracts/errors/error-model.json` (оно соответствует коду) и `libs/shared-go/httpx/errors.go`;
 - realtime-события: `libs/contracts/realtime/events.json` (`RealtimeEnvelopeV2`) и [realtime-and-calls.md](../architecture/realtime-and-calls.md).
+- эффективные права клиента и invalidation RBAC: [permissions.md](permissions.md).
+- ручной статус, автоматический idle и realtime presence: [presence.md](presence.md).
 
 ## Conventions
 

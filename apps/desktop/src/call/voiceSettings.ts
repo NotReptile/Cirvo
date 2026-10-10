@@ -159,15 +159,19 @@ export function getOutputVolume(): number {
 // поддерживается в Chromium/Edge, не во всех Safari/Firefox — на
 // неподдерживаемых тихо игнорируем).
 export async function applyOutputDevice(el: HTMLMediaElement): Promise<void> {
-  const id = getOutputDeviceId();
-  if (!id) return;
+  const id = getOutputDeviceId() ?? "";
   const elWithSink = el as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> };
   if (typeof elWithSink.setSinkId !== "function") return;
   if ((el as HTMLMediaElement & { sinkId?: string }).sinkId === id) return;
   try {
     await elWithSink.setSinkId(id);
-  } catch {
-    /* device может быть отключено — фоллбек на дефолт */
+  } catch (err) {
+    if (id && err instanceof DOMException && err.name === "NotFoundError") {
+      await elWithSink.setSinkId("");
+      if (getOutputDeviceId() === id) updateVoiceSettings({ audioOutputId: null });
+      return;
+    }
+    throw err;
   }
 }
 

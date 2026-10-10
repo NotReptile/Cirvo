@@ -8,6 +8,17 @@ import { dmsByPeer, friendsById, membersById } from "./indexes";
 import { isDeafened } from "./loaders";
 import { getUserColor, renderAvatar, resolvePeerAvatarMediaId } from "./shell";
 
+// Both the stage and self strip read the same manager snapshot.
+export function renderActiveCallAudioControls(): string {
+  const snap = uiContext.state.callSnapshot;
+  if (!snap || snap.state !== "active") return "";
+  const deafened = isDeafened();
+  return `
+    ${callIconButton("call-mute", snap.muted ? "mic-off" : "mic", snap.muted ? "Включить микрофон" : "Заглушить", snap.muted ? "danger" : "", false, snap.muted)}
+    ${callIconButton("call-deafen", deafened ? "headphones-off" : "headphones", deafened ? "Включить звук" : "Заглушить всё", deafened ? "danger" : "", false, deafened)}
+  `;
+}
+
 export function renderCallOverlay(): string {
   const snap = uiContext.state.callSnapshot;
   if (!snap) return "";
@@ -40,7 +51,7 @@ export function renderCallOverlay(): string {
         <div class="call-bar-info">
           ${avatarHtml}
           <div class="call-bar-name">
-            <div class="call-bar-title">${escapeHtml(peerName)}</div>
+            <button class="call-bar-title ghost" data-profile-user="${escapeHtml(snap.peerUserId)}">${escapeHtml(peerName)}</button>
             <div class="call-bar-meta">
               <span class="call-bar-timer" id="call-timer">${escapeHtml(duration)}</span>
               ${snap.via ? `<span class="call-via ${snap.via}" data-tooltip="${snap.via === "relay" ? "Медиа идёт через TURN-релей (оба участника за NAT) — возможна чуть большая задержка" : "Прямое p2p-соединение"}">${snap.via === "relay" ? "через релей" : "напрямую"}</span>` : ""}
@@ -48,10 +59,9 @@ export function renderCallOverlay(): string {
           </div>
         </div>
         <div class="call-bar-actions">
-          ${callIconButton("call-mute", snap.muted ? "mic-off" : "mic", snap.muted ? "Включить микрофон" : "Заглушить", snap.muted ? "danger" : "")}
-          ${callIconButton("call-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? "Включить звук" : "Заглушить всё", isDeafened() ? "danger" : "")}
-          ${callIconButton("call-camera", snap.cameraOn ? "camera-off" : "camera", snap.cameraOn ? "Выключить камеру" : "Включить камеру", "", snap.screenSharing)}
-          ${callIconButton("call-screen", snap.screenSharing ? "screen-off" : "screen", snap.screenSharing ? "Прекратить демо" : "Поделиться экраном", snap.screenSharing ? "active" : "")}
+          ${renderActiveCallAudioControls()}
+          ${callIconButton("call-camera", snap.cameraOn ? "camera-off" : "camera", snap.cameraOn ? "Выключить камеру" : "Включить камеру", snap.cameraOn ? "active" : "", snap.screenSharing, snap.cameraOn)}
+          ${callIconButton("call-screen", snap.screenSharing ? "screen-off" : "screen", snap.screenSharing ? "Прекратить демо" : "Поделиться экраном", snap.screenSharing ? "active" : "", false, snap.screenSharing)}
           ${callIconButton("call-hangup", "phone-off", "Завершить", "hangup")}
         </div>
       </div>
@@ -108,11 +118,14 @@ export function callIconButton(
   title: string,
   mod = "",
   disabled = false,
+  pressed?: boolean,
 ): string {
   const identity = id.startsWith("voice-")
     ? `data-voice-action="${id.slice(6)}"`
-    : `id="${id}"`;
-  return `<button ${identity} class="call-icon-btn ${mod}" data-tooltip="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${disabled ? "disabled" : ""}>${icon(iconName, { size: 20 })}</button>`;
+    : id === "call-mute" || id === "call-deafen"
+      ? `data-call-action="${id.slice(5)}"`
+      : `id="${id}"`;
+  return `<button ${identity} class="call-icon-btn ${mod}" data-tooltip="${escapeHtml(title)}" aria-label="${escapeHtml(title)}" ${pressed === undefined ? "" : `aria-pressed="${pressed}"`} ${disabled ? "disabled" : ""}>${icon(iconName, { size: 20 })}</button>`;
 }
 
 export function describeAuditEntry(e: AuditEntry): AuditDescription {
@@ -184,6 +197,10 @@ export function badgeHtml(emoji?: string, label?: string): string {
 // (union-резолвер по всем ролям юзера, см. getUserColor / Wave 5).
 // Иначе пустая строка — наследует дефолтный --text.
 export function authorColorStyle(userId: string): string {
+  if (uiContext.state.me?.id === userId) {
+    const selfGradient = nameGradientStyle(uiContext.state.me.nameGradient);
+    if (selfGradient) return selfGradient;
+  }
   const m = membersById().get(userId);
   if (!m) return "";
   const grad = nameGradientStyle(m.nameGradient);

@@ -18,6 +18,41 @@ import { uiContext } from "../state";
 import { escapeHtml } from "../util/html";
 import { applyPttModeToActiveSessions, updatePttIndicator } from "./loaders";
 
+let micGeneration = 0;
+let camGeneration = 0;
+let deviceGeneration = 0;
+let micPending = false;
+let camPending = false;
+let permissionPending = false;
+let permissionGeneration = 0;
+let deviceEventsAttached = false;
+const voiceTabActive = () =>
+  uiContext.state.modal === "settings" && uiContext.state.settings.tab === "voice";
+const stopStream = (stream: MediaStream) =>
+  stream.getTracks().forEach((track) => track.stop());
+
+// This explicit action requests microphone consent only; it never starts a test.
+export async function revealVoiceDeviceNames(): Promise<void> {
+  if (permissionPending) return;
+  const generation = ++permissionGeneration;
+  permissionPending = true;
+  render();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stopStream(stream);
+    if (generation === permissionGeneration && voiceTabActive())
+      refreshSettingsDevices();
+  } catch (err) {
+    if (generation === permissionGeneration && voiceTabActive())
+      uiContext.state.status = describeError(err);
+  } finally {
+    if (generation === permissionGeneration) {
+      permissionPending = false;
+      if (voiceTabActive()) render();
+    }
+  }
+}
+
 export function renderSettingsVoiceTab(): string {
   ensureSettingsDevicesLoaded();
   ensureVoiceSettingsSubscribed();
@@ -50,16 +85,20 @@ export function renderSettingsVoiceTab(): string {
     <div class="settings-section">
       <h3>${t("vs.voice.title")}</h3>
       <div class="settings-row">
+        <button id="vs-refresh-devices">${t("vs.devices.refresh")}</button>
+        <button id="vs-device-permission" ${permissionPending ? "disabled" : ""}>${t("vs.devices.permission")}</button>
+      </div>
+      <div class="settings-row">
         <label for="vs-audio-in">${t("vs.mic")}</label>
         <select id="vs-audio-in" class="settings-select">
-          <option value="">${t("vs.sysdefault.m")}</option>
+          <option value="" ${s.audioInputId ? "" : "selected"}>${t("vs.sysdefault.m")}</option>
           ${audioInOptions}
         </select>
       </div>
       <div class="settings-row">
         <label for="vs-audio-out">${t("vs.speakers")}</label>
         <select id="vs-audio-out" class="settings-select" ${sinkSupported ? "" : "disabled"}>
-          <option value="">${t("vs.sysdefault.m")}</option>
+          <option value="" ${s.audioOutputId ? "" : "selected"}>${t("vs.sysdefault.m")}</option>
           ${audioOutOptions}
         </select>
         ${
@@ -84,7 +123,7 @@ export function renderSettingsVoiceTab(): string {
         </div>
       </div>
       <div class="settings-row">
-        <button id="vs-test-mic" class="${micTesting ? "danger" : "primary"}">
+        <button id="vs-test-mic" class="${micTesting ? "danger" : "primary"}" ${micPending ? "disabled" : ""}>
           ${micTesting ? t("vs.mictest.stop") : t("vs.mictest.start")}
         </button>
         <div class="vs-meter ${micTesting ? "active" : ""}">
@@ -103,7 +142,7 @@ export function renderSettingsVoiceTab(): string {
       <div class="settings-row">
         <label for="vs-video-in">${t("vs.cam.device")}</label>
         <select id="vs-video-in" class="settings-select">
-          <option value="">${t("vs.sysdefault.n")}</option>
+          <option value="" ${s.videoInputId ? "" : "selected"}>${t("vs.sysdefault.n")}</option>
           ${videoInOptions}
         </select>
       </div>
@@ -146,7 +185,7 @@ export function renderSettingsVoiceTab(): string {
         <small class="settings-hint">${t("vs.cam.effect.hint")}</small>
       </div>
       <div class="settings-row">
-        <button id="vs-test-cam" class="${camTesting ? "danger" : "primary"}">
+        <button id="vs-test-cam" class="${camTesting ? "danger" : "primary"}" ${camPending ? "disabled" : ""}>
           ${camTesting ? t("vs.camtest.stop") : t("vs.camtest.start")}
         </button>
       </div>
@@ -253,7 +292,11 @@ export function renderDeviceOptions(
   devices: MediaDeviceInfo[],
   selectedId: string | null,
 ): string {
-  return devices
+  const missing =
+    selectedId && !devices.some((d) => d.deviceId === selectedId)
+      ? `<option value="${escapeHtml(selectedId)}" selected>${escapeHtml(t("vs.devices.unavailable"))}</option>`
+      : "";
+  return missing + devices
     .map((d, i) => {
       const label = d.label || t("vs.device_n", { n: i + 1 });
       const selected = d.deviceId === selectedId ? " selected" : "";
@@ -263,65 +306,99 @@ export function renderDeviceOptions(
 }
 
 export async function startMicTest(): Promise<void> {
-  if (uiContext._micTestStream) return;
+  if (uiContext._micTestStream || micPending || !voiceTabActive()) return;
+  const generation = ++micGeneration;
+  micPending = true;
+  render();
   try {
-    uiContext._micTestStream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: buildAudioConstraints(),
     });
+    if (generation !== micGeneration || !voiceTabActive()) {
+      stopStream(stream);
+      return;
+    }
+    uiContext._micTestStream = stream;
   } catch (err) {
+    if (generation === micGeneration && voiceTabActive()) {
+      uiContext.state.status = describeError(err);
+      render();
+    }
+    return;
+  } finally {
+    if (generation === micGeneration) {
+      micPending = false;
+      if (voiceTabActive()) render();
+    }
+  }
+  try {
+    const AudioCtor =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    uiContext._micTestAudioCtx = new AudioCtor();
+    const source = uiContext._micTestAudioCtx.createMediaStreamSource(
+      uiContext._micTestStream,
+    );
+    uiContext._micTestAnalyser = uiContext._micTestAudioCtx.createAnalyser();
+    uiContext._micTestAnalyser.fftSize = 256;
+    source.connect(uiContext._micTestAnalyser);
+    const buf = new Uint8Array(uiContext._micTestAnalyser.frequencyBinCount);
+    const loop = () => {
+      if (!uiContext._micTestAnalyser) return;
+      uiContext._micTestAnalyser.getByteFrequencyData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i];
+      const avg = sum / buf.length / 255; // 0..1
+      const fill =
+        uiContext.rootEl.querySelector<HTMLDivElement>("#vs-meter-fill");
+      if (fill) fill.style.width = `${Math.min(100, avg * 200)}%`;
+      uiContext._micTestRaf = requestAnimationFrame(loop);
+    };
+    uiContext._micTestRaf = requestAnimationFrame(loop);
+    // Освежим имена устройств — теперь labels доступны.
+    refreshSettingsDevices();
+    render();
+  } catch (err) {
+    stopMicTest();
     uiContext.state.status = describeError(err);
     render();
-    return;
   }
-  const AudioCtor =
-    window.AudioContext ||
-    (window as unknown as { webkitAudioContext: typeof AudioContext })
-      .webkitAudioContext;
-  uiContext._micTestAudioCtx = new AudioCtor();
-  const source = uiContext._micTestAudioCtx.createMediaStreamSource(
-    uiContext._micTestStream,
-  );
-  uiContext._micTestAnalyser = uiContext._micTestAudioCtx.createAnalyser();
-  uiContext._micTestAnalyser.fftSize = 256;
-  source.connect(uiContext._micTestAnalyser);
-  const buf = new Uint8Array(uiContext._micTestAnalyser.frequencyBinCount);
-  const loop = () => {
-    if (!uiContext._micTestAnalyser) return;
-    uiContext._micTestAnalyser.getByteFrequencyData(buf);
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) sum += buf[i];
-    const avg = sum / buf.length / 255; // 0..1
-    const fill =
-      uiContext.rootEl.querySelector<HTMLDivElement>("#vs-meter-fill");
-    if (fill) fill.style.width = `${Math.min(100, avg * 200)}%`;
-    uiContext._micTestRaf = requestAnimationFrame(loop);
-  };
-  uiContext._micTestRaf = requestAnimationFrame(loop);
-  // Освежим имена устройств — теперь labels доступны.
-  uiContext._settingsDevices = null;
-  ensureSettingsDevicesLoaded();
-  render();
 }
 
 export async function startCamTest(): Promise<void> {
-  if (uiContext._camTestStream) return;
+  if (uiContext._camTestStream || camPending || !voiceTabActive()) return;
+  const generation = ++camGeneration;
+  camPending = true;
+  render();
   try {
-    uiContext._camTestStream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       video: buildVideoConstraints(),
     });
+    if (generation !== camGeneration || !voiceTabActive()) {
+      stopStream(stream);
+      return;
+    }
+    uiContext._camTestStream = stream;
   } catch (err) {
-    uiContext.state.status = describeError(err);
-    render();
+    if (generation === camGeneration && voiceTabActive()) {
+      uiContext.state.status = describeError(err);
+      render();
+    }
     return;
+  } finally {
+    if (generation === camGeneration) {
+      camPending = false;
+      if (voiceTabActive()) render();
+    }
   }
-  uiContext._settingsDevices = null;
-  ensureSettingsDevicesLoaded();
+  refreshSettingsDevices();
   render();
   // srcObject ставим post-render, иначе element ещё не в DOM.
   requestAnimationFrame(() => {
     const v =
       uiContext.rootEl.querySelector<HTMLVideoElement>("#vs-cam-preview");
-    if (v && uiContext._camTestStream) v.srcObject = uiContext._camTestStream;
+    if (v && generation === camGeneration && uiContext._camTestStream) v.srcObject = uiContext._camTestStream;
   });
 }
 
@@ -332,14 +409,19 @@ export function attachSettingsVoiceHandlers(): void {
   )
     return;
 
+  bindEvent(uiContext.rootEl.querySelector("#vs-refresh-devices"), "click", refreshSettingsDevices, "vs-refresh");
+  bindEvent(uiContext.rootEl.querySelector("#vs-device-permission"), "click", () => { void revealVoiceDeviceNames(); }, "vs-permission");
+
   uiContext.rootEl.querySelector<HTMLSelectElement>("#vs-audio-in")
     ? bindEvent(
         uiContext.rootEl.querySelector<HTMLSelectElement>("#vs-audio-in"),
         "change",
         (e) => {
+          stopMicTest();
           updateVoiceSettings({
             audioInputId: (e.currentTarget as HTMLSelectElement).value || null,
           });
+          render();
         },
         "bind-382278",
       )
@@ -361,9 +443,11 @@ export function attachSettingsVoiceHandlers(): void {
         uiContext.rootEl.querySelector<HTMLSelectElement>("#vs-video-in"),
         "change",
         (e) => {
+          stopCamTest();
           updateVoiceSettings({
             videoInputId: (e.currentTarget as HTMLSelectElement).value || null,
           });
+          render();
         },
         "bind-382676",
       )
@@ -567,20 +651,39 @@ import {
 import { attachVoiceVideoStreams } from "./voiceView";
 
 export function ensureSettingsDevicesLoaded(): void {
+  if (!deviceEventsAttached && navigator.mediaDevices) {
+    deviceEventsAttached = true;
+    navigator.mediaDevices.addEventListener("devicechange", refreshSettingsDevices);
+    if (navigator.permissions) {
+      for (const name of ["microphone", "camera"]) {
+        void navigator.permissions.query({ name: name as PermissionName }).then((status) => {
+          status.addEventListener("change", refreshSettingsDevices);
+        }).catch(() => {});
+      }
+    }
+  }
   if (uiContext._settingsDevicesLoading || uiContext._settingsDevices) return;
+  refreshSettingsDevices();
+}
+
+export function refreshSettingsDevices(): void {
+  const generation = ++deviceGeneration;
   uiContext._settingsDevicesLoading = true;
   enumerateVoiceDevices()
     .then((d) => {
-      uiContext._settingsDevices = d;
+      if (generation === deviceGeneration) uiContext._settingsDevices = d;
     })
-    .catch(() => {
-      uiContext._settingsDevices = {
+    .catch((err) => {
+      if (generation !== deviceGeneration) return;
+      uiContext.state.status = describeError(err);
+      uiContext._settingsDevices ??= {
         audioInputs: [],
         audioOutputs: [],
         videoInputs: [],
       };
     })
     .finally(() => {
+      if (generation !== deviceGeneration) return;
       uiContext._settingsDevicesLoading = false;
       if (
         uiContext.state.modal === "settings" &&
@@ -604,6 +707,8 @@ export function ensureVoiceSettingsSubscribed(): void {
 }
 
 export function stopMicTest(): void {
+  ++micGeneration;
+  micPending = false;
   if (uiContext._micTestRaf !== null) {
     cancelAnimationFrame(uiContext._micTestRaf);
     uiContext._micTestRaf = null;
@@ -611,7 +716,7 @@ export function stopMicTest(): void {
   uiContext._micTestAnalyser?.disconnect();
   uiContext._micTestAnalyser = null;
   if (uiContext._micTestAudioCtx) {
-    void uiContext._micTestAudioCtx.close();
+    void uiContext._micTestAudioCtx.close().catch(() => {});
     uiContext._micTestAudioCtx = null;
   }
   if (uiContext._micTestStream) {
@@ -621,6 +726,8 @@ export function stopMicTest(): void {
 }
 
 export function stopCamTest(): void {
+  ++camGeneration;
+  camPending = false;
   if (uiContext._camTestStream) {
     for (const t of uiContext._camTestStream.getTracks()) t.stop();
     uiContext._camTestStream = null;
@@ -634,6 +741,8 @@ export function stopVoiceTestsIfNotActive(): void {
     uiContext.state.modal !== "settings" ||
     uiContext.state.settings.tab !== "voice"
   ) {
+    ++permissionGeneration;
+    permissionPending = false;
     stopMicTest();
     stopCamTest();
   }

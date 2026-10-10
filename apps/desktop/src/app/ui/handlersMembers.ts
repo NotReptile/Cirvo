@@ -83,18 +83,25 @@ export function attachMembersRegion(): void {
     "delegate-443705",
   );
 
-  // Клик по карточке в member-sidebar → Discord-style profile-popup
-  // с кнопками «Сообщение» и «Позвонить». Self-клик игнорится.
+  // Клик или Enter по участнику открывает компактный профиль, включая свой.
   uiContext.rootEl
     .querySelectorAll<HTMLElement>(".member-sidebar-item[data-member-user]")
     .forEach((el) => {
+      el.tabIndex = 0;
+      el.setAttribute("role", "button");
+      bindEvent(el, "keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          el.click();
+        }
+      }, "open-member-profile-keyboard");
       bindEvent(
         el,
         "click",
         () => {
           const userId = el.getAttribute("data-member-user");
-          if (!userId || userId === uiContext.state.me?.id) return;
-          openUserProfile(userId);
+          if (!userId) return;
+          openUserProfile(userId, el);
         },
         "bind-443651",
       );

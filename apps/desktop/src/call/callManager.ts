@@ -321,14 +321,9 @@ export class CallManager {
     // Камера и screen-share делят один video sender — нельзя одновременно.
     if (this.screenTrack) return false;
     if (!this.cameraTrack) {
-      let videoStream: MediaStream;
-      try {
-        videoStream = await navigator.mediaDevices.getUserMedia({
-          video: buildVideoConstraints(),
-        });
-      } catch {
-        return false;
-      }
+      const videoStream = await navigator.mediaDevices.getUserMedia({
+        video: buildVideoConstraints(),
+      });
       const rawTrack = videoStream.getVideoTracks()[0];
       if (!rawTrack) return false;
       // Wave 9: эффект камеры (размытие фона); для effect=none прозрачный.

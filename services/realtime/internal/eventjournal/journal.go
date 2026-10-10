@@ -2,9 +2,11 @@ package eventjournal
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
@@ -17,6 +19,8 @@ const (
 )
 
 type Envelope = realtimebus.Envelope
+
+var ErrReplayLimit = errors.New("realtime replay requires snapshot: journal page limit")
 
 type Journal struct {
 	db *postgres.Pool
@@ -67,9 +71,58 @@ func (j *Journal) Replay(ctx context.Context, userID uuid.UUID, workspaces []uui
 		item.Version = Version
 		item.EventID = id.String()
 		item.OccurredAt = occurred.UTC().Format(time.RFC3339Nano)
+		scope, scopeErr := item.ChannelScope()
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		item.ChannelID = scope
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// Test the original page, not its ACL-filtered size: otherwise hidden events
+	// can consume the limit and cause later visible events to be skipped.
+	if len(items) >= MaxReplayItems {
+		return nil, ErrReplayLimit
+	}
+	// Journal routing records who the event originally targeted. Read access
+	// must be evaluated again after permission changes, including direct events.
+	channelIDs := make([]uuid.UUID, 0)
+	seen := make(map[uuid.UUID]bool)
+	for _, item := range items {
+		if item.ChannelID == "" {
+			continue
+		}
+		id, err := uuid.Parse(item.ChannelID)
+		if err != nil {
+			continue
+		}
+		if !seen[id] {
+			seen[id] = true
+			channelIDs = append(channelIDs, id)
+		}
+	}
+	if len(channelIDs) == 0 {
+		return items, nil
+	}
+	visible, err := channelacl.VisibleChannels(ctx, j.db, channelIDs, []uuid.UUID{userID})
+	if err != nil {
+		return nil, err
+	}
+	filtered := items[:0]
+	for _, item := range items {
+		if item.ChannelID == "" {
+			filtered = append(filtered, item)
+			continue
+		}
+		id, err := uuid.Parse(item.ChannelID)
+		if err == nil && visible[userID][id] {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
 }
 
 func (j *Journal) Prune(ctx context.Context) error {

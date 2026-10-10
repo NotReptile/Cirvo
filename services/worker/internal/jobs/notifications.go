@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
@@ -162,11 +163,38 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 		// помечаем done чтобы не ретраить.
 		return nil
 	}
+	var channelID uuid.UUID
+	visible := map[uuid.UUID]bool{}
+	if p.ChannelID != "" {
+		var err error
+		channelID, err = uuid.Parse(p.ChannelID)
+		if err != nil {
+			return fmt.Errorf("invalid notification channel: %w", err)
+		}
+		if channelID == uuid.Nil {
+			return errors.New("empty notification channel UUID")
+		}
+		users := make([]uuid.UUID, 0, len(recipients))
+		for _, raw := range recipients {
+			if user, err := uuid.Parse(raw); err == nil {
+				users = append(users, user)
+			}
+		}
+		visible, err = channelacl.VisibleMembers(ctx, r.db, channelID, users)
+		if err != nil {
+			return fmt.Errorf("notification channel access: %w", err)
+		}
+	} else if job.Kind == "mention" || job.Kind == "reply" || job.Kind == "mention_everyone" {
+		return errors.New("channel notification has no channel")
+	}
 
 	for _, raw := range recipients {
 		uid, err := uuid.Parse(raw)
 		if err != nil {
 			r.logger.Warn("notification: invalid recipient uuid", "value", raw)
+			continue
+		}
+		if channelID != uuid.Nil && !visible[uid] {
 			continue
 		}
 		// Wave 4: эффективный уровень получателя (канал ← воркспейс ← 'all').
@@ -210,9 +238,10 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 				"payload":   row,
 			})
 			_ = r.publisher.Publish(context.Background(), realtimebus.Event{
-				Event:   "notification.created",
-				UserID:  uid.String(),
-				Payload: evtPayload,
+				Event:     "notification.created",
+				UserID:    uid.String(),
+				ChannelID: p.ChannelID,
+				Payload:   evtPayload,
 			})
 		}
 	}
@@ -220,8 +249,8 @@ func (r *NotificationRunner) handle(ctx context.Context, job NotificationJob) er
 }
 
 // expandChannelRecipients — список user_id для @everyone/@here: участники
-// воркспейса канала; для приватного канала — только записанные в
-// channel_members (та же видимость, что в core-api handleListUnread).
+// воркспейса канала; handle затем применяет общую пакетную ACL, включая
+// private/category/role/user overrides.
 // exclude — автор и уже-уведомлённые персонально. @here пока доставляется
 // как @everyone: presence живёт в памяти realtime-хаба и worker'у недоступен.
 func (r *NotificationRunner) expandChannelRecipients(ctx context.Context, channelID string, exclude []string) ([]string, error) {
@@ -233,10 +262,7 @@ func (r *NotificationRunner) expandChannelRecipients(ctx context.Context, channe
 		select wm.user_id
 		from channels c
 		join workspace_members wm on wm.workspace_id = c.workspace_id
-		where c.id = $1
-		  and (c.is_private = false
-		       or exists (select 1 from channel_members cm
-		                   where cm.channel_id = c.id and cm.user_id = wm.user_id))`,
+		where c.id = $1`,
 		chID,
 	)
 	if err != nil {
@@ -252,7 +278,7 @@ func (r *NotificationRunner) expandChannelRecipients(ctx context.Context, channe
 	for rows.Next() {
 		var uid uuid.UUID
 		if err := rows.Scan(&uid); err != nil {
-			continue
+			return nil, err
 		}
 		if _, ok := skip[uid.String()]; ok {
 			continue

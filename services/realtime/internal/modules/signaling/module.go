@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
@@ -124,15 +126,25 @@ func (m *Module) Relay(ctx context.Context, event string, fromUser, fromSession 
 
 	// ACL: source and (resolved) target user must share a workspace.
 	resolvedUser := targetUser
-	if resolvedUser == uuid.Nil {
-		// session-only target — derive user from session, ACL still applies
+	if targetSession != uuid.Nil {
+		// A session target must belong to the claimed target user.
 		uid, ok := m.lookupSessionUser(ctx, targetSession)
-		if !ok {
+		if !ok || (resolvedUser != uuid.Nil && resolvedUser != uid) {
 			return
 		}
 		resolvedUser = uid
 	}
-	if resolvedUser != fromUser {
+	var voiceSessions []uuid.UUID
+	if strings.HasPrefix(event, "voice.") {
+		channelID, err := uuid.Parse(p.ChannelID)
+		if err != nil {
+			return
+		}
+		voiceSessions, err = m.voiceRecipients(ctx, channelID, fromUser, fromSession, resolvedUser, targetSession)
+		if err != nil || len(voiceSessions) == 0 {
+			return
+		}
+	} else if resolvedUser != fromUser {
 		shared, err := m.membership.sharedWorkspace(ctx, m.db, fromUser, resolvedUser)
 		if err != nil {
 			m.logger.Warn("signaling acl lookup failed", "error", err)
@@ -174,11 +186,51 @@ func (m *Module) Relay(ctx context.Context, event string, fromUser, fromSession 
 		return
 	}
 
+	if strings.HasPrefix(event, "voice.") {
+		for _, sessionID := range voiceSessions {
+			m.hub.BroadcastSession(sessionID, encoded)
+		}
+		return
+	}
 	if targetSession != uuid.Nil {
 		m.hub.BroadcastSession(targetSession, encoded)
 		return
 	}
 	m.hub.BroadcastUser(targetUser, encoded)
+}
+
+// voiceRecipients checks current ACL and actual voice endpoints without caching
+// grants. User-only targets receive signaling only on participating sessions.
+func (m *Module) voiceRecipients(ctx context.Context, channelID, fromUser, fromSession, targetUser, targetSession uuid.UUID) ([]uuid.UUID, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	access, err := channelacl.VisibleMembers(ctx, m.db, channelID, []uuid.UUID{fromUser, targetUser})
+	if err != nil || !access[fromUser] || !access[targetUser] {
+		return nil, err
+	}
+	rows, err := m.db.Query(ctx, `select target.session_id
+	 from channels c
+	 join channel_participants source on source.channel_id=c.id and source.user_id=$2 and source.session_id=$3
+	 join user_sessions source_session on source_session.id=source.session_id and source_session.user_id=source.user_id
+	 join channel_participants target on target.channel_id=c.id and target.user_id=$4
+	 join user_sessions target_session on target_session.id=target.session_id and target_session.user_id=target.user_id
+	 where c.id=$1 and c.kind='voice' and c.archived_at is null
+	 and source_session.revoked_at is null and source_session.refresh_expires_at>now()
+	 and target_session.revoked_at is null and target_session.refresh_expires_at>now()
+	 and ($5='00000000-0000-0000-0000-000000000000'::uuid or target.session_id=$5)`, channelID, fromUser, fromSession, targetUser, targetSession)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
 }
 
 func (m *Module) lookupSessionUser(ctx context.Context, sessionID uuid.UUID) (uuid.UUID, bool) {

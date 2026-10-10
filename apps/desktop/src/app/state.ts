@@ -230,6 +230,7 @@ export function createInitialState(): AppState {
     auditFilter: { action: "", actor: "", from: "", to: "", targetType: "" },
     memberSidebarOpen: true,
     userProfileTarget: null,
+    userProfileAnchor: null,
     userProfileData: null,
     userProfileWidgets: null,
     notifPrefs: { channels: {}, workspaces: {} },

@@ -1,6 +1,17 @@
 import type { AppState } from "./ui";
 import type { AuthTokens } from "../network/httpClient";
 import type { RealtimeEvent } from "../realtime/realtimeClient";
+import { seedLegacyCapabilities, workspaceCapabilities, channelCapabilities, canWorkspace,
+  loadWorkspaceCapabilities, loadChannelCapabilities } from "./ui/capabilities";
+import { uiContext } from "./state";
+import { loadChannelPermissions } from "./ui/channelSettings";
+import { openCategoryPermissions } from "./ui/modals";
+import { reloadWorkspaceRoles } from "./ui/workspaceRoles";
+import { updateVoiceSettings } from "../call/voiceSettings";
+import { wrapMicStream } from "../call/denoiser";
+import { wrapCameraTrack } from "../call/videoEffects";
+import { resetPresence, resolveUserPresence, applyPresenceSnapshot, presenceRevision } from "./presence";
+import { saveStatus, startIdleAutoDetect } from "./ui/loaders";
 
 // Installed exclusively by the Vite development build. The release has no QA entry point.
 export function installQaHarness(ui: {
@@ -10,7 +21,12 @@ export function installQaHarness(ui: {
   setTokens(tokens: AuthTokens): void;
 }): void {
   const api = {
+    presence: { resolveUserPresence, applyPresenceSnapshot, presenceRevision, saveStatus, startIdleAutoDetect,
+      setIdleAuto(value: boolean) { uiContext.idleAutoSet = value; },
+      idleAuto() { return uiContext.idleAutoSet; } },
+    media: { updateVoiceSettings, wrapMicStream, wrapCameraTrack },
     seed(count: number) {
+      resetPresence();
       const createdAt = "2026-10-01T12:00:00Z";
       ui.setTokens({
         accessToken: "qa-access",
@@ -89,6 +105,7 @@ export function installQaHarness(ui: {
         callSnapshot: null,
         voiceSnapshot: null,
       });
+      seedLegacyCapabilities();
       const start = performance.now();
       ui.render();
       return {
@@ -99,6 +116,14 @@ export function installQaHarness(ui: {
     render: ui.render,
     event: ui.event,
     state: () => ui.state,
+    capabilities: { workspaceCapabilities, channelCapabilities, canWorkspace,
+      loadWorkspaceCapabilities, loadChannelCapabilities },
+    permissions: { loadChannelPermissions, openCategoryPermissions, reloadWorkspaceRoles },
+    replaceVoiceManager(manager: typeof uiContext.voiceMgr) {
+      const previous = uiContext.voiceMgr;
+      uiContext.voiceMgr = manager;
+      return previous;
+    },
     measure() {
       const start = performance.now();
       ui.render();

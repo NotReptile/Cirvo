@@ -1,6 +1,6 @@
 [package]
 name = "rucord-desktop"
-version = "0.2.0"
+version = "0.3.0"
 description = "RuCord desktop shell"
 authors = ["RuCord"]
 edition = "2021"
@@ -32,12 +32,13 @@ base64 = "0.23"
 # в loopback-режиме. Mac/Linux пока не покрываем (ScreenCaptureKit и
 # PipeWire — отдельные интеграции).
 cpal = "0.18"
-# F.8: auto-update. Клиент проверяет подписанный latest.json из GitHub
-# Releases и ставит обновление без переустановки; process — для relaunch
+# F.8: auto-update. Клиент проверяет latest.json на выбранном HTTPS-сервере
+# и проверяет подпись установщика; process — для relaunch
 # после установки. Только desktop (на mobile — сторы).
 tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "system-proxy", "zip"] }
 tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2"
 
 # Убираем нативные плашки WebView2 (разрешение микрофона/камеры, «сохранить
 # пароль») — см. webview_tweaks.rs. Версии строго те, что уже в графе у wry

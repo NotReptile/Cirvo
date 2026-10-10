@@ -1,17 +1,17 @@
 // Package permission — единый резолвер прав. Модули вызывают Authorize /
 // AuthorizeChannel с семантическим Action; конкретный набор прав роли
-// хранится в workspace_roles.base_action_mask (jsonb), эффективный набор
+// хранится в workspace_roles.base_action_mask (text[]), эффективный набор
 // юзера — union'у всех его ролей в воркспейсе (workspace_role_members).
 //
 // До миграции «Кастомные роли» прав-матрица жила в этом файле как хардкод.
 // Сейчас хардкод остался только как fallback для двух кейсов:
-//   1) Can(role, action) — публичный helper для случаев, где юзер уже
-//      резолвлен (используется тестами/документацией). Он бьётся в
-//      хардкод-матрицу — это работает для seeded role'ов owner/admin/
-//      moderator/member, но НЕ учитывает кастомные роли. Новый код должен
-//      использовать Authorize, который сходит в БД.
-//   2) baseHardcoded — fallback если в БД нет ни одной роли юзера (теоретически
-//      невозможно после миграции, но защищает от panic'а).
+//  1. Can(role, action) — публичный helper для случаев, где юзер уже
+//     резолвлен (используется тестами/документацией). Он бьётся в
+//     хардкод-матрицу — это работает для seeded role'ов owner/admin/
+//     moderator/member, но НЕ учитывает кастомные роли. Новый код должен
+//     использовать Authorize, который сходит в БД.
+//  2. baseHardcoded — fallback если в БД нет ни одной роли юзера (теоретически
+//     невозможно после миграции, но защищает от panic'а).
 package permission
 
 import (
@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 )
 
@@ -29,7 +30,7 @@ const (
 	roleMember    = "member"
 )
 
-type Action string
+type Action = channelacl.Action
 
 const (
 	ChannelCreate        Action = "channel.create"
@@ -147,15 +148,11 @@ func Can(role string, action Action) bool {
 // Возвращает primary role (workspace_members.role_code — для совместимости
 // с местами, где значение используется для отображения), isMember и allowed.
 func Authorize(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.UUID, action Action) (role string, isMember bool, allowed bool) {
-	err := db.QueryRow(ctx,
-		`select role_code from workspace_members where workspace_id = $1 and user_id = $2`,
-		workspaceID, userID,
-	).Scan(&role)
+	snapshot, err := LoadWorkspace(ctx, db, workspaceID, userID)
 	if err != nil {
 		return "", false, false
 	}
-	allowed = hasActionInRoles(ctx, db, workspaceID, userID, action, role)
-	return role, true, allowed
+	return snapshot.Role, snapshot.Member, snapshot.Allows(action)
 }
 
 // AuthorizeChannel — то же, но с учётом override-слоёв (Wave 5):
@@ -168,151 +165,21 @@ func Authorize(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.
 // высший приоритет: его deny бьёт любые grant'ы ролей, его grant бьёт
 // любые deny ролей. Owner короткозамыкается на allowed=true (self-lock).
 func AuthorizeChannel(ctx context.Context, db *postgres.Pool, workspaceID, channelID, userID uuid.UUID, action Action) (role string, isMember bool, allowed bool) {
-	err := db.QueryRow(ctx,
-		`select role_code from workspace_members where workspace_id = $1 and user_id = $2`,
-		workspaceID, userID,
-	).Scan(&role)
-	if err != nil {
+	base, err := LoadWorkspace(ctx, db, workspaceID, userID)
+	if err != nil || !base.Member {
 		return "", false, false
 	}
-	if role == roleOwner {
-		return role, true, true
-	}
-
-	// Один проход: union base masks ролей юзера + флаги granted/denied из
-	// channel_role_overrides и category_role_overrides per role. Сравнение
-	// по role_id. Параллельно тащим channels.is_private — для ChannelView
-	// в приватном канале base игнорируется, см. ниже.
-	rows, err := db.Query(ctx,
-		`select wr.base_action_mask,
-		        coalesce(cro.granted_actions, '{}'), coalesce(cro.denied_actions, '{}'),
-		        coalesce(caro.granted_actions, '{}'), coalesce(caro.denied_actions, '{}'),
-		        c.is_private
-		 from workspace_role_members wrm
-		 join workspace_roles wr on wr.id = wrm.role_id
-		 join channels c on c.id = $3
-		 left join channel_role_overrides cro
-		   on cro.role_id = wrm.role_id and cro.channel_id = $3
-		 left join category_role_overrides caro
-		   on caro.role_id = wrm.role_id and caro.category_id = c.category_id
-		 where wrm.workspace_id = $1 and wrm.user_id = $2`,
-		workspaceID, userID, channelID,
-	)
+	channels, err := LoadChannels(ctx, db, workspaceID, userID, channelID, base)
 	if err != nil {
-		return role, true, fallbackCan(role, action)
+		return base.Role, true, false
 	}
-	defer rows.Close()
-
-	actStr := string(action)
-	var baseAllowed, chGranted, chDenied, catGranted, catDenied, isPrivate, anyRow bool
-	for rows.Next() {
-		anyRow = true
-		var mask, granted, denied, cGranted, cDenied []string
-		var priv bool
-		if err := rows.Scan(&mask, &granted, &denied, &cGranted, &cDenied, &priv); err != nil {
-			continue
-		}
-		isPrivate = priv
-		if containsStr(mask, actStr) {
-			baseAllowed = true
-		}
-		if containsStr(granted, actStr) {
-			chGranted = true
-		}
-		if containsStr(denied, actStr) {
-			chDenied = true
-		}
-		if containsStr(cGranted, actStr) {
-			catGranted = true
-		}
-		if containsStr(cDenied, actStr) {
-			catDenied = true
-		}
-	}
-	// Для приватного канала view-доступ через base_action_mask не работает —
-	// иначе любая роль с дефолтным channel.view в base видела бы все
-	// приватные каналы. Только явный grant в override либо channel_members
-	// (последнее проверяет channel.Resolve, не permission).
-	if isPrivate && action == ChannelView {
-		baseAllowed = false
-	}
-	if !anyRow {
-		return role, true, fallbackCan(role, action)
-	}
-	allowed = (baseAllowed || catGranted) && !catDenied
-	allowed = (allowed || chGranted) && !chDenied
-
-	// Юзерский слой — точечные права конкретного юзера в канале.
-	var userGranted, userDenied []string
-	if qerr := db.QueryRow(ctx,
-		`select coalesce(granted_actions, '{}'), coalesce(denied_actions, '{}')
-		 from channel_user_overrides where channel_id = $1 and user_id = $2`,
-		channelID, userID,
-	).Scan(&userGranted, &userDenied); qerr == nil {
-		if containsStr(userDenied, actStr) {
-			allowed = false
-		} else if containsStr(userGranted, actStr) {
-			allowed = true
-		}
-	}
-	return role, true, allowed
+	snapshot, exists := channels[channelID]
+	return base.Role, true, exists && snapshot.Allows(action)
 }
 
 func CanInChannel(ctx context.Context, db *postgres.Pool, workspaceID, channelID, userID uuid.UUID, action Action) bool {
 	_, _, ok := AuthorizeChannel(ctx, db, workspaceID, channelID, userID, action)
 	return ok
-}
-
-// hasActionInRoles — union base_action_mask всех ролей юзера в воркспейсе.
-// Если ни одной роли (например, миграция backfill не отработала) — fallback
-// на хардкод-матрицу по primary role.
-func hasActionInRoles(ctx context.Context, db *postgres.Pool, workspaceID, userID uuid.UUID, action Action, primaryRole string) bool {
-	rows, err := db.Query(ctx,
-		`select wr.base_action_mask
-		 from workspace_role_members wrm
-		 join workspace_roles wr on wr.id = wrm.role_id
-		 where wrm.workspace_id = $1 and wrm.user_id = $2`,
-		workspaceID, userID,
-	)
-	if err != nil {
-		return fallbackCan(primaryRole, action)
-	}
-	defer rows.Close()
-
-	actStr := string(action)
-	anyRow := false
-	for rows.Next() {
-		anyRow = true
-		var mask []string
-		if err := rows.Scan(&mask); err != nil {
-			continue
-		}
-		if containsStr(mask, actStr) {
-			return true
-		}
-	}
-	if !anyRow {
-		return fallbackCan(primaryRole, action)
-	}
-	return false
-}
-
-func fallbackCan(role string, action Action) bool {
-	actions, ok := baseHardcoded[role]
-	if !ok {
-		return false
-	}
-	_, allowed := actions[action]
-	return allowed
-}
-
-func containsStr(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }
 
 func setOf(actions ...Action) map[Action]struct{} {

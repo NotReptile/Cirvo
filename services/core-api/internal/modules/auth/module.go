@@ -93,14 +93,15 @@ type authResponse struct {
 }
 
 type userView struct {
-	ID            string `json:"id"`
-	Email         string `json:"email"`
-	Username      string `json:"username"`
-	DisplayName   string `json:"displayName,omitempty"`
-	IsRoot        bool   `json:"isRoot,omitempty"`
-	AvatarMediaID string `json:"avatarMediaId,omitempty"`
-	PresenceMode  string `json:"presenceMode,omitempty"`
-	CustomStatus  string `json:"customStatus,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt,omitempty"`
+	ID            string    `json:"id"`
+	Email         string    `json:"email"`
+	Username      string    `json:"username"`
+	DisplayName   string    `json:"displayName,omitempty"`
+	IsRoot        bool      `json:"isRoot,omitempty"`
+	AvatarMediaID string    `json:"avatarMediaId,omitempty"`
+	PresenceMode  string    `json:"presenceMode,omitempty"`
+	CustomStatus  string    `json:"customStatus,omitempty"`
 	// I.6: расширенный профиль. Опциональные.
 	Bio           string `json:"bio,omitempty"`
 	BannerColor   string `json:"bannerColor,omitempty"`
@@ -406,12 +407,12 @@ func (m *Module) handleRefresh(w http.ResponseWriter, r *http.Request) {
 // I.10: list активных (не revoked) сессий юзера. Возвращаем самые свежие
 // сверху. `current=true` для своего session_id — клиент рисует «текущая».
 type sessionView struct {
-	ID           string  `json:"id"`
-	DeviceLabel  string  `json:"deviceLabel"`
-	UserAgent    *string `json:"userAgent,omitempty"`
-	CreatedAt    string  `json:"createdAt"`
-	LastSeenAt   string  `json:"lastSeenAt"`
-	Current      bool    `json:"current"`
+	ID          string  `json:"id"`
+	DeviceLabel string  `json:"deviceLabel"`
+	UserAgent   *string `json:"userAgent,omitempty"`
+	CreatedAt   string  `json:"createdAt"`
+	LastSeenAt  string  `json:"lastSeenAt"`
+	Current     bool    `json:"current"`
 }
 
 func (m *Module) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -432,11 +433,11 @@ func (m *Module) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	items := make([]sessionView, 0)
 	for rows.Next() {
 		var (
-			id         uuid.UUID
-			label      string
-			ua         *string
-			created    time.Time
-			lastSeen   time.Time
+			id       uuid.UUID
+			label    string
+			ua       *string
+			created  time.Time
+			lastSeen time.Time
 		)
 		if err := rows.Scan(&id, &label, &ua, &created, &lastSeen); err != nil {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
@@ -534,14 +535,15 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		bannerColor  *string
 		bannerID     *uuid.UUID
 		mustChange   bool
+		updatedAt    time.Time
 	)
 	err := m.db.QueryRow(r.Context(),
 		`select email, username, display_name, is_root, avatar_media_id, presence_mode, custom_status,
-		        bio, banner_color, banner_media_id, must_change_password
+		        bio, banner_color, banner_media_id, must_change_password, updated_at
 		 from users where id = $1`,
 		userID,
 	).Scan(&email, &username, &displayName, &isRoot, &avatarID, &presenceMode, &customStatus,
-		&bio, &bannerColor, &bannerID, &mustChange)
+		&bio, &bannerColor, &bannerID, &mustChange, &updatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "user not found")
@@ -551,6 +553,7 @@ func (m *Module) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view := userView{ID: userID.String(), Email: email, Username: username, IsRoot: isRoot, PresenceMode: presenceMode, MustChangePassword: mustChange}
+	view.UpdatedAt = updatedAt
 	if displayName != nil {
 		view.DisplayName = *displayName
 	}

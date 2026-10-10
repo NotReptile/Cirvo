@@ -6,14 +6,15 @@ import { requestRender as render } from "../runtime";
 import { uiContext } from "../state";
 import type { Channel, ChannelCategory, Member } from "../types";
 import { escapeHtml } from "../util/html";
+import { canWorkspace } from "./capabilities";
 
 export function renderMembersModal(): string {
   const ws = uiContext.state.workspaces.find(
     (w) => w.id === uiContext.state.selectedWorkspaceId,
   );
   if (!ws) return "";
-  const canManageRole = ws.role === "owner" || ws.role === "admin";
-  const canKick = ["owner", "admin", "moderator"].includes(ws.role ?? "");
+  const canManageRole = canWorkspace("member.manage_role", ws.id);
+  const canKick = canWorkspace("member.kick", ws.id);
   return `
     <div class="modal-backdrop" data-modal-close>
       <div class="modal modal-wide" role="dialog">

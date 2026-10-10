@@ -1,7 +1,7 @@
 # Документация RuCord
 
 Этот каталог: версионируемый источник правды по технической документации.
-Язык: основные руководства (runbook'и, README, audit) на русском, часть
+Язык: основные руководства и runbook'и на русском, часть
 архитектурных заметок на английском.
 
 Корневые файлы: [README.md](../README.md) (быстрый старт),
@@ -51,6 +51,6 @@
 | --- | --- |
 | [tz_communication_platform_architecture.md](tz_communication_platform_architecture.md) | Исходное ТЗ (март 2026). Не as-built: актуальное состояние смотри в `architecture/` |
 
-## Устаревшие и исторические материалы
+## Исторические материалы
 
 - [runbooks/static-ip-http.md](runbooks/static-ip-http.md): тест по HTTP на голом IP, сервер был на Windows.

@@ -1,9 +1,9 @@
 // WS-сигналинг SFU. Авторизация: одноразовый тикет и живая сессия в
 // user_sessions. Дополнительно — членство в voice-канале: клиент обязан
 // сначала сделать POST /voice/join в core-api (строка в
-// channel_participants), иначе 403. Так ACL-логика (видимость канала,
-// permission overrides, лимит участников, архив) остаётся в одном месте
-// — core-api, SFU ей просто доверяет.
+// channel_participants), иначе 403. Core-api проверяет лимит участников;
+// SFU дополнительно проверяет общую ACL-видимость и архив, затем пакетно
+// перепроверяет активные соединения, чтобы отзыв прав закрывал медиапоток.
 package transport
 
 import (
@@ -18,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
@@ -34,11 +35,14 @@ const (
 )
 
 type Module struct {
-	logger  *slog.Logger
-	db      *postgres.Pool
-	jwt     *jwtauth.Issuer
-	manager *rtc.Manager
-	tickets *sharedticket.Store
+	logger     *slog.Logger
+	db         *postgres.Pool
+	jwt        *jwtauth.Issuer
+	manager    *rtc.Manager
+	tickets    *sharedticket.Store
+	accessMu   sync.Mutex
+	active     map[*rtc.Peer]activeConnection
+	monitoring bool
 }
 
 func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, manager *rtc.Manager, tickets *sharedticket.Store) *Module {
@@ -86,6 +90,11 @@ func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, us
 		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "join the voice channel first")
 		return
 	}
+	visible, accessErr := channelacl.VisibleChannel(checkCtx, m.db, channelID, userID)
+	if accessErr != nil || !visible {
+		sharedhttp.WriteError(w, r, http.StatusForbidden, sharedhttp.CodeAuthorizationDenied, "channel access unavailable")
+		return
+	}
 
 	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 	if err != nil {
@@ -102,6 +111,8 @@ func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, us
 		return
 	}
 	defer peer.Close("ws closed")
+	m.trackConnection(peer, activeConnection{userID: userID, sessionID: sessionID, channelID: channelID, conn: wsConn})
+	defer m.untrackConnection(peer)
 
 	go pingLoop(r.Context(), wsConn)
 	m.readLoop(r.Context(), wsConn, peer)
@@ -222,7 +233,8 @@ func sessionStatus(ctx context.Context, db *postgres.Pool, sessionID, userID uui
 func isVoiceParticipant(ctx context.Context, db *postgres.Pool, channelID, sessionID uuid.UUID) bool {
 	var exists bool
 	err := db.QueryRow(ctx,
-		`select exists(select 1 from channel_participants where channel_id = $1 and session_id = $2)`,
+		`select exists(select 1 from channel_participants cp join channels c on c.id = cp.channel_id
+		 where cp.channel_id = $1 and cp.session_id = $2 and c.archived_at is null)`,
 		channelID, sessionID,
 	).Scan(&exists)
 	return err == nil && exists

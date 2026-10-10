@@ -27,6 +27,11 @@ describe("describeError", () => {
     expect(describeError(new DOMException("Could not start audio source", "NotReadableError"))).toContain("занято");
   });
 
+  it("сохранённое устройство или режим недоступны", () => {
+    expect(describeError(new DOMException("", "OverconstrainedError")))
+      .toContain("Выбранное устройство или режим недоступны");
+  });
+
   it("прочие DOMException: их сообщение", () => {
     expect(describeError(new DOMException("Something odd", "AbortError"))).toBe("Something odd");
   });

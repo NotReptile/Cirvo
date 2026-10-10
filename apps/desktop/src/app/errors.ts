@@ -6,6 +6,8 @@ function describeDeviceError(err: DOMException): string {
       return "Нет доступа к микрофону или камере. Разреши доступ в настройках Windows (Конфиденциальность и защита).";
     case "NotFoundError":
       return "Устройство не найдено. Подключи микрофон или камеру либо выбери другое в настройках.";
+    case "OverconstrainedError":
+      return "Выбранное устройство или режим недоступны. Выбери другой микрофон, камеру или разрешение в настройках.";
     case "NotReadableError":
       return "Устройство занято другим приложением или недоступно.";
     default:

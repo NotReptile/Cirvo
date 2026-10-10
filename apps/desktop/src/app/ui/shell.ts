@@ -2,6 +2,7 @@ import { bindEvent } from "../dom";
 import { t } from "../i18n";
 import { queueRender, requestRender as render } from "../runtime";
 import { uiContext } from "../state";
+import { resolveUserPresence } from "../presence";
 import type {
   AvatarOpts,
   Member,
@@ -14,6 +15,7 @@ import { badgeHtml, nameGradientStyle } from "./callView";
 import { channelPrefix } from "./channelView";
 import { dmsByPeer, membersById } from "./indexes";
 import { isNotifLevel } from "./loaders";
+import { canWorkspace } from "./capabilities";
 
 // Полиш-проход по свежему innerHTML: гасим браузерные артефакты нативных
 // элементов, которые размечать в каждом шаблоне вручную слишком шумно.
@@ -302,12 +304,13 @@ export function renderMemberSidebar(): string {
     const grad = nameGradientStyle(m.nameGradient);
     const color = getUserColor(m.userId, m.role);
     const style = grad || (color ? ` style="color:${color};"` : "");
-    const effMode = m.presenceMode ?? (m.online ? "online" : "offline");
-    const subline = m.customStatus
-      ? `<span class="member-sidebar-status">${escapeHtml(m.customStatus)}</span>`
+    const presence = resolveUserPresence(m.userId, m);
+    const effMode = presence.mode;
+    const subline = presence.customStatus
+      ? `<span class="member-sidebar-status">${escapeHtml(presence.customStatus)}</span>`
       : "";
     return `
-      <li class="member-sidebar-item${m.online ? "" : " offline"}" data-member-user="${escapeHtml(m.userId)}">
+      <li class="member-sidebar-item${presence.online ? "" : " offline"}" data-member-user="${escapeHtml(m.userId)}">
         <span class="member-sidebar-avatar-wrap">
           ${renderAvatar({
             avatarMediaId: m.avatarMediaId,
@@ -334,8 +337,8 @@ export function renderMemberSidebar(): string {
   // высшей hoisted-роли (union: workspace_role_members + primary role);
   // остальные онлайн — «В сети», все офлайн — «Не в сети». Пока wsRoles
   // не загружен — fallback к жёсткой схеме owner/admin/moderator.
-  const online = sorted.filter((m) => m.online);
-  const offline = sorted.filter((m) => !m.online);
+  const online = sorted.filter((m) => resolveUserPresence(m.userId, m).online);
+  const offline = sorted.filter((m) => !resolveUserPresence(m.userId, m).online);
   let groupsHtml: string;
   if (uiContext.state.wsRoles.length > 0) {
     const hoisted = uiContext.state.wsRoles.filter((r) => r.hoisted); // уже position desc
@@ -381,9 +384,8 @@ export function renderChannelMenu(): string {
   const ch = uiContext.state.channels.find((c) => c.id === menu.channelId);
   if (!ch) return "";
   const ws = uiContext.state.workspaces.find((w) => w.id === ch.workspaceId);
-  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
-  const canModerate =
-    !!ws && ["owner", "admin", "moderator"].includes(ws.role ?? "");
+  const canManage = !!ws && canWorkspace("channel.update", ws.id);
+  const canModerate = !!ws && canWorkspace("invite.manage", ws.id);
   const hasUnread = (uiContext.state.unread[ch.id] ?? 0) > 0;
   // Wave 4: уровень уведомлений. Явный канальный выбор; пусто = наследовать
   // от воркспейса (показываем что унаследуется).
@@ -409,10 +411,10 @@ export function renderChannelMenu(): string {
       ${notifItem("none", t("notif.none"))}
       <div class="channel-menu-separator"></div>
       ${canManage ? `<button class="channel-menu-item" data-channel-action="rename" data-id="${ch.id}">${t("menu.rename")}</button>` : ""}
-      ${canManage ? `<button class="channel-menu-item" data-channel-action="clone" data-id="${ch.id}">${t("menu.clone")}</button>` : ""}
+      ${ws && canWorkspace("channel.create", ws.id) ? `<button class="channel-menu-item" data-channel-action="clone" data-id="${ch.id}">${t("menu.clone")}</button>` : ""}
       ${canManage ? `<button class="channel-menu-item" data-channel-action="${ch.archivedAt ? "unarchive" : "archive"}" data-id="${ch.id}">${ch.archivedAt ? t("menu.unarchive") : t("menu.archive")}</button>` : ""}
       <button class="channel-menu-item" data-channel-action="copy-id" data-id="${ch.id}">${t("menu.copyid")}</button>
-      ${canManage ? `<div class="channel-menu-separator"></div><button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">${t("menu.delete_channel")}</button>` : ""}
+      ${ws && canWorkspace("channel.delete", ws.id) ? `<div class="channel-menu-separator"></div><button class="channel-menu-item danger" data-channel-action="delete" data-id="${ch.id}">${t("menu.delete_channel")}</button>` : ""}
     </div>
   `;
 }
@@ -424,7 +426,7 @@ export function renderWorkspaceMenu(): string {
   if (!menu) return "";
   const ws = uiContext.state.workspaces.find((w) => w.id === menu.workspaceId);
   if (!ws) return "";
-  const canManage = ["owner", "admin"].includes(ws.role ?? "");
+  const canManage = canWorkspace("workspace.update", ws.id);
   return `
     <input id="workspace-avatar-input" type="file" accept="image/*" hidden />
     <div class="channel-menu-backdrop" data-workspace-menu-close></div>
@@ -461,7 +463,7 @@ export function renderCategoryMenu(): string {
   const ws = uiContext.state.workspaces.find(
     (w) => w.id === uiContext.state.selectedWorkspaceId,
   );
-  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  const canManage = !!ws && canWorkspace("channel.update", ws.id);
   return `
     <div class="channel-menu-backdrop" data-category-menu-close></div>
     <div class="channel-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
@@ -483,7 +485,7 @@ export function renderMemberMenu(): string {
   const ws = uiContext.state.workspaces.find(
     (w) => w.id === uiContext.state.selectedWorkspaceId,
   );
-  const canManage = !!ws && ["owner", "admin"].includes(ws.role ?? "");
+  const canManage = !!ws && canWorkspace("member.manage_role", ws.id);
   const isSelf = m.userId === uiContext.state.me?.id;
   const name = m.displayName || m.username;
   const rolesSection = (() => {

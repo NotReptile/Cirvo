@@ -143,7 +143,7 @@ jobs:
             ./libs/shared-go/...
 
       - name: Unit tests with race detector
-        run: go test -race ./libs/shared-go/... ./services/core-api/... ./services/realtime/... ./services/sfu/...
+        run: go test -race ./libs/shared-go/... ./services/core-api/... ./services/realtime/... ./services/sfu/... ./services/worker/...
 
       - name: Validate production compose
         run: docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env.example config --quiet
@@ -151,5 +151,7 @@ jobs:
       - name: Smoke tests
         run: |
           go test -tags=smoke -count=1 -v ./libs/shared-go/wsticket/
+          go test -tags=smoke -count=1 -v ./libs/shared-go/channelacl/
           go test -tags=smoke -count=1 -v ./services/realtime/internal/eventjournal/
           go test -tags=smoke -count=1 -v ./services/core-api/smoketests/
+          go test -tags=smoke -count=1 -v ./services/realtime/cmd/realtime/ ./services/realtime/internal/modules/transport/ ./services/realtime/internal/modules/signaling/ ./services/worker/internal/jobs/

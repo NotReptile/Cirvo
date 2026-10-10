@@ -4,10 +4,25 @@ import { describeError } from "../errors";
 import { t } from "../i18n";
 import { requestRender as render } from "../runtime";
 import { uiContext } from "../state";
-import type { Workspace, WorkspaceRole } from "../types";
+import type { Workspace, WorkspaceRole, WorkspaceRoleDraft } from "../types";
 import { escapeHtml } from "../util/html";
 import { loadMembers, slugify } from "./loaders";
 import { selectWorkspace } from "./session";
+import { canWorkspace, unavailablePermissionsModal } from "./capabilities";
+
+export function workspaceRoleDraftIsDirty(
+  selected: WorkspaceRole,
+  draft: WorkspaceRoleDraft,
+): boolean {
+  return (
+    draft.name !== selected.name ||
+    draft.color !== (selected.color ?? "") ||
+    draft.position !== selected.position ||
+    draft.hoisted !== selected.hoisted ||
+    JSON.stringify([...draft.baseActionMask].sort()) !==
+      JSON.stringify([...selected.baseActionMask].sort())
+  );
+}
 
 // H.9: модалка выбора welcome-канала. state.workspaces содержит
 // welcomeChannelId — отрисовываем select из text-каналов воркспейса.
@@ -90,6 +105,7 @@ export function renderWorkspaceRolesModal(): string {
   const ws = uiContext.state.workspaces.find((w) => w.id === rs.workspaceId);
   if (!ws) return "";
   const selected = rs.roles.find((r) => r.id === rs.selectedRoleId);
+  if (!canWorkspace("workspace.update", ws.id)) return unavailablePermissionsModal();
   const draft = rs.draft;
 
   const list = `
@@ -119,13 +135,7 @@ export function renderWorkspaceRolesModal(): string {
   const detail = (() => {
     if (!selected || !draft)
       return `<div class="roles-empty">Выберите роль или создайте новую</div>`;
-    const dirty =
-      draft.name !== selected.name ||
-      draft.color !== (selected.color ?? "") ||
-      draft.position !== selected.position ||
-      draft.hoisted !== selected.hoisted ||
-      JSON.stringify([...draft.baseActionMask].sort()) !==
-        JSON.stringify([...selected.baseActionMask].sort());
+    const dirty = workspaceRoleDraftIsDirty(selected, draft);
     return `
       <div class="roles-detail">
         <div class="roles-detail-header">
@@ -216,7 +226,8 @@ export async function openWorkspaceRolesModal(
 }
 
 export async function reloadWorkspaceRoles(): Promise<void> {
-  const wsId = uiContext.state.workspaceRoles.workspaceId;
+  const rs = uiContext.state.workspaceRoles;
+  const wsId = rs.workspaceId;
   if (!wsId) return;
   uiContext.state.workspaceRoles.loading = true;
   render();
@@ -224,6 +235,7 @@ export async function reloadWorkspaceRoles(): Promise<void> {
     const data = await uiContext.httpClient.get<{ items: WorkspaceRole[] }>(
       `/api/v1/workspaces/${wsId}/roles`,
     );
+    if (uiContext.state.workspaceRoles !== rs) return;
     uiContext.state.workspaceRoles.roles = data.items ?? [];
     // Wave 5: модалка и сайдбар смотрят на один и тот же набор ролей.
     if (uiContext.state.selectedWorkspaceId === wsId) {
@@ -240,10 +252,10 @@ export async function reloadWorkspaceRoles(): Promise<void> {
     syncWorkspaceRoleDraft();
     uiContext.state.workspaceRoles.error = null;
   } catch (err) {
-    uiContext.state.workspaceRoles.error = describeError(err);
+    rs.error = describeError(err);
   } finally {
-    uiContext.state.workspaceRoles.loading = false;
-    render();
+    rs.loading = false;
+    if (uiContext.state.workspaceRoles === rs) render();
   }
 }
 
@@ -317,6 +329,13 @@ export async function reorderRole(
 export function attachWorkspaceRolesHandlers(): void {
   if (uiContext.state.modal !== "workspaceRoles") return;
   const rs = uiContext.state.workspaceRoles;
+  const updateSaveButton = () => {
+    const button = uiContext.rootEl.querySelector<HTMLButtonElement>("#role-save");
+    const selected = rs.roles.find((role) => role.id === rs.selectedRoleId);
+    if (button)
+      button.disabled = rs.saving || !selected || !rs.draft ||
+        !workspaceRoleDraftIsDirty(selected, rs.draft);
+  };
 
   uiContext.rootEl
     .querySelectorAll<HTMLElement>("[data-select-role]")
@@ -463,6 +482,7 @@ export function attachWorkspaceRolesHandlers(): void {
           "input",
           (ev) => {
             draft.name = (ev.target as HTMLInputElement).value;
+            updateSaveButton();
           },
           "bind-313283",
         )
@@ -473,6 +493,7 @@ export function attachWorkspaceRolesHandlers(): void {
           "input",
           (ev) => {
             draft.color = (ev.target as HTMLInputElement).value;
+            updateSaveButton();
           },
           "bind-313443",
         )
@@ -497,6 +518,7 @@ export function attachWorkspaceRolesHandlers(): void {
           (ev) => {
             const n = parseInt((ev.target as HTMLInputElement).value, 10);
             draft.position = Number.isFinite(n) ? n : 0;
+            updateSaveButton();
           },
           "bind-313753",
         )
@@ -507,6 +529,7 @@ export function attachWorkspaceRolesHandlers(): void {
           "change",
           (ev) => {
             draft.hoisted = (ev.target as HTMLInputElement).checked;
+            updateSaveButton();
           },
           "bind-313979",
         )
@@ -525,6 +548,7 @@ export function attachWorkspaceRolesHandlers(): void {
             (a) => a !== action,
           );
         }
+        updateSaveButton();
       },
       "delegate-314215",
     );
@@ -537,7 +561,7 @@ export function attachWorkspaceRolesHandlers(): void {
         async () => {
           const wsId = rs.workspaceId;
           const sel = rs.roles.find((r) => r.id === rs.selectedRoleId);
-          if (!wsId || !sel || !rs.draft) return;
+          if (!wsId || !sel || !rs.draft || rs.saving) return;
           rs.saving = true;
           rs.error = null;
           render();
@@ -555,7 +579,8 @@ export function attachWorkspaceRolesHandlers(): void {
               body,
             );
             rs.roles = rs.roles.map((r) => (r.id === updated.id ? updated : r));
-            syncWorkspaceRoleDraft();
+            if (uiContext.state.workspaceRoles === rs && rs.selectedRoleId === sel.id)
+              syncWorkspaceRoleDraft();
             // H.7/Wave 5: цвет/позиция роли могли поменяться — обновить wsRoles
             // для member-sidebar и .author в сообщениях.
             if (uiContext.state.selectedWorkspaceId === wsId) {
@@ -568,7 +593,7 @@ export function attachWorkspaceRolesHandlers(): void {
             rs.error = describeError(err);
           } finally {
             rs.saving = false;
-            render();
+            if (uiContext.state.workspaceRoles === rs) render();
           }
         },
         "bind-314594",

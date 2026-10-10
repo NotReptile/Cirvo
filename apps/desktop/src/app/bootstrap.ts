@@ -45,7 +45,7 @@ function startApp(container: HTMLElement, apiBaseUrl: string, realtimeUrl: strin
 }
 
 async function startAppAsync(container: HTMLElement, apiBaseUrl: string, realtimeUrl: string): Promise<void> {
-  const store = await createTokenStore(apiBaseUrl);
+  const store = await createTokenStore(apiBaseUrl || window.location.origin);
   // Initialize ICU once while bootstrapping, before a channel response needs rendering.
   prepareMessageDateFormats();
   const http = new HttpClient(apiBaseUrl, store);

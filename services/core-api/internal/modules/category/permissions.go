@@ -213,5 +213,6 @@ func (m *Module) handleUpdatePermissions(w http.ResponseWriter, r *http.Request)
 		TargetID:    categoryID.String(),
 	})
 
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	m.handleGetPermissions(w, r)
 }

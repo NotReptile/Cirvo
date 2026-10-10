@@ -248,6 +248,7 @@ export class VoiceChannelManager {
     for (const [sid, peer] of this.peers) {
       try {
         this.realtime.send("voice.hangup", {
+          channel_id: channelId,
           call_id: peer.callId,
           target_session_id: sid,
           reason: "voice_leave"
@@ -624,6 +625,7 @@ export class VoiceChannelManager {
     pc.onicecandidate = (evt) => {
       if (!evt.candidate) return;
       this.realtime.send("voice.ice", {
+        channel_id: this.snapshot.channelId ?? "",
         call_id: callId,
         target_session_id: peerSessionId,
         candidate: evt.candidate.toJSON()
@@ -878,6 +880,7 @@ export class VoiceChannelManager {
   private sendStateTo(sessionId: string): void {
     try {
       this.realtime.send("voice.state", {
+        channel_id: this.snapshot.channelId ?? "",
         call_id: this.peers.get(sessionId)?.callId ?? "state",
         target_session_id: sessionId,
         state: {
@@ -967,6 +970,7 @@ export class VoiceChannelManager {
       await peer.pc.setLocalDescription();
       if (!peer.pc.localDescription) return;
       this.realtime.send("voice.answer", {
+        channel_id: this.snapshot.channelId ?? "",
         call_id: p.call_id,
         target_session_id: p.from_session_id,
         sdp: peer.pc.localDescription

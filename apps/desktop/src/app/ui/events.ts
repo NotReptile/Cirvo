@@ -3,6 +3,9 @@ import { describeError } from "../errors";
 import { requestRender as render } from "../runtime";
 import { uiContext } from "../state";
 import { removeHistoryMessage } from "./history";
+import { invalidatePermissions } from "./capabilities";
+import { applyPresenceEvent } from "../presence";
+import { applySelfPresenceUpdate } from "./loaders";
 import type {
   Channel,
   ChannelCategory,
@@ -27,6 +30,19 @@ import {
 } from "./loaders";
 
 export function handleRealtimeEvent(event: RealtimeEvent): void {
+  if (event.event === "presence.snapshot") {
+    const users = (event.payload as { users?: Array<{ userId: string; mode: PresenceMode; customStatus?: string; updatedAt?: string }> } | null)?.users;
+    if (Array.isArray(users)) {
+      for (const p of users) if (p?.userId && ["online", "idle", "dnd", "offline", "invisible"].includes(p.mode)) applyPresenceEvent(p.userId, { presenceMode: p.mode, customStatus: p.customStatus }, p.updatedAt);
+      render(new Set(["presence"]));
+    }
+    return;
+  }
+  if (event.event === "permissions.updated") {
+    const id = event.workspaceId ?? (event.payload as { workspaceId?: string } | null)?.workspaceId;
+    if (id) invalidatePermissions(id);
+    return;
+  }
   if (event.event === "sync.required") {
     const cursor = Number(
       (event.payload as { cursor?: unknown } | null)?.cursor,
@@ -96,39 +112,18 @@ export function handleRealtimeEvent(event: RealtimeEvent): void {
   // Бэк рассылает по всем воркспейсам автора и его DM-собеседникам;
   // invisible режим маскируется как 'offline'. Обновляем state.members
   // (если автор в текущем ws) и dms (если есть DM с автором).
-  if (event.event === "presence.updated") {
+  if (event.event === "presence.updated" || event.event === "presence.self.updated") {
     const p = event.payload as {
       userId: string;
       mode: PresenceMode;
       customStatus?: string;
+      sessionId?: string;
+      updatedAt?: string;
     };
-    uiContext.state.members = uiContext.state.members.map((m) =>
-      m.userId === p.userId
-        ? {
-            ...m,
-            presenceMode: p.mode,
-            online: p.mode !== "offline",
-            customStatus: p.customStatus ?? "",
-          }
-        : m,
-    );
-    // G.8 + H.8.iv: синхронизация peer-присутствия в DM-списке. Бэк
-    // публикует presence.updated по DM-собеседникам через UserID-fanout,
-    // так что для всех DM с этим юзером надо обновить дот и customStatus.
-    uiContext.state.dms = uiContext.state.dms.map((d) =>
-      d.peer.userId === p.userId
-        ? {
-            ...d,
-            peer: {
-              ...d.peer,
-              presenceMode: p.mode,
-              online: p.mode !== "offline",
-              customStatus: p.customStatus ?? "",
-            },
-          }
-        : d,
-    );
-    render(new Set(["members", "channels"]));
+    if (!p?.userId || !["online", "idle", "dnd", "offline", "invisible"].includes(p.mode)) return;
+    if (event.event === "presence.self.updated") applySelfPresenceUpdate(p);
+    else applyPresenceEvent(p.userId, { presenceMode: p.mode, customStatus: p.customStatus }, p.updatedAt);
+    render(new Set(["presence"]));
     return;
   }
   // Каналы (create/update/delete) приходят с workspaceID-routing'ом и

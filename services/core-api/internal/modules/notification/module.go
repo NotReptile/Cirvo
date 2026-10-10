@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
@@ -139,13 +140,21 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		before = time.Now().UTC().Add(time.Hour)
 	}
 
+	visibleIDs, err := m.visibleChannelIDs(r.Context(), userID, before)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "notification access unavailable")
+		return
+	}
 	rows, err := m.db.Query(r.Context(),
 		`select id, kind, payload, created_at, read_at
 		 from user_notifications
 		 where user_id = $1 and created_at < $2
+		 and jsonb_typeof(payload) = 'object'
+		 and ((payload->>'channelId') = any($4::text[])
+		      or (coalesce(payload->>'channelId', '') = '' and kind not in ('mention','reply','mention_everyone')))
 		 order by created_at desc
 		 limit $3`,
-		userID, before, limit,
+		userID, before, limit, visibleIDs,
 	)
 	if err != nil {
 		m.logger.Error("notifications list failed", "error", err)
@@ -179,6 +188,11 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 	if len(items) == limit {
 		nextCursor = items[len(items)-1].CreatedAt.Format(time.RFC3339Nano)
 	}
+	if err := rows.Err(); err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	rows.Close()
 	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{
 		"items":      items,
 		"nextCursor": nextCursor,
@@ -187,14 +201,54 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 
 func (m *Module) handleCount(w http.ResponseWriter, r *http.Request) {
 	userID := authctx.MustUserID(r.Context())
-	var count int
-	err := m.db.QueryRow(r.Context(),
-		`select count(*) from user_notifications where user_id = $1 and read_at is null`,
-		userID,
-	).Scan(&count)
+	rows, err := m.db.Query(r.Context(),
+		`select kind, coalesce(payload->>'channelId', ''), count(*) from user_notifications
+		 where user_id = $1 and read_at is null and jsonb_typeof(payload) = 'object'
+		 group by kind, payload->>'channelId'`, userID)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
+	}
+	type group struct {
+		id            uuid.UUID
+		scoped, valid bool
+		count         int
+	}
+	groups := []group{}
+	ids := []uuid.UUID{}
+	seen := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var kind, channel string
+		var count int
+		if err := rows.Scan(&kind, &channel, &count); err != nil {
+			rows.Close()
+			sharedhttp.WriteError(w, r, 500, sharedhttp.CodeInternal, "database error")
+			return
+		}
+		payload, _ := json.Marshal(map[string]string{"channelId": channel})
+		id, scoped, valid := notificationChannel(kind, payload)
+		groups = append(groups, group{id, scoped, valid, count})
+		if scoped && valid && !seen[id] {
+			ids = append(ids, id)
+			seen[id] = true
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		sharedhttp.WriteError(w, r, 500, sharedhttp.CodeInternal, "database error")
+		return
+	}
+	access, err := channelacl.VisibleChannels(r.Context(), m.db, ids, []uuid.UUID{userID})
+	if err != nil {
+		sharedhttp.WriteError(w, r, 500, sharedhttp.CodeInternal, "notification access unavailable")
+		return
+	}
+	count := 0
+	for _, g := range groups {
+		if g.valid && (!g.scoped || access[userID][g.id]) {
+			count += g.count
+		}
 	}
 	sharedhttp.WriteJSON(w, http.StatusOK, map[string]any{"unread": count})
 }
@@ -244,4 +298,3 @@ func (m *Module) handleMarkOneRead(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
-

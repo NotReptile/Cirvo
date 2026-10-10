@@ -8,12 +8,15 @@
 - `realtime` (`apps/desktop/src/realtime/`) - WebSocket transport adapter (`send`/`subscribe`), реконнект с курсором и обработка `sync.required` / `sync.ready`.
 - `call` (`apps/desktop/src/call/`) - WebRTC: `CallManager` (1-к-1), `VoiceChannelManager` (voice-каналы, mesh или SFU), `SfuSession` (клиентская сторона SFU), настройки и обработка звука/видео (`voiceSettings`, `denoiser`, `videoEffects`), захват экрана (`screenSharePicker`, `tauriScreenCapture`, `screenAudio`), диагностика TURN (`iceCheck`). Consumes `realtime` for signaling and `network` for `GET /api/v1/media/config`. Подробности: [realtime-and-calls.md](realtime-and-calls.md).
 - `local-cache` - настройки адреса сервера, курсора realtime, голоса, хоткеев, оформления и черновики в `localStorage`; blob-кэш медиа в `mediaCache.ts`. `HttpClient` принимает `TokenStore`: на Windows токены хранятся через Credential Manager, в браузере — в хранилище с отдельным ключом для каждого сервера. Старые токены мигрируют только для совпадающего адреса сервера, без отката на открытое хранилище при ошибке native API.
-- `src-tauri` (`apps/desktop/src-tauri/`) - Rust-оболочка. Команды захвата экрана, системного звука, хранения токенов и проверки/установки обновлений; плагины global-shortcut, opener, updater, process. Обновления загружаются с выбранного HTTPS-сервера с авторизацией, проверкой origin установщика и подписи.
+- `src-tauri` (`apps/desktop/src-tauri/`) - Rust-оболочка. Команды захвата экрана, системного звука, хранения токенов и проверки/установки обновлений; плагины global-shortcut, opener, updater, process, notification. Обновления загружаются с выбранного HTTPS-сервера с авторизацией, проверкой origin установщика и подписи.
 
 ## Rules
 
 - UI does not make raw transport calls directly. UI talks to managers (`HttpClient`, `RealtimeClient`, `CallManager`, `VoiceChannelManager`).
 - Client cache improves responsiveness but does not replace server authority.
+- `app/presence.ts` согласует статус в списках, DM и мини-профиле. Собственный режим берётся из `me`; другим Invisible виден как Offline без custom status. Обновления presence патчат отдельную область и текст голосовых плиток, сохраняя video, черновик и позицию истории. Устаревшие HTTP-снимки не заменяют более свежие realtime-события.
+- Мини-профиль привязан к выбранному участнику или автору сообщения и ограничен размерами окна. Панель голосового соединения закреплена над пользовательской полосой; кнопки микрофона и наушников в полосе и сцене используют общие состояния менеджеров. Прямой звонок и голосовой канал сохраняют отдельные менеджеры.
+- `ui/capabilities.ts` получает эффективные права сервера; `permissions.updated` объединяет повторные загрузки. Кэш HTML сообщений учитывает контекст прав, чтобы отозванные действия исчезали сразу. Контракт HTTP и серверной доставки событий: [permissions.md](../api/permissions.md).
 - Media logic stays in `call/` and exposes a state-machine snapshot to UI. UI не создаёт и не держит `RTCPeerConnection`. `MediaStream` менеджеры отдают UI только для отображения (`srcObject`, индикатор речи); исключение — проверка микрофона и камеры в `ui/voiceSettings.ts`.
 
 ## Cross-Platform Rule
@@ -32,10 +35,13 @@ Target platforms are **desktop + web + Android** via Tauri 2 (Android stable sin
 | `app/tauriUpdater.ts` | `plugin-updater`, `plugin-process` | Проверка и установка обновлений, перезапуск. | `checkForUpdate()` возвращает `null`. |
 | `app/tauriTokenStore.ts` | `api/core` | Токены по адресу сервера в Windows Credential Manager. | `BrowserTokenStore`. |
 | `app/tauriLinks.ts` | `plugin-opener` | Внешние HTTP/HTTPS-ссылки в системном браузере. | Обычная ссылка браузера. |
+| `app/tauriNotifications.ts` | `plugin-notification` | Системные уведомления и состояние permission API. На Windows API не определяет блокировку уведомлений настройками ОС. | Web Notifications API. |
 | `call/tauriScreenCapture.ts` | `api/core` (`invoke`) | Захват экрана и окон через Rust-команды. | `getDisplayMedia`. |
 | `call/screenAudio.ts` | `api/core`, `api/event` | Системный звук демонстрации экрана (Windows). | Аудиотрек не добавляется. |
 
-Where a feature has a web equivalent, use it instead of a native API: обычные настройки (`localStorage` / `IndexedDB`), notifications (`Notification` API with permission prompt), file picking (`<input type=file>`). Native-адаптер добавляется, когда веб-аналог не покрывает задачу: защищённое хранение токенов, глобальные хоткеи, автообновление, захват экрана без браузерной плашки.
+Where a feature has a web equivalent, use it instead of a native API: обычные настройки (`localStorage` / `IndexedDB`), file picking (`<input type=file>`). Native-адаптер добавляется, когда веб-аналог не покрывает задачу: защищённое хранение токенов, глобальные хоткеи, автообновление, системные уведомления, захват экрана без браузерной плашки.
+
+`inputControls.ts` и `listbox.ts` сохраняют исходные значения форм и события `change`, но показывают собственные списки, палитру и календарь. Всплывающие элементы размещаются вне прокручиваемого содержимого; `modalFocus.ts` удерживает клавиатурный фокус внутри открытого диалога. Список устройств обновляется пассивно: открытие настроек не включает микрофон. Запрос доступа и тестовые потоки требуют явного действия пользователя и освобождаются при закрытии вкладки.
 
 ## Частичные обновления и история
 

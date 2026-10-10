@@ -3,14 +3,15 @@ import { bindEvent } from "../dom";
 import { describeError } from "../errors";
 import { t } from "../i18n";
 import { icon } from "../icons";
-import { requestRender as render } from "../runtime";
+import { queueRender, requestRender as render } from "../runtime";
 import { uiContext } from "../state";
 import type { Channel, PendingUpload, ScreenShareQualityKey } from "../types";
 import { escapeHtml } from "../util/html";
-import { callIconButton, describePeer } from "./callView";
+import { authorColorStyle, callIconButton, describePeer } from "./callView";
 import { channelPrefix } from "./channelView";
 import { isDeafened } from "./loaders";
-import { renderAvatar } from "./shell";
+import { renderAvatar, resolvePeerAvatarMediaId } from "./shell";
+import { resolveUserPresence } from "../presence";
 import { refreshSpeakingIndicators } from "./speaking";
 
 // Селект качества демонстрации экрана (рядом с кнопкой «Поделиться
@@ -29,6 +30,17 @@ export function renderScreenQualitySelect(): string {
   return `<select class="screen-quality-select ghost" aria-label="${t("voice.quality")}">${opts}</select>`;
 }
 
+export function renderActiveVoiceAudioControls(): string {
+  const voice = uiContext.state.voiceSnapshot;
+  if (!voice?.channelId) return "";
+  const busy = voice.state === "joining" || voice.state === "leaving";
+  const deafened = isDeafened();
+  return `
+    ${callIconButton("voice-mute", voice.muted ? "mic-off" : "mic", voice.muted ? t("voice.unmute") : t("voice.mute"), voice.muted ? "danger" : "", busy, voice.muted)}
+    ${callIconButton("voice-deafen", deafened ? "headphones-off" : "headphones", deafened ? t("voice.undeafen") : t("voice.deafen"), deafened ? "danger" : "", busy, deafened)}
+  `;
+}
+
 export function renderVoiceChannelView(channel: Channel): string {
   const voice = uiContext.state.voiceSnapshot;
   const joined = voice?.channelId === channel.id;
@@ -41,7 +53,6 @@ export function renderVoiceChannelView(channel: Channel): string {
   const selfSessionId = joined ? voice!.selfSessionId : null;
   const joining = voice?.state === "joining";
   const leaving = voice?.state === "leaving";
-  const muted = joined && voice!.muted;
   const cameraOn = joined && voice!.cameraOn;
   const screenOn = joined && voice!.screenSharing;
   const error = voice?.error ?? null;
@@ -72,24 +83,25 @@ export function renderVoiceChannelView(channel: Channel): string {
       ? cameraOn || screenOn
       : !!p.cameraOn || !!p.screenSharing;
     const member = uiContext.state.members.find((m) => m.userId === p.userId);
-    const avatarMediaId =
-      p.userId === uiContext.state.me?.id
-        ? uiContext.state.me?.avatarMediaId
-        : member?.avatarMediaId;
+    const presence = resolveUserPresence(p.userId, member);
+    const selfProfile = p.userId === uiContext.state.me?.id ? uiContext.state.me : null;
+    const avatarMediaId = resolvePeerAvatarMediaId(p.userId);
     const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${hasVideo ? " has-video" : ""}${extraClass ? " " + extraClass : ""}`;
-    return `<div class="${cls}">
+    return `<div class="${cls}" data-voice-tile="${escapeHtml(p.sessionId)}" data-voice-user="${escapeHtml(p.userId)}">
       <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
       <div class="voice-tile-placeholder">
-        ${renderAvatar({
+        <button class="voice-tile-avatar-button ghost" data-profile-user="${escapeHtml(p.userId)}" aria-label="${escapeHtml(name)}">${renderAvatar({
           avatarMediaId,
           fallbackText: name,
-          sizePx: 72,
-          decoration: member?.avatarDecoration,
-        })}
+          sizePx: 88,
+          decoration: selfProfile?.avatarDecoration ?? member?.avatarDecoration,
+        })}</button>
+        ${presence.customStatus ? `<span class="voice-tile-custom-status">${escapeHtml(presence.customStatus)}</span>` : ""}
       </div>
       <div class="voice-tile-overlay">
         <span class="voice-dot"></span>
-        <span class="voice-name">${escapeHtml(name)}${isSelf ? ` ${t("voice.you")}` : ""}</span>
+        <button class="voice-name ghost" data-profile-user="${escapeHtml(p.userId)}"${authorColorStyle(p.userId)}>${escapeHtml(name)}${isSelf ? ` ${t("voice.you")}` : ""}</button>
+        ${isSelf && voice?.muted ? icon("mic-off", { size: 14 }) : ""}
         ${sharing ? `<span class="voice-tile-live">${t("voice.live")}</span>` : ""}
       </div>
     </div>`;
@@ -150,14 +162,13 @@ export function renderVoiceChannelView(channel: Channel): string {
           .map((p) => renderTile(p))
           .join("")}</div>
       </div>`
-    : `<div class="voice-tiles">${participants.map((p) => renderTile(p)).join("")}</div>`;
+    : `<div class="voice-tiles" style="--voice-columns:${Math.max(1, Math.min(participants.length, 3))};--voice-columns-small:${Math.max(1, Math.min(participants.length, 2))}">${participants.map((p) => renderTile(p)).join("")}</div>`;
 
   const actions = joined
     ? `
-      ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? t("voice.unmute") : t("voice.mute"), muted ? "danger" : "")}
-      ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? t("voice.undeafen") : t("voice.deafen"), isDeafened() ? "danger" : "")}
-      ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? t("voice.cam.off") : t("voice.cam.on"), "", screenOn)}
-      ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? t("voice.screen.stop") : t("voice.screen.start"), screenOn ? "active" : "")}
+      ${renderActiveVoiceAudioControls()}
+      ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? t("voice.cam.off") : t("voice.cam.on"), cameraOn ? "active" : "", screenOn, !!cameraOn)}
+      ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? t("voice.screen.stop") : t("voice.screen.start"), screenOn ? "active" : "", false, !!screenOn)}
       ${renderScreenQualitySelect()}
       <span class="voice-actions-sep"></span>
       ${callIconButton("voice-leave", "log-out", leaving ? t("voice.leaving") : t("voice.leave"), "hangup", leaving)}
@@ -173,13 +184,34 @@ export function renderVoiceChannelView(channel: Channel): string {
     ${header}
     <div class="voice-room">
       <div class="voice-room-body">
-        <h3>${t("voice.now")}</h3>
         ${tiles}
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
       </div>
       <div class="voice-room-actions">${actions}</div>
     </div>
   `;
+}
+
+// Presence changes only touch text, leaving active video elements and streams intact.
+export function updateVoicePresence(): void {
+  for (const tile of uiContext.rootEl.querySelectorAll<HTMLElement>(".voice-tile[data-voice-user]")) {
+    const userId = tile.dataset.voiceUser;
+    const placeholder = tile.querySelector<HTMLElement>(".voice-tile-placeholder");
+    if (!userId || !placeholder) continue;
+    const member = uiContext.state.members.find((m) => m.userId === userId);
+    const status = resolveUserPresence(userId, member).customStatus;
+    let line = placeholder.querySelector<HTMLElement>(".voice-tile-custom-status");
+    if (!status) {
+      line?.remove();
+      continue;
+    }
+    if (!line) {
+      line = document.createElement("span");
+      line.className = "voice-tile-custom-status";
+      placeholder.append(line);
+    }
+    if (line.textContent !== status) line.textContent = status;
+  }
 }
 
 // Persistent strip: когда юзер в voice-канале, в sidebar снизу видим
@@ -192,36 +224,18 @@ export function renderVoiceStrip(): string {
     (c) => c.id === voice.channelId,
   );
   const channelName = channel?.name ?? voice.channelId.slice(0, 8);
-  const muted = voice.muted;
-  const cameraOn = voice.cameraOn;
-  const screenOn = voice.screenSharing;
   const leaving = voice.state === "leaving";
-
-  const participants = voice.participants
-    .map((p) => {
-      const name = p.displayName?.trim() || p.username || p.userId.slice(0, 8);
-      const isSelf = p.sessionId === voice.selfSessionId;
-      return `<li class="voice-strip-participant${isSelf ? " self" : ""}">
-        <span class="voice-dot"></span>
-        <span>${escapeHtml(name)}${isSelf ? ` ${t("voice.you")}` : ""}</span>
-      </li>`;
-    })
-    .join("");
+  const status = voice.state === "joining"
+    ? t("voice.joining") : voice.state === "media-reconnecting"
+      ? t("voice.reconnecting") : leaving ? t("voice.leaving") : t("voice.connected");
 
   return `
     <div class="voice-strip">
-      <div class="voice-strip-header" data-voice-jump="${voice.channelId}">
-        ${icon("users", { size: 14 })}
+      <button class="voice-strip-header ghost" data-voice-jump="${escapeHtml(voice.channelId)}">
+        <span class="voice-strip-status">${icon("channel-voice", { size: 16 })}<span>${escapeHtml(status)}</span></span>
         <span class="voice-strip-channel">${escapeHtml(channelName)}</span>
-      </div>
-      <ul class="voice-strip-list">${participants}</ul>
-      <div class="voice-strip-actions">
-        ${callIconButton("voice-mute", muted ? "mic-off" : "mic", muted ? t("voice.unmute") : t("voice.mute"), muted ? "danger" : "")}
-        ${callIconButton("voice-deafen", isDeafened() ? "headphones-off" : "headphones", isDeafened() ? t("voice.undeafen") : t("voice.deafen"), isDeafened() ? "danger" : "")}
-        ${callIconButton("voice-camera", cameraOn ? "camera-off" : "camera", cameraOn ? t("voice.cam.off") : t("voice.cam.on"), "", screenOn)}
-        ${callIconButton("voice-screen", screenOn ? "screen-off" : "screen", screenOn ? t("voice.screen.stop") : t("voice.screen.start"), screenOn ? "active" : "")}
-        ${callIconButton("voice-leave", "log-out", leaving ? t("voice.leaving") : t("voice.leave"), "hangup", leaving)}
-      </div>
+      </button>
+      ${callIconButton("voice-leave", "phone-off", leaving ? t("voice.leaving") : t("voice.leave"), "", leaving)}
     </div>
   `;
 }
@@ -239,6 +253,7 @@ export function attachVoiceVideoStreams(): void {
     "video[data-voice-self]",
   )) {
     if (el.srcObject !== voiceLocal) el.srcObject = voiceLocal;
+    el.closest(".voice-tile")?.classList.toggle("has-video", !!voiceLocal?.getVideoTracks().some((track) => track.readyState === "live"));
   }
   for (const el of uiContext.rootEl.querySelectorAll<HTMLVideoElement>(
     "video[data-voice-peer]",
@@ -247,16 +262,18 @@ export function attachVoiceVideoStreams(): void {
     if (!sid) continue;
     const stream = uiContext.voiceMgr.getRemoteStream(sid);
     if (el.srcObject !== stream) el.srcObject = stream;
+    el.muted = isDeafened();
     el.volume = Math.min(
       1,
       (uiContext.state.voiceVolumes[sid] ?? 1) * globalOut,
     );
-    void applyOutputDevice(el);
+    void applyOutputDevice(el).catch((err) => {
+      uiContext.state.status = describeError(err);
+      queueRender("status");
+    });
     // Подстраховка аватар-заглушки: сигналинг cameraOn (voice.state) может
     // отстать от реального видеотрека — верим живому стриму.
-    if (stream?.getVideoTracks().some((t) => t.readyState === "live")) {
-      el.closest(".voice-tile")?.classList.add("has-video");
-    }
+    el.closest(".voice-tile")?.classList.toggle("has-video", !!stream?.getVideoTracks().some((track) => track.readyState === "live"));
   }
   const callLocal = uiContext.callMgr.getLocalStream();
   const callRemote = uiContext.callMgr.getRemoteStream();
@@ -277,11 +294,15 @@ export function attachVoiceVideoStreams(): void {
     "video[data-call-remote]",
   )) {
     if (el.srcObject !== callRemote) el.srcObject = callRemote;
+    el.muted = isDeafened();
     el.volume = Math.min(
       1,
       (uiContext.state.voiceVolumes["call-remote"] ?? 1) * globalOut,
     );
-    void applyOutputDevice(el);
+    void applyOutputDevice(el).catch((err) => {
+      uiContext.state.status = describeError(err);
+      queueRender("status");
+    });
   }
   // Speaking-indicator: создаём/обновляем analyser-узлы для всех участников
   // (включая себя), drop'аем для тех, кого больше нет в DOM.

@@ -427,9 +427,7 @@ test("RNNoise worklet and MediaPipe WASM load under the release CSP", async ({
 }) => {
   await page.context().grantPermissions(["microphone", "camera"]);
   const result = await page.evaluate(async () => {
-    const settings = await import("/src/call/voiceSettings.ts");
-    const denoiser = await import("/src/call/denoiser.ts");
-    const effects = await import("/src/call/videoEffects.ts");
+    const media = (window as any).__RUCORD_QA__.media;
     const config = await fetch("/src-tauri/tauri.conf.json").then((r) =>
       r.json(),
     );
@@ -437,16 +435,16 @@ test("RNNoise worklet and MediaPipe WASM load under the release CSP", async ({
     meta.httpEquiv = "Content-Security-Policy";
     meta.content = config.app.security.csp;
     document.head.append(meta);
-    settings.updateVoiceSettings({
+    media.updateVoiceSettings({
       denoiserMode: "rucord",
       cameraEffect: "blur-light",
     });
     const audio = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mic = await denoiser.wrapMicStream(audio);
+    const mic = await media.wrapMicStream(audio);
     const camera = await navigator.mediaDevices.getUserMedia({
       video: { width: 320, height: 240 },
     });
-    const effect = await effects.wrapCameraTrack(camera.getVideoTracks()[0]);
+    const effect = await media.wrapCameraTrack(camera.getVideoTracks()[0]);
     const active = { mic: mic.active, camera: effect.active };
     mic.dispose();
     effect.dispose();

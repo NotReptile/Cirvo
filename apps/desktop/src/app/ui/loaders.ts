@@ -2,6 +2,8 @@ import { getVoiceSettings } from "../../call/voiceSettings";
 import { confirmDialog } from "../dialogs";
 import { bindEvent } from "../dom";
 import { describeError } from "../errors";
+import { applyPresenceSnapshot, presenceRevision, syncPresenceSurfaces } from "../presence";
+import { requestNotificationPermission, showDesktopNotification } from "../tauriNotifications";
 import {
   dispatchKeyDown as dispatchHotkeyDown,
   dispatchKeyUp as dispatchHotkeyUp,
@@ -50,6 +52,7 @@ import { renderBody } from "./messageView";
 import { loadAllVoicePeeks, loadWorkspaces, selectWorkspace } from "./session";
 import { maybeCaptureKey } from "./settingsHotkeys";
 import { loadWsRoles } from "./shell";
+import { channelCapabilities, loadChannelCapabilities, loadWorkspaceCapabilities } from "./capabilities";
 
 export async function selectChannel(id: string): Promise<void> {
   resetHistory();
@@ -69,6 +72,9 @@ export async function selectChannel(id: string): Promise<void> {
   uiContext.state.selectedChannelLastReadAt = null;
   render();
   const ch = uiContext.state.channels.find((c) => c.id === id);
+  if (Array.isArray(ch?.actions)) channelCapabilities.set(id, { mode: "known", actions: ch.actions });
+  else await loadChannelCapabilities(id);
+  if (uiContext.state.selectedChannelId !== id) return;
   if (ch?.kind === "voice") {
     try {
       const data = await uiContext.httpClient.get<{
@@ -321,6 +327,10 @@ export async function resyncAfterReconnect(
       )
         return;
       uiContext.state.channels = channelsResp.items ?? [];
+      for (const channel of uiContext.state.channels) {
+        if (channel.actions) channelCapabilities.set(channel.id, { mode: "known", actions: channel.actions });
+        else channelCapabilities.delete(channel.id);
+      }
       uiContext.state.categories = categoriesResp.items ?? [];
       if (
         uiContext.state.selectedChannelId &&
@@ -339,6 +349,8 @@ export async function resyncAfterReconnect(
         loadUnread(workspaceId, generation),
         loadWsRoles(workspaceId, generation),
         loadAllVoicePeeks(workspaceId, generation),
+        loadWorkspaceCapabilities(workspaceId),
+        ...(uiContext.state.selectedChannelId ? [loadChannelCapabilities(uiContext.state.selectedChannelId)] : []),
       ]);
     }
     await Promise.all([
@@ -408,6 +420,7 @@ export async function backfillSelectedChannel(
 // G.8: загрузка DM-листа. Зовётся на bootstrap и при входе в DM-режим
 // (чтобы освежить lastMessageAt/unread, если что-то пришло пока юзер был в ws).
 export async function loadDMs(generation?: number): Promise<void> {
+  const started = presenceRevision();
   uiContext.state.dmsLoading = true;
   try {
     const data = await uiContext.httpClient.get<{ items: DMItem[] }>(
@@ -417,6 +430,7 @@ export async function loadDMs(generation?: number): Promise<void> {
       return;
     uiContext.state.dms = (data.items ?? []).map((d) => ({
       ...d,
+      peer: applyPresenceSnapshot(d.peer.userId, d.peer, started),
       unreadCount:
         d.channelId === uiContext.state.selectedChannelId ? 0 : d.unreadCount,
     }));
@@ -569,6 +583,7 @@ export async function setWorkspaceNotifLevel(
 // ---- Wave 3: друзья ---------------------------------------------------------
 
 export async function loadFriends(generation?: number): Promise<void> {
+  const started = presenceRevision();
   uiContext.state.friendsLoading = true;
   try {
     const data = await uiContext.httpClient.get<{ items: FriendItem[] }>(
@@ -576,7 +591,7 @@ export async function loadFriends(generation?: number): Promise<void> {
     );
     if (generation !== undefined && generation !== uiContext.syncGeneration)
       return;
-    uiContext.state.friends = data.items ?? [];
+    uiContext.state.friends = (data.items ?? []).map((f) => applyPresenceSnapshot(f.userId, f, started));
     uiContext.state.blockedIds = new Set(
       uiContext.state.friends
         .filter((f) => f.status === "blocked")
@@ -799,8 +814,6 @@ export function handleIncomingNotification(p: {
 // (document.hidden). Когда юзер активен — обновится badge + dropdown,
 // дёргать системный popup незачем.
 export function maybeShowBrowserNotification(item: NotificationItem): void {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
   if (typeof document !== "undefined" && document.visibilityState !== "hidden")
     return;
   // H.8: DnD — пользователь явно попросил не беспокоить. Подавляем
@@ -820,16 +833,7 @@ export function maybeShowBrowserNotification(item: NotificationItem): void {
   if (!settings.desktopEnabled) return;
   const title = notificationTitle(item);
   const body = notificationBody(item);
-  try {
-    const n = new Notification(title, { body, tag: item.id });
-    n.onclick = () => {
-      window.focus();
-      void openNotification(item);
-      n.close();
-    };
-  } catch {
-    /* старые браузеры могут кидать TypeError */
-  }
+  void showDesktopNotification(title, body, item.id, () => { void openNotification(item); });
 }
 
 export function notificationTitle(item: NotificationItem): string {
@@ -859,33 +863,65 @@ export function notificationBody(item: NotificationItem): string {
 }
 
 // H.8: PUT /users/me/status. mode="online" + custom="" → сброс к дефолту.
+let statusWrites: Promise<void> = Promise.resolve();
+let statusVersion = 0;
+let externalStatusVersion = 0;
+
+export function applySelfPresenceUpdate(p: { userId: string; mode: PresenceMode; customStatus?: string; updatedAt?: string; sessionId?: string }): void {
+  const me = uiContext.state.me;
+  if (!me || me.id !== p.userId || p.mode === "offline") return;
+  if (p.updatedAt && me.updatedAt && Date.parse(p.updatedAt) < Date.parse(me.updatedAt)) return;
+  if (p.sessionId !== uiContext.httpClient.getTokens()?.sessionId) {
+    statusVersion++;
+    externalStatusVersion++;
+    uiContext.idleAutoSet = false;
+  }
+  me.presenceMode = p.mode;
+  me.customStatus = p.customStatus ?? "";
+  if (p.updatedAt) me.updatedAt = p.updatedAt;
+  syncPresenceSurfaces(me.id);
+}
+
 export async function saveStatus(
   mode: PresenceMode,
   customStatus: string,
+  automatic = false,
 ): Promise<void> {
-  try {
+  const me = uiContext.state.me;
+  if (!me) return;
+  const userId = me.id;
+  const version = ++statusVersion;
+  if (!automatic) { uiContext.idleAutoSet = false; uiContext.idleLastActivity = Date.now(); }
+  const write = async () => {
+   if (uiContext.state.me?.id !== userId || (automatic && version !== statusVersion)) return;
+   const external = externalStatusVersion;
+   const expectedMode = uiContext.state.me.presenceMode ?? "online";
+   const expectedUpdatedAt = uiContext.state.me.updatedAt;
+   if (automatic && (!expectedUpdatedAt || (mode === "idle" && expectedMode !== "online") || (mode === "online" && expectedMode !== "idle"))) { uiContext.idleAutoSet = false; return; }
+   try {
     const updated = await uiContext.httpClient.put<{
       presenceMode?: PresenceMode;
       customStatus?: string;
-    }>("/api/v1/users/me/status", { mode, customStatus });
-    if (uiContext.state.me) {
+      updatedAt?: string;
+    }>("/api/v1/users/me/status", { mode, customStatus, ...(automatic ? { expectedMode, expectedUpdatedAt } : {}) });
+    if (uiContext.state.me?.id === userId && external === externalStatusVersion) {
       uiContext.state.me.presenceMode =
         (updated.presenceMode as PresenceMode | undefined) ?? mode;
       uiContext.state.me.customStatus = updated.customStatus ?? "";
+      if (updated.updatedAt) uiContext.state.me.updatedAt = updated.updatedAt;
+      syncPresenceSurfaces(userId);
+      if (version === statusVersion) {
+        uiContext.idleAutoSet = automatic && mode === "idle" && uiContext.state.me.presenceMode === "idle";
+        uiContext.state.statusMenu = null;
+        render(new Set(["presence"]));
+      }
     }
-    // H.8.i: сбрасываем флаг автоматически выставленного idle когда юзер
-    // (или мы сами) уводит mode прочь от idle. Иначе idleAutoSet может
-    // протечь через ручные переключения, и activity-handler ложно сочтёт
-    // следующий manual-idle нашим.
-    if (mode !== "idle") {
-      uiContext.idleAutoSet = false;
-    }
-    uiContext.state.statusMenu = null;
-    render();
-  } catch (err) {
-    uiContext.state.status = describeError(err);
-    render();
-  }
+   } catch (err) {
+    if (version === statusVersion) { uiContext.idleAutoSet = false; uiContext.state.status = describeError(err); render(new Set(["presence", "status"])); }
+   }
+  };
+  statusWrites = statusWrites.then(write, write);
+  await statusWrites;
 }
 
 // I.9(b): ручной toggleMute должен отменить отложенный PTT-mute. Иначе
@@ -1062,13 +1098,18 @@ export function installGlobalKeyboardShortcuts(): void {
 }
 
 export function registerHotkeyActions(): void {
+  const toggleCameraWithFeedback = async () => {
+    try {
+      if (uiContext.voiceMgr.isActive()) await uiContext.voiceMgr.toggleCamera();
+      else if (uiContext.callMgr.isActive()) await uiContext.callMgr.toggleCamera();
+    } catch (err) {
+      uiContext.state.status = describeError(err);
+      render();
+    }
+  };
   registerHotkey("toggle-mute", () => manualToggleMute());
   registerHotkey("toggle-deafen", () => toggleDeafen());
-  registerHotkey("toggle-camera", async () => {
-    if (uiContext.voiceMgr.isActive()) await uiContext.voiceMgr.toggleCamera();
-    else if (uiContext.callMgr.isActive())
-      await uiContext.callMgr.toggleCamera();
-  });
+  registerHotkey("toggle-camera", toggleCameraWithFeedback);
   registerHotkey("toggle-screen-share", async () => {
     if (uiContext.voiceMgr.isActive())
       await uiContext.voiceMgr.toggleScreenShare();
@@ -1121,12 +1162,7 @@ export function registerHotkeyActions(): void {
   setGlobalHandlers("toggle-mute", { tap: () => manualToggleMute() });
   setGlobalHandlers("toggle-deafen", { tap: () => toggleDeafen() });
   setGlobalHandlers("toggle-camera", {
-    tap: async () => {
-      if (uiContext.voiceMgr.isActive())
-        await uiContext.voiceMgr.toggleCamera();
-      else if (uiContext.callMgr.isActive())
-        await uiContext.callMgr.toggleCamera();
-    },
+    tap: toggleCameraWithFeedback,
   });
   setGlobalHandlers("toggle-screen-share", {
     tap: async () => {
@@ -1239,9 +1275,9 @@ export function startIdleAutoDetect(): void {
   const onActivity = () => {
     uiContext.idleLastActivity = Date.now();
     // Если мы сами выставили idle ранее — возвращаем online на любой ввод.
-    if (uiContext.idleAutoSet && uiContext.state.me?.presenceMode === "idle") {
+    if (uiContext.idleAutoSet && uiContext.state.me) {
       uiContext.idleAutoSet = false;
-      void saveStatus("online", uiContext.state.me.customStatus ?? "");
+      void saveStatus("online", uiContext.state.me.customStatus ?? "", true);
     }
   };
   bindEvent(window, "mousemove", onActivity, "bind-82894", { passive: true });
@@ -1254,24 +1290,19 @@ export function startIdleAutoDetect(): void {
   uiContext.idleTimer = setInterval(() => {
     const me = uiContext.state.me;
     if (!me) return;
+    if (uiContext.idleAutoSet || !me.updatedAt) return;
     // Только переход online → idle. dnd/invisible/idle (выставлен вручную)
     // не трогаем, чтобы не перетереть осознанный выбор.
     if (me.presenceMode !== "online") return;
     if (Date.now() - uiContext.idleLastActivity < uiContext.IDLE_THRESHOLD_MS)
       return;
     uiContext.idleAutoSet = true;
-    void saveStatus("idle", me.customStatus ?? "");
+    void saveStatus("idle", me.customStatus ?? "", true);
   }, uiContext.IDLE_CHECK_INTERVAL_MS);
 }
 
 export async function requestBrowserNotificationPermission(): Promise<void> {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "default") return;
-  try {
-    await Notification.requestPermission();
-  } catch {
-    /* пользователь отказался или браузер не поддерживает Promise-вариант */
-  }
+  await requestNotificationPermission();
 }
 
 export async function openNotification(item: NotificationItem): Promise<void> {
@@ -1463,6 +1494,7 @@ export function slugify(value: string): string {
 }
 
 export async function loadMembers(generation?: number): Promise<void> {
+  const started = presenceRevision();
   if (!uiContext.state.selectedWorkspaceId) return;
   uiContext.state.membersLoading = true;
   uiContext.state.members = [];
@@ -1473,7 +1505,7 @@ export async function loadMembers(generation?: number): Promise<void> {
     );
     if (generation !== undefined && generation !== uiContext.syncGeneration)
       return;
-    uiContext.state.members = data.items ?? [];
+    uiContext.state.members = (data.items ?? []).map((m) => applyPresenceSnapshot(m.userId, m, started));
   } catch (err) {
     uiContext.state.status = describeError(err);
   } finally {

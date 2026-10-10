@@ -1,4 +1,5 @@
 import { t } from "../i18n";
+import { canChannel, canWorkspace } from "./capabilities";
 import { icon } from "../icons";
 import { openLightbox } from "../lightbox";
 import { mediaBlobCache } from "../mediaCache";
@@ -232,9 +233,7 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
   const selectedWorkspace = uiContext.state.workspaces.find(
     (w) => w.id === uiContext.state.selectedWorkspaceId,
   );
-  const canModerate =
-    !!selectedWorkspace &&
-    ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
+  const canModerate = !!selectedWorkspace && canWorkspace("message.moderate", selectedWorkspace.id);
   const canDelete = isMine || canModerate;
   // Pin/unpin: в DM может любой участник, в workspace-канале — только модератор+.
   const canPin = uiContext.state.dmMode || canModerate;
@@ -255,7 +254,7 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
   const authorTitle = authorCustomStatus
     ? ` data-tooltip="${escapeHtml(authorCustomStatus)}"`
     : "";
-  const avatarHtml = renderAvatar({
+  const avatarHtml = `<button class="profile-avatar-button" data-profile-user="${escapeHtml(m.authorId)}" aria-label="Профиль ${escapeHtml(authorName)}">${renderAvatar({
     avatarMediaId: authorAvatarId,
     fallbackText: authorName,
     sizePx: 40,
@@ -264,7 +263,7 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
       m.authorId === uiContext.state.me?.id
         ? uiContext.state.me?.avatarDecoration
         : authorMember?.avatarDecoration,
-  });
+  })}</button>`;
 
   if (isEditing) {
     return `
@@ -272,7 +271,7 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
         ${avatarHtml}
         <div class="message-content">
           <div class="message-meta">
-            <span class="author"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}
+            <button class="author profile-name-button" data-profile-user="${escapeHtml(m.authorId)}"${authorColorStyle(m.authorId)}>${escapeHtml(authorName)}</button>${authorBadge(m.authorId)}
             <span class="timestamp" data-tooltip="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}</span>
           </div>
           <form class="edit-form" data-edit-id="${m.id}">
@@ -297,10 +296,11 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
     !uiContext.state.dmMode &&
     msgChannel?.kind === "text" &&
     !msgChannel.archivedAt &&
+    canChannel("message.write", m.channelId) &&
     !m.thread;
   // Wave 6: общий тулбар для обоих вариантов meta — i18n в одном месте.
   const actionsHtml = `<span class="message-actions">
-          <button class="ghost action-react" data-id="${m.id}" data-tooltip="${t("msg.react")}">${icon("smile")}</button>
+          ${canChannel("message.react", m.channelId) ? `<button class="ghost action-react" data-id="${m.id}" data-tooltip="${t("msg.react")}">${icon("smile")}</button>` : ""}
           <button class="ghost action-reply" data-id="${m.id}" data-author="${escapeHtml(m.authorId)}" data-tooltip="${t("msg.reply")}">${icon("reply")}</button>
           ${canThread ? `<button class="ghost action-thread" data-id="${m.id}" data-tooltip="${t("msg.thread")}">${icon("channel-forum")}</button>` : ""}
           ${isMine ? `<button class="ghost action-edit" data-id="${m.id}" data-tooltip="${t("msg.edit")}">${icon("pencil")}</button>` : ""}
@@ -316,7 +316,7 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
         ${actionsHtml}
       </div>`
     : `<div class="message-meta">
-        <span class="author"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</span>${authorBadge(m.authorId)}${isMine ? ` <span class="author-mine">${t("msg.you")}</span>` : ""}
+        <button class="author profile-name-button" data-profile-user="${escapeHtml(m.authorId)}"${authorColorStyle(m.authorId)}${authorTitle}>${escapeHtml(authorName)}</button>${authorBadge(m.authorId)}${isMine ? ` <span class="author-mine">${t("msg.you")}</span>` : ""}
         <span class="timestamp" data-tooltip="${escapeHtml(formatTime(m.createdAt))}">${formatTimeSmart(m.createdAt)}${m.editedAt ? t("msg.edited") : ""}</span>
         ${actionsHtml}
       </div>`;
@@ -341,7 +341,7 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
               ${reactions
                 .map(
                   ([emoji, agg]) => `
-                <button class="reaction-chip${agg.mine ? " mine" : ""}" data-react-toggle="${m.id}" data-emoji="${escapeHtml(emoji)}" data-tooltip="${escapeHtml(reactionTooltip(emoji, agg))}">
+                <button class="reaction-chip${agg.mine ? " mine" : ""}" data-react-toggle="${m.id}" data-emoji="${escapeHtml(emoji)}" data-tooltip="${escapeHtml(reactionTooltip(emoji, agg))}" ${canChannel("message.react", m.channelId) ? "" : "disabled"}>
                   <span>${escapeHtml(emoji)}</span>
                   <span class="count">${agg.count}</span>
                 </button>

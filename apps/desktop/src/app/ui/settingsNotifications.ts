@@ -16,19 +16,44 @@ import { requestRender as render } from "../runtime";
 import { uiContext } from "../state";
 
 import { requestBrowserNotificationPermission } from "./loaders";
+import {
+  checkNotificationPermission,
+  getCachedNotificationPermission,
+  usesNativeNotifications,
+} from "../tauriNotifications";
+
+let permissionLoaded = false;
+let permissionPending = false;
+
+function loadPermission(): void {
+  if (permissionLoaded || permissionPending) return;
+  permissionPending = true;
+  void checkNotificationPermission().finally(() => {
+    permissionLoaded = true;
+    permissionPending = false;
+    if (uiContext.state.modal === "settings" && uiContext.state.settings.tab === "notifications") render();
+  });
+}
 
 // I.8: вкладка «Уведомления». Toggle desktop-уведомлений (с кнопкой
 // «Разрешить» если permission=default), toggle звука + кнопка «Прослушать»,
 // toggle подавления @everyone/@here.
 export function renderSettingsNotificationsTab(): string {
   const s = getNotificationSettings();
-  const permission =
-    typeof Notification !== "undefined" ? Notification.permission : "default";
+  if (!uiContext.rootEl.querySelector("#notif-desktop")) permissionLoaded = false;
+  if (s.desktopEnabled) loadPermission();
+  const permission = getCachedNotificationPermission();
   const permissionLabel =
-    permission === "granted"
+    permissionPending
+      ? `<span class="settings-hint">${t("nt.perm.loading")}</span>`
+      : permission === "granted"
       ? `<span class="settings-hint" style="color:#43b581">${t("nt.perm.granted")}</span>`
       : permission === "denied"
-        ? `<span class="settings-hint" style="color:#d6453a">${t("nt.perm.denied")}</span>`
+        ? `<span class="settings-hint" style="color:#d6453a">${t(usesNativeNotifications() ? "nt.perm.denied.native" : "nt.perm.denied")}</span>`
+        : permission === "unsupported"
+          ? `<span class="settings-hint">${t("nt.perm.unsupported")}</span>`
+        : permission === "error"
+          ? `<span class="settings-hint">${t("nt.perm.error")}</span><button id="notif-request-permission">${t("nt.perm.request")}</button>`
         : `<button id="notif-request-permission" class="primary">${t("nt.perm.request")}</button>`;
 
   return `
@@ -41,7 +66,7 @@ export function renderSettingsNotificationsTab(): string {
       <small class="settings-hint">
         ${t("nt.desktop.hint")}
       </small>
-      <div class="settings-row" style="margin-top: 8px;">${permissionLabel}</div>
+      ${s.desktopEnabled ? `<div class="settings-row" style="margin-top: 8px;">${permissionLabel}</div>` : ""}
     </div>
 
     <div class="settings-section">
@@ -92,14 +117,14 @@ export function attachSettingsNotificationsHandlers(): void {
         async (e) => {
           const enabled = (e.currentTarget as HTMLInputElement).checked;
           updateNotificationSettings({ desktopEnabled: enabled });
-          if (
-            enabled &&
-            typeof Notification !== "undefined" &&
-            Notification.permission === "default"
-          ) {
-            await requestBrowserNotificationPermission();
+          if (enabled) {
+            permissionPending = true;
             render();
+            await requestBrowserNotificationPermission();
+            permissionLoaded = true;
+            permissionPending = false;
           }
+          render();
         },
         "bind-359783",
       )
@@ -161,7 +186,12 @@ export function attachSettingsNotificationsHandlers(): void {
         ),
         "click",
         async () => {
+          if (permissionPending) return;
+          permissionPending = true;
+          render();
           await requestBrowserNotificationPermission();
+          permissionPending = false;
+          permissionLoaded = true;
           render();
         },
         "bind-361148",

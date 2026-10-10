@@ -13,6 +13,7 @@ import { updateTypingLine } from "./loaders";
 import { hydrateMedia } from "./media";
 import { messageListState } from "./messageListState";
 import { renderMessage } from "./messageView";
+import { workspaceCapabilities, channelCapabilities } from "./capabilities";
 
 // C.5: рендер с разделителем "Новые сообщения" перед первым
 // сообщением, чей createdAt позже зафиксированного lastReadAt.
@@ -41,6 +42,8 @@ export function messageRowHtml(
     uiContext.state.channels,
     uiContext.state.me,
     uiContext.state.workspaces,
+    workspaceCapabilities.get(uiContext.state.selectedWorkspaceId ?? ""),
+    channelCapabilities.get(uiContext.state.selectedChannelId ?? ""),
     getAppearance(),
     getLocale(),
     getTimeFormat(),

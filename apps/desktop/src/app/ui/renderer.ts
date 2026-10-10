@@ -1,7 +1,10 @@
 import { patchChildren, patchElement } from "../dom";
+import { canWorkspace } from "./capabilities";
 import { t } from "../i18n";
 import { icon } from "../icons";
 import { polishListboxes } from "../listbox";
+import { polishInputControls } from "../inputControls";
+import { polishModalFocus } from "../modalFocus";
 import type { RenderRegion } from "../runtime";
 import { uiContext } from "../state";
 import { hideTooltip } from "../tooltips";
@@ -12,7 +15,8 @@ import {
   renderConnectionLost,
   renderForcedPasswordChange,
 } from "./authentication";
-import { renderCallOverlay } from "./callView";
+import { renderCallOverlay, renderActiveCallAudioControls } from "./callView";
+import { polishProfilePopover } from "./profile";
 import {
   renderBellButton,
   renderChannelView,
@@ -28,6 +32,8 @@ import { attachCallsRegion } from "./handlersCalls";
 import { attachFriendsRegion } from "./handlersFriends";
 import { attachMemberMenuRegion } from "./handlersMemberMenu";
 import { attachMembersRegion } from "./handlersMembers";
+import { attachPresenceRegion, polishStatusMenu } from "./handlersPresence";
+import { attachProfileRegion } from "./handlersProfile";
 import { attachSidebarRegion } from "./handlersSidebar";
 import { attachWorkspaceCreateRegion } from "./handlersWorkspaceCreate";
 import { armStatusAutoClear } from "./helpers";
@@ -57,7 +63,23 @@ import {
   attachVoiceVideoStreams,
   renderVoiceChannelView,
   renderVoiceStrip,
+  updateVoicePresence,
+  renderActiveVoiceAudioControls,
 } from "./voiceView";
+
+export function renderUserStrip(): string {
+  const me = uiContext.state.me;
+  const audio = renderActiveVoiceAudioControls() || renderActiveCallAudioControls();
+  return `<footer class="user-strip${audio ? " with-audio" : ""}">
+    <button id="open-self-profile" class="user user-btn" data-tooltip="Открыть профиль" aria-label="Открыть мой профиль" aria-haspopup="dialog" aria-expanded="${uiContext.state.modal === "userProfile" && uiContext.state.userProfileTarget === me?.id}">
+      <span class="user-strip-avatar-wrap">${renderAvatar({ avatarMediaId: me?.avatarMediaId, fallbackText: me?.displayName || me?.username || "?", sizePx: 32 })}<span class="presence-dot ${presenceDotClass(me?.presenceMode)}"></span></span>
+      <div class="user-strip-name"><div class="user-name">${escapeHtml(me?.displayName || me?.username || "—")}</div><div class="user-sub">${me?.customStatus ? escapeHtml(me.customStatus) : presenceLabel(me?.presenceMode)}</div></div>
+    </button>
+    <div class="user-strip-actions">${audio || renderBellButton()}
+      ${!audio && me?.isRoot ? `<button id="open-admin" class="ghost" data-tooltip="Админ-панель" aria-label="Админ-панель">${icon("shield")}</button>` : ""}
+      <button id="open-profile" class="ghost" data-tooltip="Настройки" aria-label="Настройки">${icon("settings")}</button>
+    </div></footer>`;
+}
 
 export function render(
   regions: ReadonlySet<RenderRegion> = new Set(["all"]),
@@ -124,9 +146,7 @@ export function renderShell(): void {
   const selectedWorkspace = uiContext.state.workspaces.find(
     (w) => w.id === uiContext.state.selectedWorkspaceId,
   );
-  const canModerate =
-    !!selectedWorkspace &&
-    ["owner", "admin", "moderator"].includes(selectedWorkspace.role ?? "");
+  const canModerate = !!selectedWorkspace && canWorkspace("invite.manage", selectedWorkspace.id);
   const dmMode = uiContext.state.dmMode;
   // member-sidebar только для workspace-каналов
   const showMembers =
@@ -200,29 +220,9 @@ export function renderShell(): void {
                 : `<div class="ch-panel-empty">Выбери воркспейс слева или создай новый кнопкой +.</div>`
           }
           </div>
-          <div id="region-voice">${renderVoiceStrip()}</div>
         </div>
-        <footer class="user-strip">
-          <button id="open-status" class="user user-btn" data-tooltip="Изменить статус">
-            <span class="user-strip-avatar-wrap">
-              ${renderAvatar({
-                avatarMediaId: me?.avatarMediaId,
-                fallbackText: me?.displayName || me?.username || "?",
-                sizePx: 32,
-              })}
-              <span class="presence-dot ${presenceDotClass(me?.presenceMode)}"></span>
-            </span>
-            <div class="user-strip-name">
-              <div class="user-name">${escapeHtml(me?.displayName || me?.username || "—")}</div>
-              <div class="user-sub">${me?.customStatus ? escapeHtml(me.customStatus) : presenceLabel(me?.presenceMode)}</div>
-            </div>
-          </button>
-          <div class="user-strip-actions">
-            ${renderBellButton()}
-            ${me?.isRoot ? `<button id="open-admin" class="ghost" data-tooltip="Админ-панель" aria-label="Админ-панель">${icon("shield")}</button>` : ""}
-            <button id="open-profile" class="ghost" data-tooltip="Настройки" aria-label="Настройки">${icon("settings")}</button>
-          </div>
-        </footer>
+        <div id="region-voice">${renderVoiceStrip()}</div>
+        ${renderUserStrip()}
       </aside>
       <main class="content">
         ${
@@ -244,7 +244,7 @@ export function renderShell(): void {
       ${renderMemberMenu()}
       ${renderCategoryMenu()}
       ${renderVoiceVolumeMenu()}
-      ${renderStatusMenu()}
+      <div id="region-status-menu">${renderStatusMenu()}</div>
     </div>
   `,
   );
@@ -254,6 +254,10 @@ export function renderShell(): void {
   updatePttIndicator();
   polishListboxes(uiContext.rootEl);
   polishNativeControls(uiContext.rootEl);
+  polishInputControls(uiContext.rootEl);
+  polishModalFocus();
+  polishProfilePopover();
+  polishStatusMenu();
 }
 
 export function renderRegions(regions: ReadonlySet<RenderRegion>): void {
@@ -261,6 +265,31 @@ export function renderRegions(regions: ReadonlySet<RenderRegion>): void {
     const el = uiContext.rootEl.querySelector<HTMLElement>(selector);
     if (el) patchChildren(el, html);
   };
+  if (regions.has("presence")) {
+    updateVoicePresence();
+    const strip = uiContext.rootEl.querySelector<HTMLElement>(".user-strip");
+    if (strip) patchElement(strip, renderUserStrip());
+    const members = uiContext.rootEl.querySelector<HTMLElement>(".member-sidebar");
+    if (members) patchElement(members, renderMemberSidebar());
+    patch("#region-channels", uiContext.state.dmMode ? renderDMSidebarList() : renderChannelsBlock());
+    const dm = uiContext.state.dms.find((d) => d.channelId === uiContext.state.selectedChannelId);
+    if (dm) {
+      const template = document.createElement("template");
+      template.innerHTML = renderDMChannelView(dm);
+      const fresh = template.content.querySelector<HTMLElement>(".dm-channel-header");
+      const current = uiContext.rootEl.querySelector<HTMLElement>(".dm-channel-header");
+      if (fresh && current) patchElement(current, fresh.outerHTML);
+    } else if (uiContext.state.dmMode && !uiContext.state.selectedChannelId) patch("main.content", renderDMHome());
+    if (uiContext.state.modal === "userProfile" || uiContext.state.modal === "members") patch("#region-modal", renderModal());
+    patch("#region-status-menu", renderStatusMenu());
+    attachPresenceRegion();
+    attachProfileRegion();
+    attachMembersRegion();
+    attachMemberMenuRegion();
+    attachSidebarRegion();
+    attachFriendsRegion();
+    attachCallsRegion();
+  }
   if (regions.has("messages")) updateMessageList();
   if (regions.has("pins"))
     patch(
@@ -297,6 +326,10 @@ export function renderRegions(regions: ReadonlySet<RenderRegion>): void {
         uiContext.state.callSnapshot?.state === "active",
       );
   }
+  if (regions.has("voice") || regions.has("call")) {
+    const strip = uiContext.rootEl.querySelector<HTMLElement>(".user-strip");
+    if (strip) patchElement(strip, renderUserStrip());
+  }
   if (regions.has("modal")) patch("#region-modal", renderModal());
   patch(
     "#region-status",
@@ -315,8 +348,14 @@ export function renderRegions(regions: ReadonlySet<RenderRegion>): void {
     attachFriendsRegion();
     attachWorkspaceCreateRegion();
   }
-  if (regions.has("voice") || regions.has("call")) attachCallsRegion();
+  if (regions.has("voice") || regions.has("call")) attachShellHandlers();
   if (regions.has("modal")) attachShellHandlers();
+  polishListboxes(uiContext.rootEl);
+  polishNativeControls(uiContext.rootEl);
+  polishInputControls(uiContext.rootEl);
+  polishModalFocus();
+  polishProfilePopover();
+  polishStatusMenu();
   if (regions.has("members") || regions.has("channels"))
     hydrateMedia(uiContext.rootEl);
   attachVoiceVideoStreams();

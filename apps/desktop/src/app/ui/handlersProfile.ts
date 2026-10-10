@@ -5,8 +5,24 @@ import { uiContext } from "../state";
 import type { Me, PendingUpload } from "../types";
 import { setTransientStatus } from "./helpers";
 import { attachProfileEditHandlers } from "./workspaceSettings";
+import { openUserProfile } from "./profile";
 
 export function attachProfileRegion(): void {
+  delegate<HTMLElement, "click">(uiContext.rootEl, "[data-profile-user]", "click", (_event, el) => {
+    if (el.dataset.profileUser) openUserProfile(el.dataset.profileUser, el);
+  }, "open-inline-profile");
+  const self = uiContext.rootEl.querySelector<HTMLButtonElement>("#open-self-profile");
+  if (self) bindEvent(self, "click", () => {
+    if (uiContext.state.me) openUserProfile(uiContext.state.me.id, self);
+  }, "open-self-profile");
+  delegate<HTMLElement, "click">(uiContext.rootEl, "[data-self-profile-edit]", "click", () => {
+    uiContext.state.modal = "settings";
+    uiContext.state.settings.tab = "profile";
+    uiContext.state.profileEdit.field = null;
+    uiContext.state.profileEdit.error = null;
+    uiContext.state.profileEdit.okMessage = null;
+    render();
+  }, "edit-self-profile");
   delegate<HTMLElement, "click">(
     uiContext.rootEl,
     "[data-modal-close]",

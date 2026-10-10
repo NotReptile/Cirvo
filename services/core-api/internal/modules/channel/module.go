@@ -47,6 +47,7 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/workspaces/{workspaceId}/channels", m.handleList)
 	router.Protected("POST /api/v1/workspaces/{workspaceId}/channels", m.handleCreate)
 	router.Protected("GET /api/v1/channels/{channelId}", m.handleGet)
+	router.Protected("GET /api/v1/channels/{channelId}/capabilities", m.handleCapabilities)
 	router.Protected("PATCH /api/v1/channels/{channelId}", m.handleUpdate)
 	router.Protected("DELETE /api/v1/channels/{channelId}", m.handleDelete)
 	router.Protected("GET /api/v1/channels/{channelId}/members", m.handleListMembers)
@@ -84,17 +85,17 @@ func (m *Module) publish(eventName string, workspaceID uuid.UUID, channelID stri
 }
 
 type channelView struct {
-	ID              string     `json:"id"`
-	WorkspaceID     string     `json:"workspaceId"`
-	Kind            string     `json:"kind"`
-	Name            string     `json:"name"`
-	Topic           string     `json:"topic,omitempty"`
-	IsPrivate       bool       `json:"isPrivate"`
-	Position        int        `json:"position"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	SlowModeSeconds int        `json:"slowModeSeconds"`
-	IsNsfw          bool       `json:"isNsfw"`
-	CategoryID      *string    `json:"categoryId"`
+	ID              string    `json:"id"`
+	WorkspaceID     string    `json:"workspaceId"`
+	Kind            string    `json:"kind"`
+	Name            string    `json:"name"`
+	Topic           string    `json:"topic,omitempty"`
+	IsPrivate       bool      `json:"isPrivate"`
+	Position        int       `json:"position"`
+	CreatedAt       time.Time `json:"createdAt"`
+	SlowModeSeconds int       `json:"slowModeSeconds"`
+	IsNsfw          bool      `json:"isNsfw"`
+	CategoryID      *string   `json:"categoryId"`
 	// Wave 8: soft-archive. NULL = активный канал.
 	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
 	// Wave 8: hex-цвет имени канала в sidebar, "" = цвет темы.
@@ -104,7 +105,8 @@ type channelView struct {
 	ParentChannelID *string `json:"parentChannelId,omitempty"`
 	// Wave 10 (треды): для kind='thread' с якорем на сообщение text-канала —
 	// id корневого сообщения. Клиент вешает чип «N ответов» на это сообщение.
-	RootMessageID *string `json:"rootMessageId,omitempty"`
+	RootMessageID *string  `json:"rootMessageId,omitempty"`
+	Actions       []string `json:"actions,omitempty"`
 }
 
 type createRequest struct {
@@ -144,8 +146,18 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid workspace id")
 		return
 	}
-	if !workspace.IsMember(r.Context(), m.db, workspaceID, userID) {
+	base, err := permission.LoadWorkspace(r.Context(), m.db, workspaceID, userID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not load permissions")
+		return
+	}
+	if !base.Member {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+	capabilities, err := permission.LoadChannels(r.Context(), m.db, workspaceID, userID, uuid.Nil, base)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not load channel permissions")
 		return
 	}
 
@@ -159,23 +171,8 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 		`select c.id, c.workspace_id, c.kind, c.name, coalesce(c.topic, ''), c.is_private, c.position, c.created_at, c.slow_mode_seconds, c.is_nsfw, c.category_id, c.archived_at, coalesce(c.name_color, ''), c.parent_channel_id, c.root_message_id
 		 from channels c
 		 where c.workspace_id = $1
-		   and (
-		     c.is_private = false
-		     or exists (select 1 from channel_members cm where cm.channel_id = c.id and cm.user_id = $2)
-		     or exists (
-		       select 1 from workspace_members wm
-		       where wm.workspace_id = $1 and wm.user_id = $2 and wm.role_code = 'owner'
-		     )
-		     or exists (
-		       select 1 from workspace_role_members wrm
-		       join channel_role_overrides cro
-		         on cro.role_id = wrm.role_id and cro.channel_id = c.id
-		       where wrm.workspace_id = $1 and wrm.user_id = $2
-		         and 'channel.view' = any(cro.granted_actions)
-		     )
-		   )
 		 order by c.position, c.created_at`,
-		workspaceID, userID,
+		workspaceID,
 	)
 	if err != nil {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
@@ -192,6 +189,10 @@ func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
 			sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "row scan failed")
 			return
 		}
+		if !capabilities[id].Allows(permission.ChannelView) {
+			continue
+		}
+		v.Actions = capabilities[id].Actions()
 		v.ID = id.String()
 		v.WorkspaceID = wsID.String()
 		if catUUID != nil {
@@ -540,6 +541,7 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		TargetID:    channelID.String(),
 	})
 	m.publish("channel.updated", scope.WorkspaceID, channelID.String(), v)
+	permission.PublishChanged(r.Context(), m.publisher, scope.WorkspaceID)
 	// H.9.iii: system-плашка при переименовании text-канала.
 	if oldKind == "text" && m.messages != nil && req.Name != nil && *req.Name != oldName {
 		body := "Канал переименован: #" + oldName + " → #" + v.Name
@@ -761,6 +763,7 @@ func (m *Module) handleAddMember(w http.ResponseWriter, r *http.Request) {
 		TargetType:  "channel_member",
 		TargetID:    channelID.String() + ":" + targetID.String(),
 	})
+	permission.PublishChanged(r.Context(), m.publisher, scope.WorkspaceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -802,6 +805,7 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		TargetType:  "channel_member",
 		TargetID:    channelID.String() + ":" + targetID.String(),
 	})
+	permission.PublishChanged(r.Context(), m.publisher, scope.WorkspaceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

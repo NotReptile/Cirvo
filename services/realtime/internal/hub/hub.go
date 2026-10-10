@@ -130,7 +130,7 @@ func (h *Hub) Remove(conn *Connection) {
 }
 
 func (h *Hub) removeLocked(conn *Connection) {
-	if _, ok := h.bySession[conn.SessionID]; !ok {
+	if current, ok := h.bySession[conn.SessionID]; !ok || current != conn {
 		return
 	}
 	delete(h.bySession, conn.SessionID)
@@ -150,6 +150,19 @@ func (h *Hub) removeLocked(conn *Connection) {
 			}
 		}
 	}
+}
+
+func (h *Hub) SessionConnected(sessionID uuid.UUID) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, connected := h.bySession[sessionID]
+	return connected
+}
+
+func (h *Hub) UserConnected(userID uuid.UUID) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.userMembers[userID]) > 0
 }
 
 // UpdateWorkspaces перекладывает живое соединение по workspace-bucket'ам без
@@ -195,6 +208,22 @@ func (h *Hub) BroadcastWorkspace(workspaceID uuid.UUID, payload []byte) {
 	for _, conn := range conns {
 		h.deliver(conn, payload)
 	}
+}
+
+// WorkspaceUsers snapshots unique live recipients; database ACL checks run
+// outside the hub lock and delivery covers every session of an allowed user.
+func (h *Hub) WorkspaceUsers(workspaceID uuid.UUID) []uuid.UUID {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	seen := make(map[uuid.UUID]bool)
+	for _, conn := range h.workspaceMembers[workspaceID] {
+		seen[conn.UserID] = true
+	}
+	users := make([]uuid.UUID, 0, len(seen))
+	for userID := range seen {
+		users = append(users, userID)
+	}
+	return users
 }
 
 func (h *Hub) BroadcastSession(sessionID uuid.UUID, payload []byte) {

@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
 	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
@@ -1215,8 +1216,7 @@ type unreadView struct {
 // handleListUnread — агрегированный счётчик непрочитанных по всем
 // видимым каналам воркспейса. Считаются только сообщения чужих
 // авторов и не soft-deleted, чтобы своя писанина не висела как
-// "новое" у тебя же. Приватные каналы фильтруются через
-// channel_members ровно как в channel.handleList.
+// "новое" у тебя же. Видимость всех каналов вычисляет общий ACL.
 func (m *Module) handleListUnread(w http.ResponseWriter, r *http.Request) {
 	userID := authctx.MustUserID(r.Context())
 	workspaceID, ok := parseUUID(r, "workspaceId")
@@ -1226,6 +1226,12 @@ func (m *Module) handleListUnread(w http.ResponseWriter, r *http.Request) {
 	}
 	if !workspace.IsMember(r.Context(), m.db, workspaceID, userID) {
 		sharedhttp.WriteError(w, r, http.StatusNotFound, sharedhttp.CodeResourceNotFound, "workspace not visible")
+		return
+	}
+
+	visible, err := m.visibleWorkspaceChannels(r.Context(), workspaceID, userID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "channel access lookup failed")
 		return
 	}
 
@@ -1240,9 +1246,8 @@ func (m *Module) handleListUnread(w http.ResponseWriter, r *http.Request) {
 		 from channels c
 		 left join read_receipts r on r.channel_id = c.id and r.user_id = $2
 		 where c.workspace_id = $1
-		   and (c.is_private = false
-		        or exists (select 1 from channel_members cm where cm.channel_id = c.id and cm.user_id = $2))`,
-		workspaceID, userID,
+		   and c.id = any($3::uuid[])`,
+		workspaceID, userID, visible,
 	)
 	if err != nil {
 		m.logger.Error("unread query failed", "error", err, "workspaceId", workspaceID)
@@ -1382,6 +1387,12 @@ func (m *Module) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// $1 viewer (для reactions.mine в messageSelectColumns), $2 workspace,
 	// $3 tsquery c prefix-семантикой (`hel:* & world:*`), $4 before,
 	// $5 limit, $6 headline options.
+	visible, err := m.visibleWorkspaceChannels(r.Context(), workspaceID, userID)
+	if err != nil {
+		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "channel access lookup failed")
+		return
+	}
+
 	rows, err := m.db.Query(r.Context(),
 		`select `+messageSelectColumns+`,
 		        c.name,
@@ -1391,13 +1402,11 @@ func (m *Module) handleSearch(w http.ResponseWriter, r *http.Request) {
 		 where c.workspace_id = $2
 		   and m.deleted_at is null
 		   and m.search_vector @@ to_tsquery('russian', $3)
-		   and (c.is_private = false
-		        or exists (select 1 from channel_members cm
-		                    where cm.channel_id = c.id and cm.user_id = $1))
+		   and c.id = any($7::uuid[])
 		   and m.created_at < $4
 		 order by m.created_at desc
 		 limit $5`,
-		userID, workspaceID, tsq, before, limit, headlineOpts,
+		userID, workspaceID, tsq, before, limit, headlineOpts, visible,
 	)
 	if err != nil {
 		m.logger.Error("search query failed", "error", err, "workspaceId", workspaceID)
@@ -2016,4 +2025,23 @@ func parseMessageCursor(raw string) (time.Time, uuid.UUID, error) {
 }
 func formatMessageCursor(stamp time.Time, id string) string {
 	return stamp.Format(time.RFC3339Nano) + "|" + id
+}
+
+// visibleWorkspaceChannels loads effective permissions once, before SQL pagination.
+func (m *Module) visibleWorkspaceChannels(ctx context.Context, workspaceID, userID uuid.UUID) ([]uuid.UUID, error) {
+	base, err := channelacl.LoadWorkspace(ctx, m.db, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	channels, err := channelacl.LoadChannels(ctx, m.db, workspaceID, userID, uuid.Nil, base)
+	if err != nil {
+		return nil, err
+	}
+	visible := make([]uuid.UUID, 0, len(channels))
+	for id, access := range channels {
+		if access.Allows(channelacl.ChannelView) {
+			visible = append(visible, id)
+		}
+	}
+	return visible, nil
 }

@@ -16,12 +16,14 @@ import { renderBody } from "./messageView";
 import { selectWorkspace } from "./session";
 import { renderAvatar } from "./shell";
 import { openWorkspaceRolesModal } from "./workspaceRoles";
+import { canWorkspace, unavailablePermissionsModal } from "./capabilities";
 
 export function renderWorkspaceSettingsModal(): string {
   const wsSet = uiContext.state.workspaceSettings;
   const ws = uiContext.state.workspaces.find((w) => w.id === wsSet.workspaceId);
   if (!ws) return "";
-  const isOwner = ws.role === "owner";
+  if (!canWorkspace("workspace.update", ws.id)) return unavailablePermissionsModal();
+  const isOwner = canWorkspace("workspace.delete", ws.id);
   const tabs = uiContext.WS_TABS.filter((t) => t.id !== "delete" || isOwner);
   const tabBar = tabs
     .map((t) => {

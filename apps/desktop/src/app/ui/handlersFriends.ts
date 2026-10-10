@@ -199,8 +199,11 @@ export function attachFriendsRegion(): void {
     uiContext.rootEl,
     "[data-friend-profile]",
     "click",
-    (_event, row) => {
-      openUserProfile(row.dataset.friendProfile!);
+    (event, row) => {
+      // Delegated root listeners share the same target; stopPropagation on an
+      // action button does not prevent this row listener from running.
+      if ((event.target as Element | null)?.closest("button, a, input, select, textarea")) return;
+      openUserProfile(row.dataset.friendProfile!, row);
     },
     "delegate-461683",
   );

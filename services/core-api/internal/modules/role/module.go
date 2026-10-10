@@ -22,6 +22,7 @@ import (
 
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
 	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
 	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
 	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
@@ -31,12 +32,13 @@ import (
 var codePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,30}[a-z0-9]$`)
 
 type Module struct {
-	db     *postgres.Pool
-	logger *slog.Logger
+	db        *postgres.Pool
+	logger    *slog.Logger
+	publisher *realtimebus.Publisher
 }
 
-func NewModule(db *postgres.Pool, logger *slog.Logger) *Module {
-	return &Module{db: db, logger: logger}
+func NewModule(db *postgres.Pool, logger *slog.Logger, publisher *realtimebus.Publisher) *Module {
+	return &Module{db: db, logger: logger, publisher: publisher}
 }
 
 func (m *Module) RegisterRoutes(router routing.Router) {
@@ -49,16 +51,16 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 }
 
 type roleView struct {
-	ID              string   `json:"id"`
-	WorkspaceID     string   `json:"workspaceId"`
-	Code            string   `json:"code"`
-	Name            string   `json:"name"`
-	Color           string   `json:"color,omitempty"`
-	Position        int      `json:"position"`
-	Hoisted         bool     `json:"hoisted"`
-	BaseActionMask  []string `json:"baseActionMask"`
-	System          bool     `json:"system"`
-	MemberUserIDs   []string `json:"memberUserIds"`
+	ID             string   `json:"id"`
+	WorkspaceID    string   `json:"workspaceId"`
+	Code           string   `json:"code"`
+	Name           string   `json:"name"`
+	Color          string   `json:"color,omitempty"`
+	Position       int      `json:"position"`
+	Hoisted        bool     `json:"hoisted"`
+	BaseActionMask []string `json:"baseActionMask"`
+	System         bool     `json:"system"`
+	MemberUserIDs  []string `json:"memberUserIds"`
 }
 
 type createRequest struct {
@@ -71,12 +73,12 @@ type createRequest struct {
 }
 
 type updateRequest struct {
-	Name           *string  `json:"name"`
-	Color          *string  `json:"color"`
-	Position       *int     `json:"position"`
-	Hoisted        *bool    `json:"hoisted"`
-	BaseActionMask []string `json:"baseActionMask"`
-	BaseActionMaskSet bool   `json:"-"`
+	Name              *string  `json:"name"`
+	Color             *string  `json:"color"`
+	Position          *int     `json:"position"`
+	Hoisted           *bool    `json:"hoisted"`
+	BaseActionMask    []string `json:"baseActionMask"`
+	BaseActionMaskSet bool     `json:"-"`
 }
 
 func (m *Module) handleList(w http.ResponseWriter, r *http.Request) {
@@ -196,6 +198,7 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload role")
 		return
 	}
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	sharedhttp.WriteJSON(w, http.StatusCreated, view)
 }
 
@@ -325,6 +328,7 @@ func (m *Module) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not reload role")
 		return
 	}
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
 
@@ -382,6 +386,7 @@ func (m *Module) handleDelete(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not delete role")
 		return
 	}
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -434,6 +439,7 @@ func (m *Module) handleAssign(w http.ResponseWriter, r *http.Request) {
 		TargetType:  "role",
 		TargetID:    roleID.String(),
 	})
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -481,6 +487,7 @@ func (m *Module) handleUnassign(w http.ResponseWriter, r *http.Request) {
 		TargetType:  "role",
 		TargetID:    roleID.String(),
 	})
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -506,15 +513,15 @@ func (m *Module) loadOne(ctx context.Context, workspaceID, roleID uuid.UUID) (ro
 
 func scanRole(rows pgx.Rows, workspaceID uuid.UUID) (roleView, error) {
 	var (
-		id       uuid.UUID
-		code     string
-		name     string
-		color    *string
-		pos      int
-		hoisted  bool
-		mask     []string
-		system   bool
-		members  []uuid.UUID
+		id      uuid.UUID
+		code    string
+		name    string
+		color   *string
+		pos     int
+		hoisted bool
+		mask    []string
+		system  bool
+		members []uuid.UUID
 	)
 	if err := rows.Scan(&id, &code, &name, &color, &pos, &hoisted, &mask, &system, &members); err != nil {
 		return roleView{}, err

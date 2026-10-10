@@ -65,6 +65,7 @@ func (m *Module) RegisterRoutes(router routing.Router) {
 	router.Protected("GET /api/v1/workspaces", m.handleList)
 	router.Protected("POST /api/v1/workspaces", m.handleCreate)
 	router.Protected("GET /api/v1/workspaces/{workspaceId}", m.handleGet)
+	router.Protected("GET /api/v1/workspaces/{workspaceId}/capabilities", m.handleCapabilities)
 	router.Protected("PATCH /api/v1/workspaces/{workspaceId}", m.handlePatch)
 	router.Protected("DELETE /api/v1/workspaces/{workspaceId}", m.handleDelete)
 	router.Protected("PUT /api/v1/workspaces/{workspaceId}/avatar", m.handleUpdateAvatar)
@@ -850,6 +851,7 @@ func (m *Module) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
 	}
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -923,6 +925,7 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
 	}
+	permission.PublishChanged(r.Context(), m.publisher, workspaceID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

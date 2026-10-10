@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
 	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
 	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
@@ -330,10 +331,10 @@ func (m *Module) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 
 // canAccess решает, можно ли отдать содержимое media текущему юзеру.
 // Разрешено если:
-//   1) юзер — владелец загрузки (`media_objects.uploaded_by_user_id`),
-//      даже если media ещё не приложена к сообщению (свежий аплоад);
-//   2) media приложена к сообщению в канале, который юзеру видим:
-//      он workspace-member, и канал либо публичный, либо он в channel_members.
+//  1. юзер — владелец загрузки (`media_objects.uploaded_by_user_id`),
+//     даже если media ещё не приложена к сообщению (свежий аплоад);
+//  2. media приложена к сообщению в канале, который юзеру видим:
+//     эффективный channel.view разрешён общим ACL; для DM — участник канала.
 //
 // При отсутствии доступа возвращаем false — вызывающий пишет 404, чтобы
 // не палить факт существования media.
@@ -349,22 +350,8 @@ func (m *Module) canAccess(ctx context.Context, mediaID, userID uuid.UUID, owner
 		     from message_attachments ma
 		     join messages msg on msg.id = ma.message_id
 		     join channels c on c.id = msg.channel_id
-		     left join workspace_members wm
-		       on wm.workspace_id = c.workspace_id and wm.user_id = $2
-		     where ma.media_id = $1
-		       and (
-		         (c.workspace_id is not null and wm.user_id is not null and (
-		           c.is_private = false
-		           or exists (
-		             select 1 from channel_members cm
-		             where cm.channel_id = c.id and cm.user_id = $2
-		           )
-		         ))
-		         or (c.workspace_id is null and exists (
-		           select 1 from channel_members cm2
-		           where cm2.channel_id = c.id and cm2.user_id = $2
-		         ))
-		       )
+		     where ma.media_id = $1 and c.workspace_id is null
+             and exists (select 1 from channel_members cm where cm.channel_id=c.id and cm.user_id=$2)
 		   )
 		   -- H.1: avatar media is public-readable to any authenticated user.
 		   -- Avatars by design must be visible to anyone who might see this user
@@ -382,7 +369,37 @@ func (m *Module) canAccess(ctx context.Context, mediaID, userID uuid.UUID, owner
 		m.logger.Warn("media acl check failed", slog.String("error", err.Error()), slog.String("media_id", mediaID.String()))
 		return false
 	}
-	return allowed
+	if allowed {
+		return true
+	}
+	rows, err := m.db.Query(ctx, `select distinct msg.channel_id from message_attachments ma join messages msg on msg.id=ma.message_id join channels c on c.id=msg.channel_id where ma.media_id=$1 and c.workspace_id is not null`, mediaID)
+	if err != nil {
+		return false
+	}
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return false
+		}
+		ids = append(ids, id)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return false
+	}
+	access, err := channelacl.VisibleChannels(ctx, m.db, ids, []uuid.UUID{userID})
+	if err != nil {
+		return false
+	}
+	for _, id := range ids {
+		if access[userID][id] {
+			return true
+		}
+	}
+	return false
 }
 
 func safeFilename(name string) string {

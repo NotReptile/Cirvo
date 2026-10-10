@@ -4,6 +4,21 @@ import { uiContext } from "../state";
 import type { PresenceMode } from "../types";
 import { saveStatus } from "./loaders";
 
+export function polishStatusMenu(): void {
+  const menu = uiContext.rootEl.querySelector<HTMLElement>(".status-menu");
+  if (menu) {
+    menu.style.maxHeight = `${Math.max(0, innerHeight - 16)}px`;
+    menu.style.maxWidth = `${Math.max(0, innerWidth - 16)}px`;
+    menu.style.overflowY = "auto";
+    const rect = menu.getBoundingClientRect();
+    const dx = rect.left < 8 ? 8 - rect.left : rect.right > innerWidth - 8 ? innerWidth - 8 - rect.right : 0;
+    const dy = rect.top < 8 ? 8 - rect.top : rect.bottom > innerHeight - 8 ? innerHeight - 8 - rect.bottom : 0;
+    if (dx) menu.style.left = `${parseFloat(menu.style.left) + dx}px`;
+    if (dy) menu.style.top = `${parseFloat(menu.style.top) + dy}px`;
+  }
+  bindEvent(window, "resize", polishStatusMenu, "presence-menu-resize");
+}
+
 export function attachPresenceRegion(): void {
   uiContext.rootEl.querySelector<HTMLButtonElement>("#open-status")
     ? bindEvent(
@@ -21,7 +36,7 @@ export function attachPresenceRegion(): void {
               (uiContext.state.me?.presenceMode as PresenceMode) ?? "online",
             draftCustom: uiContext.state.me?.customStatus ?? "",
           };
-          render();
+          render(new Set(["presence"]));
         },
         "bind-430228",
       )
@@ -33,7 +48,7 @@ export function attachPresenceRegion(): void {
         "click",
         () => {
           uiContext.state.statusMenu = null;
-          render();
+          render(new Set(["presence"]));
         },
         "bind-430793",
       )
@@ -47,7 +62,7 @@ export function attachPresenceRegion(): void {
       if (!uiContext.state.statusMenu) return;
       uiContext.state.statusMenu.draftMode = btn.dataset
         .statusMode as PresenceMode;
-      render();
+      render(new Set(["presence"]));
     },
     "delegate-431331",
   );
@@ -74,7 +89,7 @@ export function attachPresenceRegion(): void {
         () => {
           if (!uiContext.state.statusMenu) return;
           uiContext.state.statusMenu.draftCustom = "";
-          void saveStatus("online", "");
+          void saveStatus(uiContext.state.statusMenu.draftMode, "");
         },
         "bind-431467",
       )

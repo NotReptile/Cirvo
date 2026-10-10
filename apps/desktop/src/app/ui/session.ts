@@ -5,7 +5,7 @@ import { isSessionRejected, isTransientError } from "../../network/httpClient";
 import type { RealtimeClient } from "../../realtime/realtimeClient";
 import { applyAppearance, watchSystemTheme } from "../appearance";
 import { describeError } from "../errors";
-import { getNotificationSettings } from "../notificationSettings";
+import { resetPresence } from "../presence";
 import { installQaHarness } from "../qaHarness";
 import { queueRender, setRenderer } from "../runtime";
 import { uiContext } from "../state";
@@ -30,13 +30,13 @@ import {
   loadNotifPrefs,
   loadNotifications,
   loadUnread,
-  requestBrowserNotificationPermission,
   selectChannel,
   startIdleAutoDetect,
 } from "./loaders";
 import { render } from "./renderer";
 import { installNativeGuards, loadWsRoles } from "./shell";
 import { attachVoiceVideoStreams } from "./voiceView";
+import { loadWorkspaceCapabilities, workspaceCapabilities, channelCapabilities } from "./capabilities";
 
 export function saveCollapsedCategories(): void {
   try {
@@ -149,6 +149,9 @@ export function renderApp(
   });
   http.onTokensChanged((tokens) => {
     if (!tokens) {
+      resetPresence();
+      workspaceCapabilities.clear();
+      channelCapabilities.clear();
       Object.assign(uiContext.state, {
         me: null,
         bootError: null,
@@ -209,8 +212,6 @@ export async function bootstrapSession(): Promise<void> {
     void loadDMs();
     void loadFriends();
     void loadNotifPrefs();
-    if (getNotificationSettings().desktopEnabled)
-      void requestBrowserNotificationPermission();
     startIdleAutoDetect();
     void initUpdateCheck();
     uiContext.state.status = "";
@@ -297,6 +298,7 @@ export async function selectWorkspace(
     uiContext.httpClient
       .get<{ items: ChannelCategory[] }>(`/api/v1/workspaces/${id}/categories`)
       .catch(() => ({ items: [] })),
+    loadWorkspaceCapabilities(id),
   ]);
   uiContext.state.channels = channelsResp.items ?? [];
   uiContext.state.categories = categoriesResp.items ?? [];

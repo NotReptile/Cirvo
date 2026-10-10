@@ -7,6 +7,7 @@ export type RenderRegion =
   | "voice"
   | "call"
   | "modal"
+  | "presence"
   | "status";
 type Renderer = (regions?: ReadonlySet<RenderRegion>) => void;
 let renderer: Renderer | null = null;

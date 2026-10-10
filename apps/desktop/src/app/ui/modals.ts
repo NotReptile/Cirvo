@@ -29,6 +29,7 @@ import {
   renderWorkspaceRolesModal,
 } from "./workspaceRoles";
 import { renderWorkspaceSettingsModal } from "./workspaceSettings";
+import { canWorkspace, unavailablePermissionsModal } from "./capabilities";
 
 export function renderModal(): string {
   if (!uiContext.state.modal) return "";
@@ -61,6 +62,7 @@ export function renderModal(): string {
 // Wave 5 (J.5b): модалка прав категории. Role-overrides, наследуются всеми
 // каналами категории; канальные overrides их перекрывают.
 export function renderCategoryPermissionsModal(): string {
+  if (!canWorkspace("channel.update")) return unavailablePermissionsModal();
   const cp = uiContext.state.categoryPerms;
   const cat = uiContext.state.categories.find((c) => c.id === cp.categoryId);
   if (!cat) return "";
@@ -112,11 +114,13 @@ export async function openCategoryPermissions(
     data: null,
     draft: {},
   };
+  const cp = uiContext.state.categoryPerms;
   render();
   try {
     const data = await uiContext.httpClient.get<CategoryPermsState["data"]>(
       `/api/v1/categories/${categoryId}/permissions`,
     );
+    if (uiContext.state.categoryPerms !== cp) return;
     uiContext.state.categoryPerms.data = data;
     const draft: PermDraft = {};
     if (data) {
@@ -132,16 +136,16 @@ export async function openCategoryPermissions(
     }
     uiContext.state.categoryPerms.draft = draft;
   } catch (err) {
-    uiContext.state.categoryPerms.error = describeError(err);
+    cp.error = describeError(err);
   } finally {
-    uiContext.state.categoryPerms.loading = false;
-    render();
+    cp.loading = false;
+    if (uiContext.state.categoryPerms === cp) render();
   }
 }
 
 export async function saveCategoryPermissions(): Promise<void> {
   const cp = uiContext.state.categoryPerms;
-  if (!cp.categoryId) return;
+  if (!cp.categoryId || cp.saving) return;
   cp.saving = true;
   cp.error = null;
   render();
@@ -154,12 +158,13 @@ export async function saveCategoryPermissions(): Promise<void> {
         ),
       },
     );
-    uiContext.state.categoryPerms.data = data;
+    if (uiContext.state.categoryPerms !== cp) return;
+    cp.data = data;
     setTransientStatus("Права категории сохранены");
   } catch (err) {
     cp.error = describeError(err);
   } finally {
     cp.saving = false;
-    render();
+    if (uiContext.state.categoryPerms === cp) render();
   }
 }

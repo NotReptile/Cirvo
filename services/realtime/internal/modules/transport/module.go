@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -40,13 +41,15 @@ type Dispatcher interface {
 }
 
 type Module struct {
-	logger      *slog.Logger
-	db          *postgres.Pool
-	jwt         *jwtauth.Issuer
-	hub         *hub.Hub
-	journal     *eventjournal.Journal
-	tickets     *sharedticket.Store
-	dispatchers []Dispatcher
+	logger         *slog.Logger
+	db             *postgres.Pool
+	jwt            *jwtauth.Issuer
+	hub            *hub.Hub
+	journal        *eventjournal.Journal
+	tickets        *sharedticket.Store
+	dispatchers    []Dispatcher
+	presenceLockMu sync.Mutex
+	presenceLocks  map[uuid.UUID]*presenceLock
 }
 
 func NewModule(logger *slog.Logger, db *postgres.Pool, jwt *jwtauth.Issuer, h *hub.Hub, journal *eventjournal.Journal, tickets *sharedticket.Store, dispatchers ...Dispatcher) *Module {
@@ -110,9 +113,9 @@ func (m *Module) connectAuthenticated(w http.ResponseWriter, r *http.Request, us
 	wsConn.SetReadLimit(maxReadBytes)
 
 	connection := hub.NewConnection(sessionID, userID, workspaces)
-	m.hub.Add(connection)
+	m.connectPresence(connection)
 	defer func() {
-		m.hub.Remove(connection)
+		m.disconnectPresence(connection)
 		_ = wsConn.Close(websocket.StatusNormalClosure, "bye")
 	}()
 
@@ -167,7 +170,9 @@ func (m *Module) initializeSync(ctx context.Context, conn *hub.Connection, works
 		items, replayErr := m.journal.Replay(syncCtx, conn.UserID, workspaces, cursor, highWater)
 		if replayErr != nil || len(items) >= eventjournal.MaxReplayItems {
 			requiresSnapshot = true
-			if replayErr != nil {
+			if errors.Is(replayErr, eventjournal.ErrReplayLimit) {
+				reason = "replay_limit"
+			} else if replayErr != nil {
 				reason = "replay_failed"
 			} else {
 				reason = "replay_limit"
@@ -202,7 +207,9 @@ func (m *Module) sendControl(conn *hub.Connection, event string, payload any) {
 }
 
 func (m *Module) sendPresence(conn *hub.Connection, workspaces []uuid.UUID) {
-	if encoded, err := json.Marshal(buildPresenceSnapshot(workspaces)); err == nil {
+	snapshot := buildPresenceSnapshot(workspaces)
+	snapshot.Payload.Users = m.visiblePresenceSnapshot(conn.UserID, workspaces)
+	if encoded, err := json.Marshal(snapshot); err == nil {
 		conn.SendReplay(encoded)
 	}
 }
@@ -309,12 +316,7 @@ func (m *Module) refreshSubscriptions(ctx context.Context, conn *hub.Connection)
 		return
 	}
 	m.hub.UpdateWorkspaces(conn, workspaces)
-	if encoded, err := json.Marshal(buildPresenceSnapshot(workspaces)); err == nil {
-		select {
-		case conn.Send <- encoded:
-		default:
-		}
-	}
+	m.sendPresence(conn, workspaces)
 }
 
 func (m *Module) touchSession(ctx context.Context, sessionID uuid.UUID) {
@@ -378,8 +380,9 @@ type presenceSnapshot struct {
 }
 
 type presenceSnapshotPL struct {
-	Workspaces []string `json:"workspaces"`
-	Timestamp  string   `json:"timestamp"`
+	Users      []presenceView `json:"users,omitempty"`
+	Workspaces []string       `json:"workspaces"`
+	Timestamp  string         `json:"timestamp"`
 }
 
 func buildPresenceSnapshot(workspaces []uuid.UUID) presenceSnapshot {

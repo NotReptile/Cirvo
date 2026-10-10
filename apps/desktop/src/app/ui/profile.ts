@@ -1,17 +1,16 @@
 import { icon } from "../icons";
 import { requestRender as render } from "../runtime";
 import { uiContext } from "../state";
+import { resolveUserPresence, presenceRevision, applyPresenceSnapshot } from "../presence";
 import type { ProfileWidget, UserProfileData } from "../types";
 import { escapeHtml } from "../util/html";
 import { badgeHtml, nameGradientStyle, parseGradient } from "./callView";
 import { renderBody } from "./messageView";
-import { presenceDotClass, renderAvatar } from "./shell";
+import { renderBellButton } from "./channelView";
+import { presenceDotClass, presenceLabel, renderAvatar } from "./shell";
 
-// Discord-style user profile popup — компактная карточка для просмотра
-// чужого профиля. Открывается кликом по member-sidebar и по author'у в
-// сообщении (TODO). Read-only с двумя action'ами: «Сообщение» (DM) и
-// «Позвонить». Источник данных — state.members[userId], плюс fallback
-// на state.dms.peer для DM-сценариев.
+// Компактный профиль возле участника, автора сообщения или своей панели.
+// Собственный профиль использует me; чужой — свежие данные и presence cache.
 export function renderUserProfilePopup(): string {
   const userId = uiContext.state.userProfileTarget;
   if (!userId) return "";
@@ -21,22 +20,13 @@ export function renderUserProfilePopup(): string {
   // I.6: source-of-truth для расширенных полей — state.userProfileData
   // (тянется лениво при openUserProfile) либо state.me для self.
   const extras = isSelf ? uiContext.state.me : uiContext.state.userProfileData;
-  const name =
-    member?.displayName ||
-    member?.username ||
-    dm?.peer.displayName ||
-    dm?.peer.username ||
-    extras?.displayName ||
-    extras?.username ||
-    "Пользователь";
-  const username =
-    member?.username || dm?.peer.username || extras?.username || "";
-  const avatarMediaId =
-    member?.avatarMediaId || dm?.peer.avatarMediaId || extras?.avatarMediaId;
-  const presenceMode =
-    member?.presenceMode || dm?.peer.presenceMode || extras?.presenceMode;
-  const customStatus =
-    member?.customStatus || dm?.peer.customStatus || extras?.customStatus;
+  const identity = extras ?? member ?? dm?.peer;
+  const name = identity?.displayName || identity?.username || member?.displayName || dm?.peer.displayName || "Пользователь";
+  const username = identity?.username || member?.username || dm?.peer.username || "";
+  const avatarMediaId = identity?.avatarMediaId;
+  const presence = resolveUserPresence(userId, extras ?? member ?? dm?.peer);
+  const presenceMode = presence.mode;
+  const customStatus = presence.customStatus;
   const role = member?.role;
   const bio = extras?.bio;
   const bannerMediaId = extras?.bannerMediaId;
@@ -71,8 +61,8 @@ export function renderUserProfilePopup(): string {
       ? `<div class="profile-effect profile-effect-${profileEffect}" aria-hidden="true"></div>`
       : "";
   return `
-    <div class="modal-backdrop" data-modal-close>
-      <div class="modal user-profile-popup" role="dialog">
+    <div class="modal-backdrop user-profile-backdrop" data-modal-close>
+      <div class="modal user-profile-popup" role="dialog" aria-label="Профиль ${escapeHtml(name)}">
         <div class="user-profile-banner" style="${bannerStyle}"${bannerAttrs}>${effectOverlay}</div>
         <button class="user-profile-close" data-modal-close data-tooltip="Закрыть">✕</button>
         <div class="user-profile-avatar-row">
@@ -84,13 +74,15 @@ export function renderUserProfilePopup(): string {
         <div class="user-profile-card"${cardStyle}>
           <div class="user-profile-name"><span${nameGradientStyle(nameGradient)}>${escapeHtml(name)}</span>${badgeHtml(badgeEmoji, badgeLabel)}</div>
           ${username ? `<div class="user-profile-username">@${escapeHtml(username)}</div>` : ""}
+          ${isSelf ? `<button id="open-status" class="ghost user-profile-presence" aria-haspopup="menu"><span class="presence-dot ${presenceDotClass(presenceMode)}"></span>${presenceLabel(presenceMode)} <span aria-hidden="true">▾</span></button>` : `<div class="user-profile-presence"><span class="presence-dot ${presenceDotClass(presenceMode)}"></span>${presenceLabel(presenceMode)}</div>`}
           ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
-          ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(role)}</span></div>` : ""}
+          ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(({ owner: "Владелец", admin: "Администратор", moderator: "Модератор", member: "Участник" } as Record<string, string>)[role] ?? role)}</span></div>` : ""}
           ${bio ? `<div class="user-profile-bio">${renderBody(bio)}</div>` : ""}
           ${renderProfileWidgets()}
           ${
             isSelf
-              ? ""
+              ? `<button class="primary" data-self-profile-edit>${icon("pencil")} Редактировать профиль</button>
+                ${uiContext.state.voiceSnapshot?.channelId || uiContext.state.callSnapshot?.state === "active" ? `<div class="user-profile-utilities">${renderBellButton()}${uiContext.state.me?.isRoot ? `<button id="open-admin" class="ghost" aria-label="Админ-панель">${icon("shield")} Админ-панель</button>` : ""}</div>` : ""}`
               : `<div class="user-profile-actions">
                   <button class="primary user-profile-dm" data-user-id="${escapeHtml(userId)}">${icon("reply")} Сообщение</button>
                   ${!inCall ? `<button class="ghost user-profile-call" data-user-id="${escapeHtml(userId)}">${icon("phone")} Позвонить</button>` : ""}
@@ -168,7 +160,65 @@ export function renderProfileFriendActions(userId: string): string {
   return `<div class="user-profile-actions user-profile-friend-actions">${friendBtn}${blockBtn}</div>`;
 }
 
-export function openUserProfile(userId: string): void {
+let profileRequest = 0;
+let profileOpener: HTMLElement | null = null;
+let profileOpenerSelector: string | null = null;
+let profileWasOpen = false;
+
+function currentProfileOpener(): HTMLElement | null {
+  if (profileOpener?.isConnected) return profileOpener;
+  return profileOpenerSelector ? uiContext.rootEl.querySelector<HTMLElement>(profileOpenerSelector) : null;
+}
+
+export function polishProfilePopover(): void {
+  const popup = uiContext.rootEl.querySelector<HTMLElement>(".user-profile-popup");
+  if (!popup) {
+    if (profileWasOpen && uiContext.state.modal === null) currentProfileOpener()?.focus({ preventScroll: true });
+    profileWasOpen = false;
+    return;
+  }
+  profileWasOpen = true;
+  const opener = currentProfileOpener();
+  const anchor = opener ? opener.getBoundingClientRect() : uiContext.state.userProfileAnchor;
+  const rect = popup.getBoundingClientRect();
+  const margin = 8;
+  let x = (window.innerWidth - rect.width) / 2;
+  let y = (window.innerHeight - rect.height) / 2;
+  if (anchor) {
+    x = anchor.x + anchor.width + margin;
+    if (x + rect.width > window.innerWidth - margin) x = anchor.x - rect.width - margin;
+    if (x < margin) x = anchor.x;
+    y = anchor.y;
+    if (y + rect.height > window.innerHeight - margin) y = anchor.y - rect.height - margin;
+  }
+  popup.style.left = `${Math.max(margin, Math.min(x, window.innerWidth - rect.width - margin))}px`;
+  popup.style.top = `${Math.max(margin, Math.min(y, window.innerHeight - rect.height - margin))}px`;
+  if (!popup.dataset.focusInitialized) {
+    popup.dataset.focusInitialized = "true";
+    popup.querySelector<HTMLElement>(".user-profile-close")?.focus();
+  }
+}
+
+window.addEventListener("resize", polishProfilePopover);
+
+export function openUserProfile(userId: string, anchor?: HTMLElement): void {
+  const request = ++profileRequest;
+  const current = () => request === profileRequest && uiContext.state.modal === "userProfile" && uiContext.state.userProfileTarget === userId;
+  profileOpener = anchor ?? null;
+  profileOpenerSelector = null;
+  if (anchor?.id) profileOpenerSelector = `#${CSS.escape(anchor.id)}`;
+  else if (anchor?.dataset.memberUser) profileOpenerSelector = `[data-member-user="${CSS.escape(anchor.dataset.memberUser)}"]`;
+  else if (anchor?.dataset.friendProfile) profileOpenerSelector = `[data-friend-profile="${CSS.escape(anchor.dataset.friendProfile)}"]`;
+  else if (anchor?.dataset.profileUser) {
+    const message = anchor.closest<HTMLElement>(".message[data-id]");
+    const tile = anchor.closest<HTMLElement>("[data-voice-tile]");
+    const parent = message ? `.message[data-id="${CSS.escape(message.dataset.id!)}"] ` : tile ? `[data-voice-tile="${CSS.escape(tile.dataset.voiceTile!)}"] ` : "";
+    const kind = anchor.classList.contains("profile-name-button") ? ".profile-name-button" : anchor.classList.contains("profile-avatar-button") ? ".profile-avatar-button" : "";
+    profileOpenerSelector = `${parent}[data-profile-user="${CSS.escape(anchor.dataset.profileUser)}"]${kind}`;
+  }
+  if (profileOpener) profileOpener.focus();
+  const rect = anchor?.getBoundingClientRect();
+  uiContext.state.userProfileAnchor = rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
   uiContext.state.userProfileTarget = userId;
   uiContext.state.userProfileData = null;
   uiContext.state.userProfileWidgets = null;
@@ -179,7 +229,7 @@ export function openUserProfile(userId: string): void {
       const data = await uiContext.httpClient.get<{ items: ProfileWidget[] }>(
         `/api/v1/users/${userId}/widgets`,
       );
-      if (uiContext.state.userProfileTarget === userId) {
+      if (current()) {
         uiContext.state.userProfileWidgets = data.items ?? [];
         render();
       }
@@ -218,13 +268,14 @@ export function openUserProfile(userId: string): void {
   }
   render();
   if (userId !== uiContext.state.me?.id) {
+    const started = presenceRevision();
     void (async () => {
       try {
         const data = await uiContext.httpClient.get<UserProfileData>(
           `/api/v1/users/${userId}`,
         );
-        if (uiContext.state.userProfileTarget === userId) {
-          uiContext.state.userProfileData = data;
+        if (current()) {
+          uiContext.state.userProfileData = applyPresenceSnapshot(userId, data, started);
           render();
         }
       } catch {

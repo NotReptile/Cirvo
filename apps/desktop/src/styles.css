@@ -154,6 +154,35 @@ input[type="checkbox"]:checked::before {
 }
 input[type="checkbox"]:disabled { opacity: 0.4; cursor: not-allowed; }
 
+input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+}
+input[type="radio"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: scale(0);
+}
+input[type="radio"]:checked { border-color: var(--accent); }
+input[type="radio"]:checked::before { transform: scale(1); }
+input[type="radio"]:disabled { opacity: 0.4; cursor: not-allowed; }
+input[type="number"] { appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
 /* Тумблер (Discord-like) для «настроечных» рядов: label слева — тумблер
    справа. Разметка та же (input type=checkbox), вид задаёт контекст. */
 .settings-check input[type="checkbox"],
@@ -460,10 +489,10 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   background: transparent;
   border: 0;
-  padding: 4px;
+  padding: 2px;
   border-radius: 4px;
   color: var(--text);
   cursor: pointer;
@@ -487,7 +516,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .user-strip-actions { display: flex; gap: 2px; flex-shrink: 0; }
 /* Глобальное правило button даёт 6px 12px: три иконки отнимали у имени 130 из 240 px. */
-.user-strip-actions button { padding: 6px; }
+.user-strip-actions button { width: 26px; height: 30px; padding: 0; display: grid; place-items: center; }
 .sidebar {
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
@@ -1701,25 +1730,34 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ===== Persistent voice strip in sidebar (B.4) ===== */
 .voice-strip {
-  margin-top: auto;
-  padding: 10px;
+  flex-shrink: 0;
+  padding: 8px 10px;
   background: rgba(67, 181, 129, 0.08);
   border-top: 1px solid rgba(67, 181, 129, 0.25);
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .voice-strip-header {
+  min-width: 0;
+  flex: 1;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 4px 0;
+  background: transparent;
+  border: 0;
+  text-align: left;
   font-size: 12px;
   color: #43b581;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   cursor: pointer;
 }
+.voice-strip-status { display: flex; align-items: center; gap: 6px; }
+.voice-strip-status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-strip-header .voice-strip-channel { width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 22px; font-size: 11px; }
 .voice-strip-header:hover { color: #5ad59b; }
 .voice-strip-channel { color: var(--text); text-transform: none; letter-spacing: 0; font-weight: 500; }
 .voice-strip-list {
@@ -1763,6 +1801,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   content: "🎙 Говорите";
   color: #43b581;
 }
+.voice-strip.ptt-mode::after { flex-basis: 100%; margin-top: 0; text-align: left; }
 
 .call-overlay {
   position: fixed;
@@ -1836,9 +1875,20 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 24px;
-  gap: 16px;
-  overflow-y: auto;
+  min-height: 0;
+  padding: clamp(12px, 2vw, 24px);
+  gap: 18px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.voice-room-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  gap: 8px;
 }
 .voice-room-body h3 {
   margin: 0 0 12px 0;
@@ -1867,9 +1917,19 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .voice-participant.self { background: rgba(67, 181, 129, 0.12); }
 .voice-tiles {
+  flex: 1;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(var(--voice-columns, 2), minmax(0, 1fr));
+  grid-auto-rows: minmax(150px, 1fr);
   gap: 12px;
+  overflow-y: auto;
+}
+@container (max-width: 720px) {
+  .voice-tiles:not(.screen-layout) { grid-template-columns: repeat(var(--voice-columns-small, 2), minmax(0, 1fr)); }
+}
+@container (max-width: 420px) {
+  .voice-tiles:not(.screen-layout) { grid-template-columns: minmax(0, 1fr); }
 }
 /* Когда кто-то шарит экран — layout «primary + strip»: один большой
    tile сверху, остальные в горизонтальной полосе. Большой растягивается
@@ -1887,16 +1947,19 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 .voice-primary .voice-tile.primary {
   flex: 1;
   aspect-ratio: auto;
-  min-height: 240px;
+  min-height: 160px;
 }
 .voice-strip-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 8px;
-  max-height: 140px;
+  flex-shrink: 0;
+  max-height: 112px;
+  overflow-y: auto;
 }
 .voice-strip-tiles .voice-tile {
   aspect-ratio: 16/9;
+  min-height: 0;
 }
 .voice-tile.sharing {
   border-color: rgba(88,101,242,0.5);
@@ -1913,7 +1976,8 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .voice-tile {
   position: relative;
-  aspect-ratio: 16/9;
+  min-width: 0;
+  min-height: 150px;
   background: #181a1f;
   border-radius: 8px;
   overflow: hidden;
@@ -1927,10 +1991,18 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
+  gap: 12px;
   align-items: center;
   justify-content: center;
   background: radial-gradient(circle at 50% 42%, #232730 0%, #181a1f 75%);
 }
+.voice-tile-custom-status { max-width: 80%; color: var(--text-mute); font-size: 13px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-tile-avatar-button { padding: 0; border: 0; border-radius: 50%; background: transparent; }
+.voice-tile-avatar-button:hover { background: transparent; filter: brightness(1.08); }
+.voice-tile-overlay .voice-name { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; }
+.voice-tile-overlay .voice-name:hover { text-decoration: underline; }
+.call-bar-title[data-profile-user] { padding: 0; border: 0; background: transparent; text-align: left; }
 .voice-tile.has-video .voice-tile-placeholder { display: none; }
 .voice-tile-placeholder .avatar-pic {
   transition: box-shadow 80ms linear;
@@ -1981,11 +2053,20 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   flex-shrink: 0;
 }
 .voice-name { flex: 1; }
+.voice-tile-overlay .voice-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-tile-overlay { max-width: calc(100% - 16px); }
 .voice-room-actions {
   display: flex;
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+  flex-shrink: 0;
+  justify-content: center;
+  align-self: center;
+  padding: 8px 12px;
+  border-radius: 18px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
 }
 /* Разделитель между группой контролов и hangup-кнопкой. */
 .voice-actions-sep {
@@ -2902,6 +2983,29 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   border-radius: 4px;
   margin-bottom: 12px;
 }
+.perm-grid-container { container-type: inline-size; min-width: 0; }
+@container (max-width: 800px) {
+  .perm-table thead { display: none; }
+  .perm-table tbody { display: block; }
+  .perm-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .perm-table tbody td { min-width: 0; border: 0; padding: 0; text-align: left; }
+  .perm-table tbody .perm-action-col { grid-column: 1 / -1; width: auto; font-weight: 600; }
+  .perm-table td[data-permission-label]::before {
+    content: attr(data-permission-label);
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11px;
+    color: var(--text-mute);
+    overflow-wrap: anywhere;
+  }
+  .perm-table .listbox-wrapper { width: 100%; min-width: 0; }
+}
 .perm-table {
   width: 100%;
   border-collapse: collapse;
@@ -3405,7 +3509,9 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 .roles-modal { width: min(960px, 95vw); }
 .roles-modal-body {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
   gap: 16px;
   max-height: 70vh;
   overflow: hidden;
@@ -3463,7 +3569,15 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   color: var(--text-mute);
 }
 .roles-list-item.active .role-count { background: rgba(0,0,0,0.25); color: rgba(255,255,255,0.85); }
+.roles-list, .roles-detail { min-height: 0; min-width: 0; }
 .roles-detail { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding-right: 8px; }
+.roles-detail > * { flex-shrink: 0; }
+.roles-detail-header { min-width: 0; flex-wrap: wrap; }
+.role-name-input { min-width: 0; }
+.roles-detail-actions { flex-wrap: wrap; }
+@media (max-width: 900px) {
+  .roles-modal-body { grid-template-columns: 160px minmax(0, 1fr); gap: 12px; }
+}
 .roles-detail-header { display: flex; align-items: baseline; gap: 12px; }
 .role-name-input { font-size: 18px; font-weight: 600; background: transparent; border: 0; border-bottom: 1px solid var(--border); padding: 4px 2px; flex: 1; }
 .role-name-input:focus { outline: none; border-bottom-color: var(--accent); }
@@ -3474,7 +3588,10 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 .role-field-check { gap: 8px; }
 .roles-detail-section { display: flex; flex-direction: column; gap: 8px; }
 .roles-section-title { font-weight: 600; font-size: 12px; text-transform: uppercase; color: var(--text-mute); }
-.roles-actions-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.roles-actions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+@media (max-width: 900px) {
+  .roles-actions-grid { grid-template-columns: minmax(0, 1fr); }
+}
 .role-action-check { display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: 4px; cursor: pointer; font-size: 13px; }
 .role-action-check:hover { background: var(--bg-elev-2); }
 .roles-members-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px; max-height: 240px; overflow-y: auto; }
@@ -4180,6 +4297,26 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .profile-card-avatar-wrap:hover .profile-card-avatar-remove { opacity: 1; }
 .profile-card-avatar-remove:hover { background: #ed4245; color: #fff; }
 
+.settings-profile-head {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  margin-top: 0;
+  padding: 0 0 16px;
+}
+.settings-profile-head .profile-banner-area {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.settings-profile-head .profile-card-avatar-wrap { margin: -52px 0 0 16px; align-self: start; }
+.settings-profile-head .profile-card-name { min-width: 0; padding-right: 16px; }
+.settings-profile-head .profile-card-display { overflow-wrap: anywhere; }
+.settings-profile-head .profile-card-bio-preview { grid-column: 1 / -1; margin: 0 16px; }
+.settings-profile-head + .profile-card-fields { max-height: none; overflow: visible; }
+
 .profile-card-fields {
   background: var(--bg);
   margin: 0 16px 16px;
@@ -4292,9 +4429,29 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   width: 340px;
   max-width: 90vw;
   padding: 0;
-  overflow: hidden;
-  position: relative;
+  overflow: auto;
+  position: fixed;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  box-shadow: 0 12px 40px rgba(0,0,0,.5);
 }
+.user-profile-backdrop { background: transparent; }
+.profile-avatar-button, .profile-name-button { border: 0; padding: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.profile-avatar-button { flex: 0 0 auto; align-self: flex-start; border-radius: 50%; }
+.profile-name-button:hover { text-decoration: underline; }
+.user-profile-presence { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 0; }
+.user-profile-presence .presence-dot { position: static; flex: 0 0 auto; }
+.user-profile-presence .icon { margin-left: auto; }
+.user-profile-card > [data-self-profile-edit] { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.user-profile-card > [data-self-profile-edit] svg { flex: 0 0 18px; width: 18px; height: 18px; }
+.user-profile-utilities { display: flex; align-items: center; gap: 8px; }
+.user-profile-utilities > button { display: flex; align-items: center; gap: 6px; }
+.user-strip.with-audio { padding-inline: 8px; }
+.user-strip.with-audio .user-strip-actions { gap: 2px; }
+.user-strip.with-audio .call-icon-btn { width: 30px; height: 32px; }
+.ch-panel > #region-voice { flex: 0 0 auto; }
+.status-menu { z-index: 120; }
+.channel-menu-backdrop:has(+ .status-menu) { z-index: 119; }
 .user-profile-banner {
   height: 80px;
   background: linear-gradient(135deg, var(--accent), #5b6eae, #2c3148);
@@ -5729,6 +5886,26 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
    позиционированный 0×0 (но не display:none — иначе теряет
    form-функциональность и события); поверх рисуется кастомный trigger
    и popup в стиле channel-menu. */
+.rucord-input-control { position: relative; display: inline-flex; min-width: 0; }
+.rucord-input-control > input { position: absolute; width: 1px !important; height: 1px; opacity: 0; pointer-events: none; }
+.rucord-input-trigger { display: flex; align-items: center; gap: 8px; min-height: 32px; font-variant-numeric: tabular-nums; }
+.rucord-color-control .rucord-input-trigger::before { content: ""; width: 20px; height: 20px; border: 1px solid var(--text-mute); border-radius: 4px; background: var(--control-color); }
+.rucord-input-picker {
+  position: fixed; inset: auto; margin: 0; width: 280px; max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px); overflow: auto; padding: 12px;
+  background: var(--bg-elev); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 32px #0006;
+}
+.rucord-input-picker label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 12px; }
+.rucord-color-palette { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.rucord-color-palette button { height: 30px; border: 1px solid var(--text-mute); }
+.rucord-calendar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.rucord-calendar-header strong { text-align: center; font-size: 13px; }
+.rucord-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-bottom: 10px; }
+.rucord-calendar-grid span { text-align: center; font-size: 11px; color: var(--text-mute); }
+.rucord-calendar-grid button { padding: 6px 0; }
+.rucord-calendar-grid button[aria-pressed="true"] { background: var(--accent); color: white; }
+
 .listbox-wrapper {
   position: relative;
   display: inline-block;
@@ -5831,3 +6008,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   opacity: 0.4;
   cursor: not-allowed;
 }
+.listbox-popup.listbox-portal {
+  position: fixed; inset: auto; min-width: 0; display: block; z-index: 10000;
+  max-width: calc(100vw - 16px); animation: none;
+}
+.listbox-popup.listbox-portal:not(.is-open) { display: none; }
+.listbox-popup.listbox-portal.is-open { display: block; }
+.listbox-option.active { background: var(--bg-elev-2); outline: 1px solid var(--accent); outline-offset: -1px; }
+.listbox-trigger:disabled { cursor: not-allowed; opacity: 0.5; }

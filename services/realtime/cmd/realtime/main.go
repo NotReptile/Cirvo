@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
 
 	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
 	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
@@ -81,8 +82,8 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	go runSubscriber(rootCtx, subscriber, h)
-	go runOutbox(rootCtx, journal, h, logger)
+	go runSubscriber(rootCtx, subscriber, db, h)
+	go runOutbox(rootCtx, journal, db, h, logger)
 	go pruneJournal(rootCtx, journal, logger)
 
 	logger.Info("starting realtime server", "address", cfg.HTTPAddress, "environment", cfg.Environment)
@@ -126,10 +127,10 @@ func parseCORSOrigins(raw string) []string {
 	return out
 }
 
-func runSubscriber(ctx context.Context, subscriber *realtimebus.Subscriber, h *hub.Hub) {
+func runSubscriber(ctx context.Context, subscriber *realtimebus.Subscriber, db *postgres.Pool, h *hub.Hub) {
 	for {
 		err := subscriber.Listen(ctx, func(event realtimebus.Envelope) {
-			broadcastEnvelope(h, event)
+			broadcastEnvelope(ctx, db, h, event)
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			time.Sleep(time.Second)
@@ -139,7 +140,7 @@ func runSubscriber(ctx context.Context, subscriber *realtimebus.Subscriber, h *h
 	}
 }
 
-func runOutbox(ctx context.Context, journal *eventjournal.Journal, h *hub.Hub, logger interface {
+func runOutbox(ctx context.Context, journal *eventjournal.Journal, db *postgres.Pool, h *hub.Hub, logger interface {
 	Warn(string, ...any)
 }) {
 	ticker := time.NewTicker(time.Second)
@@ -155,29 +156,60 @@ func runOutbox(ctx context.Context, journal *eventjournal.Journal, h *hub.Hub, l
 				continue
 			}
 			for _, item := range items {
-				broadcastEnvelope(h, item)
-				_ = journal.MarkPublished(ctx, item.Seq)
+				if broadcastEnvelope(ctx, db, h, item) {
+					_ = journal.MarkPublished(ctx, item.Seq)
+				}
 			}
 		}
 	}
 }
 
-func broadcastEnvelope(h *hub.Hub, event realtimebus.Envelope) {
+func broadcastEnvelope(ctx context.Context, db *postgres.Pool, h *hub.Hub, event realtimebus.Envelope) bool {
+	channelID, err := event.ChannelScope()
+	if err != nil {
+		return true // Discard malformed notification payloads without exposing them.
+	}
+	event.ChannelID = channelID
 	payload, err := json.Marshal(event)
 	if err != nil {
-		return
+		return true
 	}
+	var users []uuid.UUID
 	if event.UserID != "" {
 		if uid, err := uuid.Parse(event.UserID); err == nil {
-			h.BroadcastUser(uid, payload)
+			users = []uuid.UUID{uid}
 		}
-		return
-	}
-	if event.WorkspaceID != "" {
+	} else if event.WorkspaceID != "" {
 		if wsID, err := uuid.Parse(event.WorkspaceID); err == nil {
-			h.BroadcastWorkspace(wsID, payload)
+			if event.ChannelID == "" {
+				h.BroadcastWorkspace(wsID, payload)
+				return true
+			}
+			users = h.WorkspaceUsers(wsID)
 		}
 	}
+	if event.ChannelID != "" && len(users) > 0 {
+		channelID, err := uuid.Parse(event.ChannelID)
+		if err != nil {
+			return true
+		}
+		checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		allowed, err := channelacl.VisibleMembers(checkCtx, db, channelID, users)
+		if err != nil {
+			return false
+		}
+		for _, userID := range users {
+			if allowed[userID] {
+				h.BroadcastUser(userID, payload)
+			}
+		}
+	} else {
+		for _, userID := range users {
+			h.BroadcastUser(userID, payload)
+		}
+	}
+	return true
 }
 
 func pruneJournal(ctx context.Context, journal *eventjournal.Journal, logger interface {
