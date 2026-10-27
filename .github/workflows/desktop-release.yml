@@ -1,14 +1,13 @@
 # Release-сборка desktop-клиента на тег v*.
 #
 # По умолчанию собирается только Windows (.msi + NSIS .exe): это основная
-# платформа пользователей, а в приватном репозитории минуты macOS тарифицируются
-# с множителем x10. macOS и Linux включаются вручную: Actions → desktop-release →
-# Run workflow → platforms = all.
+# платформа пользователей, а macOS-сборка заметно дольше. macOS и Linux
+# включаются вручную: Actions → desktop-release → Run workflow → platforms = all.
 #
 # Результат — draft-релиз в GitHub Releases. Проверяешь артефакты руками и
 # публикуешь сам. tauri-action дополнительно генерирует подписанный latest.json
-# для auto-update. Для приватного репозитория подписанные артефакты размещаются
-# на сервере за авторизацией — подробности в docs/runbooks/desktop-release.md.
+# для auto-update. Подписанные артефакты обновлений размещаются на сервере
+# оператора — подробности в docs/runbooks/desktop-release.md.
 #
 # Требуемые Secrets:
 #   TAURI_SIGNING_PRIVATE_KEY          — приватный ключ updater-подписи
