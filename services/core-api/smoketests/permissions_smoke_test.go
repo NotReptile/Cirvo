@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
+	"github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
 )
 
 func testPermissionCapabilities(t *testing.T) {

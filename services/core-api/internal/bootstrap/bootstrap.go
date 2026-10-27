@@ -15,10 +15,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/services/core-api/internal/accountrules"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
+	"github.com/NotReptile/Cirvo/libs/shared-go/passwords"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/accountrules"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/modules/role"
 )
 
 const (
@@ -43,12 +43,12 @@ type Config struct {
 
 func LoadFromEnv() Config {
 	return Config{
-		Email:         strings.ToLower(strings.TrimSpace(os.Getenv("RUCORD_BOOTSTRAP_EMAIL"))),
-		Username:      strings.ToLower(strings.TrimSpace(os.Getenv("RUCORD_BOOTSTRAP_USERNAME"))),
-		Password:      os.Getenv("RUCORD_BOOTSTRAP_PASSWORD"),
-		DisplayName:   strings.TrimSpace(os.Getenv("RUCORD_BOOTSTRAP_DISPLAY_NAME")),
-		WorkspaceSlug: strings.ToLower(strings.TrimSpace(os.Getenv("RUCORD_BOOTSTRAP_WORKSPACE_SLUG"))),
-		WorkspaceName: strings.TrimSpace(os.Getenv("RUCORD_BOOTSTRAP_WORKSPACE_NAME")),
+		Email:         strings.ToLower(strings.TrimSpace(os.Getenv("CIRVO_BOOTSTRAP_EMAIL"))),
+		Username:      strings.ToLower(strings.TrimSpace(os.Getenv("CIRVO_BOOTSTRAP_USERNAME"))),
+		Password:      os.Getenv("CIRVO_BOOTSTRAP_PASSWORD"),
+		DisplayName:   strings.TrimSpace(os.Getenv("CIRVO_BOOTSTRAP_DISPLAY_NAME")),
+		WorkspaceSlug: strings.ToLower(strings.TrimSpace(os.Getenv("CIRVO_BOOTSTRAP_WORKSPACE_SLUG"))),
+		WorkspaceName: strings.TrimSpace(os.Getenv("CIRVO_BOOTSTRAP_WORKSPACE_NAME")),
 	}
 }
 
@@ -66,7 +66,7 @@ func Run(ctx context.Context, db *postgres.Pool, logger *slog.Logger, cfg Config
 	}
 
 	if !cfg.HasCredentials() {
-		logger.Warn("users table is empty and RUCORD_BOOTSTRAP_* env is not set; first admin must self-register via /api/v1/auth/register")
+		logger.Warn("users table is empty and CIRVO_BOOTSTRAP_* env is not set; first admin must self-register via /api/v1/auth/register")
 		return nil
 	}
 
@@ -158,16 +158,16 @@ func (c Config) HasCredentials() bool {
 
 func (c Config) Validate() error {
 	if accountrules.ValidateEmail(c.Email) != nil {
-		return errors.New("RUCORD_BOOTSTRAP_EMAIL must be a valid email")
+		return errors.New("CIRVO_BOOTSTRAP_EMAIL must be a valid email")
 	}
 	if accountrules.ValidateUsername(c.Username) != nil {
-		return errors.New("RUCORD_BOOTSTRAP_USERNAME must be 3-32 chars of [a-z0-9_]")
+		return errors.New("CIRVO_BOOTSTRAP_USERNAME must be 3-32 chars of [a-z0-9_]")
 	}
 	if accountrules.ValidatePassword(c.Password) != nil {
-		return errors.New("RUCORD_BOOTSTRAP_PASSWORD must be 8-72 bytes")
+		return errors.New("CIRVO_BOOTSTRAP_PASSWORD must be 8-72 bytes")
 	}
 	if c.WorkspaceSlug != "" && !slugRE.MatchString(c.WorkspaceSlug) {
-		return errors.New("RUCORD_BOOTSTRAP_WORKSPACE_SLUG must match [a-z0-9-], length 3-64")
+		return errors.New("CIRVO_BOOTSTRAP_WORKSPACE_SLUG must match [a-z0-9-], length 3-64")
 	}
 	return nil
 }

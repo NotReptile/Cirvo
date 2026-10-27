@@ -16,14 +16,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
-	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
+	"github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/objectstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/ratelimit"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/routing"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/serversettings"
 )
 
 const (

@@ -19,7 +19,7 @@
 
 - Префикс `/api/v1`, JSON.
 - Публичные маршруты (`router.Public`): `POST /auth/register`, `/auth/login`, `/auth/refresh`, `GET /invites/{code}` (preview приглашения), а также `GET /healthz` и `GET /readyz`. Все остальные - `router.Protected`.
-- Аутентификация: `Authorization: Bearer <access JWT>`. Middleware проверяет JWT и то, что сессия в `user_sessions` не отозвана (иначе `401`, код `session_revoked`). TTL access-токена задаёт `RUCORD_JWT_ACCESS_TTL` (в compose по умолчанию `15m`), новый токен выдаёт `POST /auth/refresh`.
+- Аутентификация: `Authorization: Bearer <access JWT>`. Middleware проверяет JWT и то, что сессия в `user_sessions` не отозвана (иначе `401`, код `session_revoked`). TTL access-токена задаёт `CIRVO_JWT_ACCESS_TTL` (в compose по умолчанию `15m`), новый токен выдаёт `POST /auth/refresh`.
 - Формат ошибки: `{"error": {"code", "message", "requestId"}}`. Коды: `validation_failed`, `authentication_failed`, `authorization_denied`, `resource_not_found_or_not_visible`, `conflict`, `rate_limited`, `session_revoked`, `internal_error`, `message_already_processed`. Ресурс, который пользователь не должен видеть, как правило отдаётся как `404`, а не `403` (код `resource_not_found_or_not_visible`).
 - Rate limit (Redis): register 5 в час, login 10 за 5 минут, refresh 30 за 5 минут, принятие инвайта 20 в час, загрузки 60 запросов за 10 минут и 500 MiB в час на пользователя (см. код: константы `*Rule` в модулях `auth`, `invite`, `attachment`). Ответ `429` содержит `Retry-After`.
 

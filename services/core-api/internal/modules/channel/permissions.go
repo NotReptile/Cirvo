@@ -16,11 +16,11 @@ import (
 
 	"github.com/google/uuid"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/auditlog"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/modules/permission"
 )
 
 // manageableRoles — роли воркспейса, на которые можно навешивать

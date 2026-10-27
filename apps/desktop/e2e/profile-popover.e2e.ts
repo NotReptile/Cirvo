@@ -4,9 +4,9 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", route => route.fulfill({ json: { items: [] } }));
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.seed(20);
     qa.state().me.presenceMode = "dnd";
     qa.state().me.customStatus = "Проверяем интерфейс";
@@ -37,8 +37,8 @@ test("self mini-profile opens above the strip, shares status and enters profile 
   await page.keyboard.press("Escape");
   await expect(page.locator(".status-menu")).toHaveCount(0);
   await profile.locator("[data-self-profile-edit]").click();
-  await expect.poll(() => page.evaluate(() => (window as any).__RUCORD_QA__.state().modal)).toBe("settings");
-  await expect.poll(() => page.evaluate(() => (window as any).__RUCORD_QA__.state().settings.tab)).toBe("profile");
+  await expect.poll(() => page.evaluate(() => (window as any).__CIRVO_QA__.state().modal)).toBe("settings");
+  await expect.poll(() => page.evaluate(() => (window as any).__CIRVO_QA__.state().settings.tab)).toBe("profile");
 });
 
 test("member mini-profile follows live presence and dismisses without losing composer draft", async ({ page }) => {
@@ -46,7 +46,7 @@ test("member mini-profile follows live presence and dismisses without losing com
   await page.locator('[data-member-user="qa-user-0"]').click();
   const profile = page.locator(".user-profile-popup");
   await expect(profile).toBeVisible();
-  await page.evaluate(() => (window as any).__RUCORD_QA__.event({ event: "presence.updated",
+  await page.evaluate(() => (window as any).__CIRVO_QA__.event({ event: "presence.updated",
     payload: { userId: "qa-user-0", mode: "idle", customStatus: "Отошёл" } }));
   await expect(profile.locator(".user-profile-presence")).toContainText("Неактивен");
   await expect(profile.locator(".user-profile-status")).toHaveText("Отошёл");
@@ -80,5 +80,5 @@ test("late profile responses cannot repopulate a dismissed mini-profile", async 
   await (await response).finished();
   await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 0)));
   await expect(page.locator(".user-profile-popup")).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => (window as any).__RUCORD_QA__.state().userProfileData)).toBeNull();
+  await expect.poll(() => page.evaluate(() => (window as any).__CIRVO_QA__.state().userProfileData)).toBeNull();
 });

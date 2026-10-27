@@ -14,12 +14,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	sharedticket "github.com/NotReptile/RuCord/libs/shared-go/wsticket"
-	"github.com/NotReptile/RuCord/services/realtime/internal/eventjournal"
-	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/jwtauth"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	sharedticket "github.com/NotReptile/Cirvo/libs/shared-go/wsticket"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/eventjournal"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/hub"
 )
 
 const (

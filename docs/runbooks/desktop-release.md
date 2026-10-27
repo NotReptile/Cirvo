@@ -11,17 +11,15 @@ Windows-установщики и кладёт их в **draft**-релиз. Т�
 | Workflow `desktop-release.yml` | Готов. По умолчанию собирает только Windows (`.msi` и NSIS `.exe`) |
 | Ключ подписи обновлений | Создан. Публичная часть записана в `tauri.conf.json` → `plugins.updater.pubkey` |
 | Secrets `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Добавлены в репозиторий |
-| Репозиторий | **Приватный** |
-| Авто-обновление у пользователей | Через `/updates/latest.json` выбранного сервера, с авторизацией RuCord |
+| Репозиторий | **Публичный** |
+| Авто-обновление у пользователей | Через `/updates/latest.json` выбранного сервера, с авторизацией Cirvo |
 | Подпись exe (Authenticode) | Нет. SmartScreen покажет предупреждение |
 | Опубликованные релизы | Список в GitHub Releases; собираются из проверенного тега |
 
-### Обновления при приватном репозитории
+### Как клиент получает обновления
 
-Первый установщик передаётся вручную либо скачивается участником приватного
-репозитория. Последующие обновления клиент получает с выбранного HTTPS-сервера:
-`/updates/latest.json`. Манифест и файлы установщика защищены проверкой сессии
-RuCord. GitHub-токен в клиенте не нужен.
+Первый установщик берётся со страницы GitHub Releases. Последующие обновления клиент получает с выбранного HTTPS-сервера: `/updates/latest.json`. Манифест и файлы установщика защищены проверкой сессии
+Cirvo. GitHub-токен в клиенте не нужен.
 
 Оператор копирует подписанный NSIS-установщик и `.sig` из релиза на сервер,
 затем запускает `python3 deploy/prepare-desktop-update.py --release-dir <DIR>
@@ -75,7 +73,7 @@ npm run tauri signer generate -- -w $HOME/.tauri/rucord.key
 
 4. Actions → `desktop-release` собирает Windows-установщик (около 15–25 минут).
 5. В Releases появится **draft** с файлами установщиков и подписями. Манифест
-   `/updates/latest.json` публикуется отдельно на сервере RuCord; см. выше.
+   `/updates/latest.json` публикуется отдельно на сервере Cirvo; см. выше.
 6. Скачать `.exe`, поставить на чистую машину, убедиться, что запускается и
    подключается к серверу (см. [windows-client.md](windows-client.md)).
 7. Нажать **Publish release**.
@@ -87,8 +85,7 @@ npm run tauri signer generate -- -w $HOME/.tauri/rucord.key
 стартует сама. Actions → `desktop-release` → **Run workflow**. Укажи этот
 существующий тег и отметь `prerelease`. Суффикс при проверке версии
 отбрасывается, а релиз остаётся черновиком. Чтобы собрать ещё и macOS с Linux,
-выбери `platforms = all`. Минуты macOS в приватном репозитории считаются с
-множителем ×10.
+выбери `platforms = all`. macOS-сборка заметно дольше Windows-сборки.
 
 При ручном запуске исходники берутся из указанного тега независимо от выбранной
 ветки. Если поле `tag` пустое, нужно выбрать тег при запуске. Пустое поле или
@@ -96,12 +93,9 @@ npm run tauri signer generate -- -w $HOME/.tauri/rucord.key
 повторный запуск с `platforms = all` использует тот же тег, что и первоначальная
 Windows-сборка.
 
-## Как друзьям получить установщик (пока репозиторий приватный)
+## Как получить установщик
 
-- Добавить их в репозиторий как collaborators (`Settings → Collaborators`) с
-  правом Read. Тогда они скачают `.exe` со страницы Releases.
-- Либо скачать установщик самому и передать файл напрямую (облако, флешка).
-  Приложите SHA-256: `Get-FileHash RuCord_<версия>_x64-setup.exe`.
+Скачать `.exe` со страницы Releases репозитория. Проверка целостности: `Get-FileHash Cirvo_<версия>_x64-setup.exe`, сравнить с SHA-256 из описания релиза. Либо передать файл напрямую.
 
 ## Установка на Windows
 
@@ -124,7 +118,7 @@ cd apps/desktop
 npm run tauri build
 ```
 
-Результат: `apps/desktop/src-tauri/target/release/bundle/nsis/RuCord_<версия>_x64-setup.exe`
+Результат: `apps/desktop/src-tauri/target/release/bundle/nsis/Cirvo_<версия>_x64-setup.exe`
 и `bundle/msi/`. `npm run tauri dev` ключа не требует.
 
 ## Что не настроено

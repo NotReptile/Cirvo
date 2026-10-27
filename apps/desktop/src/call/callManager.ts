@@ -77,7 +77,7 @@ export class CallManager {
   private listeners = new Set<Listener>();
   private pc: RTCPeerConnection | null = null;
   private localStream: MediaStream | null = null;
-  // N.4: pipeline RuCord-шумодава. Владеет raw mic-стримом и AudioContext'ом;
+  // N.4: pipeline Cirvo-шумодава. Владеет raw mic-стримом и AudioContext'ом;
   // localStream выше — это pipeline.stream (для off/browser он же raw).
   private micPipeline: MicPipeline | null = null;
   // Wave 9: pipeline эффекта камеры (размытие фона). Владеет raw-track'ом;
@@ -512,7 +512,7 @@ export class CallManager {
       audio: buildAudioConstraints(),
       video: false,
     });
-    // N.4: rucord-режимы оборачивают микрофон в RNNoise-worklet; для
+    // N.4: cirvo-режимы оборачивают микрофон в RNNoise-worklet; для
     // off/browser pipeline прозрачный. При ошибке — fallback на raw внутри.
     const pipeline = await wrapMicStream(raw);
     if (generation !== this.generation || this.disposed) {
@@ -861,7 +861,7 @@ export class CallManager {
       this.pc = null;
     }
     // N.4: dispose pipeline'а до stop'а localStream — гасит raw mic-треки
-    // и AudioContext (для rucord-режимов в localStream только обработанный
+    // и AudioContext (для cirvo-режимов в localStream только обработанный
     // track, сырой без dispose оставил бы mic-индикатор висеть).
     if (this.micPipeline) {
       this.micPipeline.dispose();

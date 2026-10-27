@@ -28,17 +28,17 @@ import (
 
 	"github.com/google/uuid"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
-	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/jwtauth"
+	"github.com/NotReptile/Cirvo/libs/shared-go/objectstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/ratelimit"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
 
-	"github.com/NotReptile/RuCord/services/core-api/internal/app"
-	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
-	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/app"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/deps"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/serversettings"
 )
 
 var (
@@ -71,7 +71,7 @@ func TestMain(m *testing.M) {
 
 		jwt, err := jwtauth.NewIssuerFromEnv("core-api")
 		if err != nil {
-			log.Printf("smoke: skip — RUCORD_JWT_SECRET not set: %v", err)
+			log.Printf("smoke: skip — CIRVO_JWT_SECRET not set: %v", err)
 			return 0
 		}
 

@@ -9,8 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
 )
 
 type Event struct {

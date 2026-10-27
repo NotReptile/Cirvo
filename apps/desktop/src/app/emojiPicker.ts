@@ -163,7 +163,7 @@ const CATEGORIES: { label: string; items: EmojiEntry[] }[] = [
   }
 ];
 
-const RECENT_KEY = "rucord:recent-emoji";
+const RECENT_KEY = "cirvo:recent-emoji";
 const RECENT_CAP = 24;
 
 function loadRecent(): string[] {
@@ -193,7 +193,7 @@ let keyHandler: ((ev: KeyboardEvent) => void) | null = null;
 function ensureContainer(): HTMLDivElement {
   if (containerEl && document.body.contains(containerEl)) return containerEl;
   containerEl = document.createElement("div");
-  containerEl.id = "rucord-emoji-picker";
+  containerEl.id = "cirvo-emoji-picker";
   document.body.appendChild(containerEl);
   return containerEl;
 }

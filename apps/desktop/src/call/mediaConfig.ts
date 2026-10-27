@@ -1,4 +1,4 @@
-// Настройки WebRTC (STUN/TURN, адрес SFU) выдаёт только сервер RuCord через
+// Настройки WebRTC (STUN/TURN, адрес SFU) выдаёт только сервер Cirvo через
 // GET /api/v1/media/config. Запасных публичных серверов нет: звонки не должны
 // зависеть от чужих сервисов, а без настроек соединение всё равно не пройдёт.
 export const MEDIA_CONFIG_UNAVAILABLE =

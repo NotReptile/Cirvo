@@ -1,17 +1,17 @@
-# RuCord single-node reverse proxy.
+# Cirvo single-node reverse proxy.
 #
 # Управляется переменными окружения (передаются через `docker-compose.yml`,
 # который читает `deploy/.env`):
 #
-#   RUCORD_DOMAIN        — публичное имя хоста (например `chat.example.com`).
+#   CIRVO_DOMAIN        — публичное имя хоста (например `chat.example.com`).
 #                          Для self-host без публичного DNS можно указать IP
 #                          или `localhost` — но тогда обязательно
-#                          RUCORD_TLS_EMAIL=internal (self-signed CA).
-#   RUCORD_TLS_EMAIL     — email для ACME/Let's Encrypt либо литерал
+#                          CIRVO_TLS_EMAIL=internal (self-signed CA).
+#   CIRVO_TLS_EMAIL     — email для ACME/Let's Encrypt либо литерал
 #                          `internal` — тогда Caddy выдаст self-signed
 #                          сертификат через встроенный CA.
-#   RUCORD_CORE_API_HOST — хост core-api (по умолчанию имя сервиса `core-api`).
-#   RUCORD_REALTIME_HOST — хост realtime (по умолчанию имя сервиса `realtime`).
+#   CIRVO_CORE_API_HOST — хост core-api (по умолчанию имя сервиса `core-api`).
+#   CIRVO_REALTIME_HOST — хост realtime (по умолчанию имя сервиса `realtime`).
 #                          Менять только если запускаешь сервисы вне compose.
 
 {
@@ -28,8 +28,8 @@
 	}
 }
 
-{$RUCORD_DOMAIN:localhost} {
-	tls {$RUCORD_TLS_EMAIL:internal}
+{$CIRVO_DOMAIN:localhost} {
+	tls {$CIRVO_TLS_EMAIL:internal}
 
 	encode zstd gzip
 
@@ -48,14 +48,14 @@
 		-Server
 	}
 
-	# CORS allow-list реализуется в core-api через RUCORD_CORS_ORIGINS.
+	# CORS allow-list реализуется в core-api через CIRVO_CORS_ORIGINS.
 	# Здесь дополнительно блокируем «дикие» preflight'ы на чужие пути:
 	# legal preflight всегда уходит в core-api, который сам решит, отвечать ли.
 
 	# --- Маршруты ---
 	# WebSocket → realtime (порт 8090).
 	handle /ws* {
-		reverse_proxy {$RUCORD_REALTIME_HOST:realtime}:8090 {
+		reverse_proxy {$CIRVO_REALTIME_HOST:realtime}:8090 {
 			# WebSocket таймауты длиннее обычных HTTP.
 			transport http {
 				read_timeout 1h
@@ -65,10 +65,10 @@
 	}
 
 	# SFU WebSocket-сигналинг → sfu (порт 8095). Медиа (RTP) идёт МИМО Caddy,
-	# напрямую на UDP-порт sfu (RUCORD_SFU_UDP_PORT). Если core-api не
+	# напрямую на UDP-порт sfu (CIRVO_SFU_UDP_PORT). Если core-api не
 	# анонсирует sfuUrl (mesh-режим deploy/local), клиенты сюда не ходят.
 	handle /sfu/ws* {
-		reverse_proxy {$RUCORD_SFU_HOST:sfu}:8095 {
+		reverse_proxy {$CIRVO_SFU_HOST:sfu}:8095 {
 			transport http {
 				read_timeout 1h
 				write_timeout 1h
@@ -78,15 +78,15 @@
 
 	# Liveness/readiness — наружу отдаём, но без кеширования.
 	handle /healthz {
-		reverse_proxy {$RUCORD_CORE_API_HOST:core-api}:8080
+		reverse_proxy {$CIRVO_CORE_API_HOST:core-api}:8080
 	}
 	handle /readyz {
-		reverse_proxy {$RUCORD_CORE_API_HOST:core-api}:8080
+		reverse_proxy {$CIRVO_CORE_API_HOST:core-api}:8080
 	}
 
 	# REST API.
 	handle /api/* {
-		reverse_proxy {$RUCORD_CORE_API_HOST:core-api}:8080
+		reverse_proxy {$CIRVO_CORE_API_HOST:core-api}:8080
 	}
 
 	# Всё остальное — статика клиента (если будет монтироваться в /srv)

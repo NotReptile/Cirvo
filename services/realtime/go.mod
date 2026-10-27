@@ -1,11 +1,11 @@
-module github.com/NotReptile/RuCord/services/realtime
+module github.com/NotReptile/Cirvo/services/realtime
 
 go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
-	github.com/NotReptile/RuCord/libs/shared-go v0.0.0
+	github.com/NotReptile/Cirvo/libs/shared-go v0.0.0
 	github.com/jackc/pgx/v5 v5.11.0
 )
 
@@ -22,4 +22,4 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 )
 
-replace github.com/NotReptile/RuCord/libs/shared-go => ../../libs/shared-go
+replace github.com/NotReptile/Cirvo/libs/shared-go => ../../libs/shared-go

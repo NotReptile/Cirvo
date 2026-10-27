@@ -4,12 +4,12 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", route => route.fulfill({ json: { items: [], actions: [] } }));
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
   await page.evaluate(async () => {
     const moduleUrl = "/src/app/state.ts";
     const { uiContext } = await import(moduleUrl);
     uiContext.connState = "connected";
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.seed(20);
     const s = qa.state();
     s.selectedChannelId = "qa-voice";
@@ -72,7 +72,7 @@ test("voice stage fills available space and keeps controls at its bottom at ever
 
 test("screen sharing gets available stage space and rearranges tiles without replacing videos", async ({ page }) => {
   const result = await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     const video = document.querySelector("video[data-voice-self]");
     qa.state().voiceSnapshot = { ...qa.state().voiceSnapshot, screenSharing: true };
     qa.render();
@@ -83,7 +83,7 @@ test("screen sharing gets available stage space and rearranges tiles without rep
   });
   expect(result).toEqual({ sameSharing: true, sameAfter: true });
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.state().voiceSnapshot = { ...qa.state().voiceSnapshot, screenSharing: true };
     qa.render();
   });
@@ -114,11 +114,11 @@ test("stage and self-strip audio controls stay synchronized and preserve remote 
   await expect(page.locator('[data-voice-action="deafen"][aria-pressed="false"]')).toHaveCount(2);
   expect(await page.locator('video[data-voice-peer="peer-0"]').evaluate((el: HTMLVideoElement) => el.muted)).toBe(false);
   await page.evaluate(() => {
-    (window as any).__RUCORD_QA__.event({ event: "presence.updated", payload: { userId: "qa-user-0", mode: "dnd", customStatus: "Занят" } });
+    (window as any).__CIRVO_QA__.event({ event: "presence.updated", payload: { userId: "qa-user-0", mode: "dnd", customStatus: "Занят" } });
   });
   await expect(page.locator('[data-voice-tile="peer-0"] .voice-tile-custom-status')).toHaveText("Занят");
   const media = await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     for (let i = 0; i < 5; i++) qa.render();
     const current = document.querySelector('video[data-voice-peer="peer-0"]') as HTMLVideoElement;
     const ids = [...document.querySelectorAll("[id]")].map(el => el.id);
@@ -148,12 +148,12 @@ test("voice avatar and name open the participant profile without replacing video
   await expect(page.locator("#open-notifications")).toHaveCount(1);
   await expect(page.locator("#open-admin")).toHaveCount(1);
   await page.locator("#open-notifications").click();
-  await expect.poll(() => page.evaluate(() => (window as any).__RUCORD_QA__.state().modal)).toBe("notifications");
+  await expect.poll(() => page.evaluate(() => (window as any).__CIRVO_QA__.state().modal)).toBe("notifications");
 });
 
 test("switching text channels leaves a compact connection panel and functioning disconnect", async ({ page }) => {
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.state().selectedChannelId = "qa-chat";
     qa.render();
   });
@@ -168,7 +168,7 @@ test("direct-call audio controls share one state between call bar and self strip
   await page.evaluate(async () => {
     const moduleUrl = "/src/app/state.ts";
     const { uiContext } = await import(moduleUrl);
-    const qa = (window as any).__RUCORD_QA__, s = qa.state();
+    const qa = (window as any).__CIRVO_QA__, s = qa.state();
     s.voiceSnapshot = null;
     s.selectedChannelId = "qa-chat";
     s.callSnapshot = { state: "active", peerUserId: "qa-user-0", muted: false, cameraOn: false, screenSharing: false,

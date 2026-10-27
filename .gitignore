@@ -27,3 +27,7 @@ backups/
 /install.ps1
 
 .claude/
+
+# Инструкции для ИИ-агентов: только локально
+AGENTS.md
+CLAUDE.md

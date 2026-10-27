@@ -15,12 +15,12 @@ type Pool struct {
 }
 
 func ConnectFromEnv(ctx context.Context) (*Pool, error) {
-	dsn := os.Getenv("RUCORD_POSTGRES_DSN")
+	dsn := os.Getenv("CIRVO_POSTGRES_DSN")
 	if dsn == "" {
 		dsn = buildDSNFromParts()
 	}
 	if dsn == "" {
-		return nil, errors.New("postgres DSN is not configured: set RUCORD_POSTGRES_DSN or POSTGRES_* env vars")
+		return nil, errors.New("postgres DSN is not configured: set CIRVO_POSTGRES_DSN or POSTGRES_* env vars")
 	}
 	return Connect(ctx, dsn)
 }

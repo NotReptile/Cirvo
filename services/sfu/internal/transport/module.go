@@ -18,13 +18,13 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	sharedticket "github.com/NotReptile/RuCord/libs/shared-go/wsticket"
+	"github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/jwtauth"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	sharedticket "github.com/NotReptile/Cirvo/libs/shared-go/wsticket"
 
-	"github.com/NotReptile/RuCord/services/sfu/internal/rtc"
+	"github.com/NotReptile/Cirvo/services/sfu/internal/rtc"
 )
 
 const (

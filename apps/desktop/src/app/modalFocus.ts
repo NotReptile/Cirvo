@@ -4,9 +4,9 @@ let modalWasOpen = false;
 function currentDialog(): HTMLElement | null {
   const status = document.querySelector<HTMLElement>(".status-menu");
   if (status) return status;
-  const picker = document.querySelector<HTMLElement>(".rucord-input-picker:popover-open");
+  const picker = document.querySelector<HTMLElement>(".cirvo-input-picker:popover-open");
   if (picker) return picker;
-  const confirmation = document.querySelector<HTMLElement>("#rucord-dialogs .dlg-backdrop:last-child .dlg-card");
+  const confirmation = document.querySelector<HTMLElement>("#cirvo-dialogs .dlg-backdrop:last-child .dlg-card");
   if (confirmation) return confirmation;
   const region = document.querySelector("#region-modal");
   const dialogs = region?.querySelectorAll<HTMLElement>('[role="dialog"], .modal');

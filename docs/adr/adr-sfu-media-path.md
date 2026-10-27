@@ -14,11 +14,11 @@ Mesh в voice-каналах требует от каждого клиента N
 - Два `RTCPeerConnection` на клиента: publisher (offerer - клиент) и subscriber (offerer - сервер). Так исключён glare, perfect negotiation не нужен.
 - Сигналинг SFU - собственный WebSocket `/sfu/ws`, а не relay через `realtime`: SFU сам сторона переговоров. Caddy проксирует `/sfu/ws*` на порт `8095`.
 - Доступ: одноразовый тикет (`POST /api/v1/channels/{channelId}/voice/sfu-ticket`, TTL 30 с, Redis, `purpose=sfu`, привязан к каналу). Кроме тикета SFU проверяет живую сессию в `user_sessions` и строку в `channel_participants`. ACL, лимит участников и архивность канала остаются в `core-api` (`POST /voice/join`), SFU им доверяет.
-- Медиа идёт на один UDP-порт (`RUCORD_SFU_UDP_PORT`, ICE UDPMux), мимо Caddy. Публичный адрес задаётся `RUCORD_SFU_PUBLIC_IP` (NAT 1:1 host-кандидаты). Серверные PeerConnection работают без ICE-серверов, TURN - забота клиента.
+- Медиа идёт на один UDP-порт (`CIRVO_SFU_UDP_PORT`, ICE UDPMux), мимо Caddy. Публичный адрес задаётся `CIRVO_SFU_PUBLIC_IP` (NAT 1:1 host-кандидаты). Серверные PeerConnection работают без ICE-серверов, TURN - забота клиента.
 - TURN - отдельный контейнер `coturn`. Клиентская ICE-конфигурация выдаётся через `core-api`: `GET /api/v1/media/config` возвращает `iceServers`, `mode`, `sfuUrl`, `turnExpiresAt`. TURN-credentials временные: HMAC от `ICE_TURN_SHARED_SECRET`, TTL 1 час.
-- Режим выбирается деплоем, а не каналом. Непустой `RUCORD_SFU_URL` даёт `mode: "sfu"` и лимит канала 50. Пустой даёт `mode: "mesh"` и лимит 5. Mesh остаётся режимом локальной разработки (`deploy/local` не содержит SFU). Если клиент не может получить конфигурацию медиа, он не включает mesh как запасной режим: голосовая функция сообщает об ошибке конфигурации.
+- Режим выбирается деплоем, а не каналом. Непустой `CIRVO_SFU_URL` даёт `mode: "sfu"` и лимит канала 50. Пустой даёт `mode: "mesh"` и лимит 5. Mesh остаётся режимом локальной разработки (`deploy/local` не содержит SFU). Если клиент не может получить конфигурацию медиа, он не включает mesh как запасной режим: голосовая функция сообщает об ошибке конфигурации.
 - 1-к-1 звонки не используют SFU: они всегда P2P с TURN как fallback.
-- `single-node`: `sfu` и `coturn` запускаются всегда. В `RUCORD_ENV=production` SFU без `RUCORD_SFU_PUBLIC_IP` не стартует.
+- `single-node`: `sfu` и `coturn` запускаются всегда. В `CIRVO_ENV=production` SFU без `CIRVO_SFU_PUBLIC_IP` не стартует.
 
 ## Rationale
 
@@ -33,5 +33,5 @@ Mesh в voice-каналах требует от каждого клиента N
 - SFU напрямую читает Postgres (`user_sessions`, `channel_participants`) и Redis (тикеты). Он зависит от схемы, которой владеет `core-api`.
 - Комнаты хранятся в памяти процесса (`rtc.Manager`). Горизонтального масштабирования и кластера SFU нет; рестарт процесса рвёт все комнаты, клиенты переподключаются с exponential backoff и перестраивают PeerConnection.
 - Нет смешанного режима в одном канале и автоматического перехода mesh -> SFU. Simulcast, серверного mute и active speaker в SFU нет (keyframe запрашивается периодическим PLI).
-- Firewall single-node включает `RUCORD_SFU_UDP_PORT/udp` и relay-диапазон coturn `49160-49200/udp`. coturn запущен без TLS (`turns:` недоступен).
-- `deploy/single-node` обязан задавать `RUCORD_SFU_PUBLIC_IP`; без него reverse-proxy не поднимется (ждёт `sfu` в состоянии healthy).
+- Firewall single-node включает `CIRVO_SFU_UDP_PORT/udp` и relay-диапазон coturn `49160-49200/udp`. coturn запущен без TLS (`turns:` недоступен).
+- `deploy/single-node` обязан задавать `CIRVO_SFU_PUBLIC_IP`; без него reverse-proxy не поднимется (ждёт `sfu` в состоянии healthy).

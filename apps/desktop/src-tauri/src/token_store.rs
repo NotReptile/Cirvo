@@ -6,7 +6,7 @@ fn entry(server_url: &str) -> Result<Entry, String> {
     {
         return Err("Некорректный адрес сервера".into());
     }
-    Entry::new("com.rucord.desktop", server_url)
+    Entry::new("com.cirvo.desktop", server_url)
         .map_err(|_| "Хранилище учётных данных Windows недоступно".into())
 }
 

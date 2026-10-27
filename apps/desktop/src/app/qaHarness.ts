@@ -50,7 +50,7 @@ export function installQaHarness(ui: {
           {
             id: "qa-ws",
             slug: "qa",
-            name: "Проверка RuCord",
+            name: "Проверка Cirvo",
             ownerId: "qa-me",
             role: "owner",
             createdAt,
@@ -134,5 +134,5 @@ export function installQaHarness(ui: {
       };
     },
   };
-  (window as unknown as { __RUCORD_QA__: typeof api }).__RUCORD_QA__ = api;
+  (window as unknown as { __CIRVO_QA__: typeof api }).__CIRVO_QA__ = api;
 }

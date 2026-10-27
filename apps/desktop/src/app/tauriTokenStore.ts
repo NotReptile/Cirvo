@@ -7,7 +7,7 @@ import { getStoredServerUrl } from "./serverConfig";
 export async function createTokenStore(serverUrl: string): Promise<TokenStore> {
   const native = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
   if (!native || !navigator.userAgent.includes("Windows")) {
-    const store = browserTokenStore(`rucord:tokens:${serverUrl}`);
+    const store = browserTokenStore(`cirvo:tokens:${serverUrl}`);
     if (!store.read() && getStoredServerUrl() === serverUrl) {
       const legacy = parseTokens(localStorage.getItem(LEGACY_TOKEN_KEY));
       if (legacy) { await store.write(legacy); localStorage.removeItem(LEGACY_TOKEN_KEY); }

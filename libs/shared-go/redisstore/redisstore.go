@@ -11,14 +11,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const DefaultEventChannel = "rucord:events"
+const DefaultEventChannel = "cirvo:events"
 
 type Client struct {
 	*redis.Client
 }
 
 func ConnectFromEnv(ctx context.Context) (*Client, error) {
-	addr := os.Getenv("RUCORD_REDIS_ADDR")
+	addr := os.Getenv("CIRVO_REDIS_ADDR")
 	if addr == "" {
 		host := envOr("REDIS_HOST", "127.0.0.1")
 		port := envOr("REDIS_PORT", "6379")

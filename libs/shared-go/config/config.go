@@ -22,17 +22,17 @@ type ServiceConfig struct {
 }
 
 func Load(serviceName string, defaultAddress string) ServiceConfig {
-	env := os.Getenv("RUCORD_ENV")
+	env := os.Getenv("CIRVO_ENV")
 	if env == "" {
 		env = string(EnvironmentLocal)
 	}
 
-	stage := os.Getenv("RUCORD_STAGE")
+	stage := os.Getenv("CIRVO_STAGE")
 	if stage == "" {
 		stage = string(StageDev)
 	}
 
-	address := os.Getenv("RUCORD_HTTP_ADDRESS")
+	address := os.Getenv("CIRVO_HTTP_ADDRESS")
 	if address == "" {
 		address = defaultAddress
 	}

@@ -18,8 +18,8 @@ import (
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/objectstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
 )
 
 const (

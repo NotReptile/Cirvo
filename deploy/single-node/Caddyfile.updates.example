@@ -1,10 +1,10 @@
-# Place before the fallback handle inside the RuCord HTTPS site.
-# Mount /srv/rucord/updates read-only into the reverse-proxy container.
+# Place before the fallback handle inside the Cirvo HTTPS site.
+# Mount /srv/cirvo/updates read-only into the reverse-proxy container.
 handle_path /updates/* {
   forward_auth core-api:8080 {
     uri /api/v1/users/me
   }
-  root * /srv/rucord/updates
+  root * /srv/cirvo/updates
   header Cache-Control "private, no-store"
   file_server
 }

@@ -3,7 +3,7 @@ package channelacl
 import (
 	"context"
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
 )
 
 // VisibleChannels evaluates a batch without retaining grants between events.

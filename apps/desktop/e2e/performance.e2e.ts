@@ -12,9 +12,9 @@ test.beforeEach(async ({ page }) => {
   );
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
   // Production bootstrap shows the shell before the first channel response arrives.
-  await page.evaluate(() => (window as any).__RUCORD_QA__.seed(0));
+  await page.evaluate(() => (window as any).__CIRVO_QA__.seed(0));
 });
 
 test("repeatable render measurements at 50, 1500 and 3000 messages", async ({
@@ -23,7 +23,7 @@ test("repeatable render measurements at 50, 1500 and 3000 messages", async ({
   const results: unknown[] = [];
   for (const count of [50, 1500, 3000]) {
     const measurements = await page.evaluate((count) => {
-      const qa = (window as any).__RUCORD_QA__;
+      const qa = (window as any).__CIRVO_QA__;
       const initial = qa.seed(count);
       return {
         count,
@@ -38,7 +38,7 @@ test("repeatable render measurements at 50, 1500 and 3000 messages", async ({
   writeFileSync(
     resolve(
       dir,
-      process.env.RUCORD_PERF_BASELINE ? "baseline.json" : "current.json",
+      process.env.CIRVO_PERF_BASELINE ? "baseline.json" : "current.json",
     ),
     JSON.stringify(results, null, 2),
   );

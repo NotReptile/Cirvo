@@ -19,9 +19,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/permission"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/modules/permission"
 )
 
 type threadCreateRequest struct {

@@ -1,4 +1,4 @@
-module github.com/NotReptile/RuCord/libs/shared-go
+module github.com/NotReptile/Cirvo/libs/shared-go
 
 go 1.26.0
 

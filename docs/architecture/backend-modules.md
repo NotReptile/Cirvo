@@ -22,14 +22,14 @@
 | `invite` | Приглашения: создание, список, отзыв, принятие; публичный preview по коду. |
 | `notification` | Чтение in-app уведомлений, счётчик, mark-read, уровни уведомлений канала и workspace. `notification.Enqueue` - точка постановки задач для worker. |
 | `call` | История 1-к-1 звонков (старт, завершение, чтение). Сам сигналинг идёт через `realtime`. |
-| `voice` | Участники voice-каналов: `voice/join`, `voice/leave`, `voice/participants`; публикует `voice.joined` / `voice.left`. Лимит участников канала: 5 (mesh) или 50, если задан `RUCORD_SFU_URL`; при превышении `409`. |
+| `voice` | Участники voice-каналов: `voice/join`, `voice/leave`, `voice/participants`; публикует `voice.joined` / `voice.left`. Лимит участников канала: 5 (mesh) или 50, если задан `CIRVO_SFU_URL`; при превышении `409`. |
 | `ice` | Медиа-конфигурация клиента: `GET /api/v1/media/config` и алиас `GET /api/v1/ice-servers`. См. [realtime-and-calls.md](realtime-and-calls.md). |
 | `wsticket` | Одноразовые WebSocket-тикеты (TTL 30 с, хранятся в Redis): `POST /api/v1/realtime/ticket` для `realtime` и `POST /api/v1/channels/{channelId}/voice/sfu-ticket` для SFU. |
 | `audit` | Чтение и CSV-экспорт audit log workspace. Запись делает пакет `internal/auditlog` из других модулей. |
 | `server` | Server-wide администрирование только для root-пользователя (`users.is_root`), остальным отвечает 404: настройки, список пользователей, ban/unban/delete, метрики, ручной запуск retention. |
 | `system` | `GET /readyz`. |
 
-Вне `modules/`: `internal/app` (сборка сервера, `Router.Public` / `Router.Protected`, bearer-аутентификация с проверкой `user_sessions`), `internal/bootstrap` (первый админ и workspace из `RUCORD_BOOTSTRAP_*`), `internal/serversettings` (кеш `server_settings`), `internal/auditlog`, `internal/authctx`, `internal/deps`, `internal/routing`.
+Вне `modules/`: `internal/app` (сборка сервера, `Router.Public` / `Router.Protected`, bearer-аутентификация с проверкой `user_sessions`), `internal/bootstrap` (первый админ и workspace из `CIRVO_BOOTSTRAP_*`), `internal/serversettings` (кеш `server_settings`), `internal/auditlog`, `internal/authctx`, `internal/deps`, `internal/routing`.
 
 ## Dependency Rules
 
@@ -72,7 +72,7 @@ It does not own canonical message, workspace, membership or permission state.
 - `internal/transport` - `GET /sfu/ws` (WebSocket-сигналинг) и `/healthz`. От клиента приходят `pub.offer`, `sub.answer`, `pub.ice`, `sub.ice`; сервер шлёт `pub.answer`, `sub.offer` и свои ICE-кандидаты.
 - `internal/rtc` - `Engine` (общий `webrtc.API` и один UDP-сокет), `Manager` (комната = voice-канал), `Peer` (два PeerConnection: publisher и subscriber).
 - Авторизация: тикет `purpose=sfu` либо JWT, плюс живая сессия в `user_sessions` и строка в `channel_participants`. Сервис только читает эти таблицы, пишет в них `core-api`.
-- В `RUCORD_ENV=production` без `RUCORD_SFU_PUBLIC_IP` сервис не стартует.
+- В `CIRVO_ENV=production` без `CIRVO_SFU_PUBLIC_IP` сервис не стартует.
 
 ## `worker`
 

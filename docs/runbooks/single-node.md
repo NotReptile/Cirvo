@@ -8,24 +8,24 @@
 
 1. `cp deploy/.env.example deploy/.env` и поменять минимум:
    - `POSTGRES_PASSWORD`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` — секреты;
-   - `RUCORD_JWT_SECRET` — ≥ 32 байт случайной строки;
-   - `RUCORD_DOMAIN` — публичное имя хоста (`chat.example.com`) либо
+   - `CIRVO_JWT_SECRET` — ≥ 32 байт случайной строки;
+   - `CIRVO_DOMAIN` — публичное имя хоста (`chat.example.com`) либо
      `localhost`/IP для приватной сети;
-   - `RUCORD_TLS_EMAIL` — почта для Let's Encrypt, либо литерал `internal`
+   - `CIRVO_TLS_EMAIL` — почта для Let's Encrypt, либо литерал `internal`
      для self-signed сертификата;
-   - `RUCORD_CORS_ORIGINS` — конечный allow-list оригинов клиента
+   - `CIRVO_CORS_ORIGINS` — конечный allow-list оригинов клиента
      (без `*`). Для Windows-клиента обязательно все три Tauri-оригина:
      `tauri://localhost,http://tauri.localhost,https://tauri.localhost`.
      WebView2 на Windows ходит с `http://tauri.localhost`, и без него клиент
      получит CORS-ошибку уже на экране «Подключение к серверу»;
-   - `RUCORD_BOOTSTRAP_EMAIL`, `_USERNAME`, `_PASSWORD` — данные первого
+   - `CIRVO_BOOTSTRAP_EMAIL`, `_USERNAME`, `_PASSWORD` — данные первого
      администратора (создаётся один раз на пустой БД, пакет
      `core-api/internal/bootstrap`). Нужны **все три**, иначе администратор не
      создаётся. См. раздел «Пользователи» ниже.
    - `ICE_TURN_URLS`, `ICE_TURN_SHARED_SECRET` — TURN UDP/TCP и временные credentials;
-   - `RUCORD_SFU_URL`, `RUCORD_SFU_PUBLIC_IP`, `RUCORD_SFU_UDP_PORT` — публичный SFU.
+   - `CIRVO_SFU_URL`, `CIRVO_SFU_PUBLIC_IP`, `CIRVO_SFU_UDP_PORT` — публичный SFU.
 
-`RUCORD_SFU_PUBLIC_IP` обязателен: в production (`RUCORD_ENV=production`) SFU
+`CIRVO_SFU_PUBLIC_IP` обязателен: в production (`CIRVO_ENV=production`) SFU
 без него не стартует, а `reverse-proxy` ждёт `sfu: service_healthy`, то есть
 не поднимется весь стек. В LAN-сценарии укажи LAN-адрес сервера.
 
@@ -85,12 +85,12 @@ mc`) и проверить на копии данных.
 
 Все Go-сервисы собираются `deploy/Dockerfile.service` и запускаются тем же
 compose. SFU имеет обязательный healthcheck и в production отказывается
-стартовать без `RUCORD_SFU_PUBLIC_IP`.
+стартовать без `CIRVO_SFU_PUBLIC_IP`.
 
 ## Пользователи
 
 **Первый администратор.** При старте на пустой базе `core-api` создаёт
-администратора из `RUCORD_BOOTSTRAP_*` (вместе с воркспейсом «Главный сервер» и
+администратора из `CIRVO_BOOTSTRAP_*` (вместе с воркспейсом «Главный сервер» и
 каналом `#general`). Пароль остаётся в окружении контейнера и виден через
 `docker inspect`, поэтому после первого входа убери эти переменные из `deploy/.env`
 и смени пароль. Если переменные не заданы, первым администратором станет тот, кто
@@ -120,10 +120,10 @@ password_change_required`; WebSocket `/ws` и `/sfu/ws` тоже закрыты)
 
 ## TLS
 
-- **Let's Encrypt** (`RUCORD_TLS_EMAIL=user@example.com`): Caddy выпустит
-  сертификат автоматически при первом обращении к `https://$RUCORD_DOMAIN`.
+- **Let's Encrypt** (`CIRVO_TLS_EMAIL=user@example.com`): Caddy выпустит
+  сертификат автоматически при первом обращении к `https://$CIRVO_DOMAIN`.
   Требования: домен резолвится в IP хоста, 80/443 доступны извне.
-- **Self-signed** (`RUCORD_TLS_EMAIL=internal`): Caddy выдаст сертификат
+- **Self-signed** (`CIRVO_TLS_EMAIL=internal`): Caddy выдаст сертификат
   через встроенный CA. Корневой сертификат лежит в named-volume `caddy-data`
   (`/data/caddy/pki/authorities/local/root.crt`) — добавь его в trust-store
   клиента, иначе браузер/Tauri будет жаловаться.
@@ -135,19 +135,19 @@ Let's Encrypt: имя в зарезервированной зоне `home.arpa`
 отдаёт свой DNS (например, AdGuard с записью `*.home.arpa`), и внутренний УЦ Caddy.
 
 ```ini
-RUCORD_DOMAIN=rucord.home.arpa
-RUCORD_TLS_EMAIL=internal
-RUCORD_CORS_ORIGINS=...,https://rucord.home.arpa
-ICE_TURN_URLS=turn:rucord.home.arpa:3478?transport=udp,turn:rucord.home.arpa:3478?transport=tcp
-RUCORD_SFU_URL=wss://rucord.home.arpa/sfu/ws
-RUCORD_SFU_PUBLIC_IP=192.168.1.10   # адрес сервера в локальной сети
+CIRVO_DOMAIN=cirvo.home.arpa
+CIRVO_TLS_EMAIL=internal
+CIRVO_CORS_ORIGINS=...,https://cirvo.home.arpa
+ICE_TURN_URLS=turn:cirvo.home.arpa:3478?transport=udp,turn:cirvo.home.arpa:3478?transport=tcp
+CIRVO_SFU_URL=wss://cirvo.home.arpa/sfu/ws
+CIRVO_SFU_PUBLIC_IP=192.168.1.10   # адрес сервера в локальной сети
 ```
 
 - Голос из локальной сети и по VPN (например, WireGuard в ту же сеть) работает;
   без VPN из интернета до `192.168.x.x` не достучаться.
 - Корневой сертификат Caddy (`root.crt`) нужно один раз установить в хранилище
   доверенных корневых сертификатов Windows на каждом компьютере, где стоит клиент.
-- Имя `rucord.home.arpa` должно резолвиться на клиентах: через DNS роутера с
+- Имя `cirvo.home.arpa` должно резолвиться на клиентах: через DNS роутера с
   условной пересылкой зоны `home.arpa` на ваш DNS-сервер или напрямую через него в VPN.
 
 ## Что отдаёт edge
@@ -171,7 +171,7 @@ Caddy выставляет:
 - `Cross-Origin-Opener-Policy: same-origin`;
 - Снимает `Server` (не палим версию Caddy).
 
-CORS allow-list инфорсится в core-api через `RUCORD_CORS_ORIGINS` — Caddy
+CORS allow-list инфорсится в core-api через `CIRVO_CORS_ORIGINS` — Caddy
 сам CORS не делает.
 
 ## Проверка после запуска
@@ -179,7 +179,7 @@ CORS allow-list инфорсится в core-api через `RUCORD_CORS_ORIGINS
 Публичный деплой (один DNS-имя, валидный TLS, проброс портов из списка выше)
 считается рабочим, когда:
 
-1. `https://$RUCORD_DOMAIN/readyz` отвечает `200`;
+1. `https://$CIRVO_DOMAIN/readyz` отвечает `200`;
 2. подключается WebSocket `/ws` (вход в клиент, сообщения доходят без перезагрузки);
 3. подключается `/sfu/ws` и в голосовом канале слышно участников;
 4. TURN выдаёт relay-адрес (админка → Метрики → «Проверить STUN/TURN»);
@@ -195,7 +195,7 @@ CORS allow-list инфорсится в core-api через `RUCORD_CORS_ORIGINS
 
 | Что | Зачем | Когда нужно |
 | --- | --- | --- |
-| Let's Encrypt (Caddy) | Сертификат для `RUCORD_DOMAIN` | Только публичный домен. Для локального домена поставьте `RUCORD_TLS_EMAIL=internal` (см. «Полностью без внешних служб») |
+| Let's Encrypt (Caddy) | Сертификат для `CIRVO_DOMAIN` | Только публичный домен. Для локального домена поставьте `CIRVO_TLS_EMAIL=internal` (см. «Полностью без внешних служб») |
 | Внешний DNS (например DuckDNS) | Имя сервера для клиентов | Только если нет своего DNS. Локальный домен `*.home.arpa` его не требует |
 | GitHub Releases | Первичное скачивание установщика | Чат и последующие обновления клиента от GitHub не зависят |
 | Предпросмотр ссылок (`worker`) | Сервер скачивает страницу по ссылке из сообщения | Только когда пользователь отправил внешнюю ссылку; без доступа в интернет просто нет превью |
@@ -215,6 +215,24 @@ docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env u
 Перед обновлением сделай бэкап (`deploy/backup.sh`). Клиенты обновляются
 отдельно, см. [desktop-release.md](desktop-release.md).
 
+### Переход со старого названия RuCord
+
+Проект назывался RuCord, и переменные окружения начинались с `RUCORD_`. Теперь
+они начинаются с `CIRVO_`. Сами сервисы продолжат понимать `RUCORD_*`
+(с предупреждением в логе), но compose-файлы подставляют только новые имена,
+поэтому перед обновлением переименуй переменные в `deploy/.env`:
+
+```bash
+cp deploy/.env deploy/.env.bak
+sed -i 's/^RUCORD_/CIRVO_/' deploy/.env
+```
+
+Имена базы и пользователя Postgres, бакета MinIO и TURN-учётных данных по
+умолчанию (`rucord`) менять не нужно: от них зависят существующие данные.
+Не переименовывай каталог с репозиторием на сервере (или задай прежний
+`COMPOSE_PROJECT_NAME`): от него зависят имена Docker-томов, и с новым именем
+compose создал бы пустые тома.
+
 Сертификаты Let's Encrypt живут в volume `caddy-data` и обновляются Caddy
-автоматически. При смене `RUCORD_DOMAIN` старые сертификаты не чистятся —
+автоматически. При смене `CIRVO_DOMAIN` старые сертификаты не чистятся —
 безопасно оставить.

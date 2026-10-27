@@ -8,10 +8,10 @@
 export type CameraResolution = "360p" | "720p" | "1080p";
 
 // I.3: режимы шумоподавления. `off` — никакого NS; `browser` — нативный
-// WebRTC-стек Chromium (NS3); `rucord` — RNNoise через AudioWorklet
-// (denoiser.ts, интенсивность = dry/wet микс); `rucord-aggressive` —
+// WebRTC-стек Chromium (NS3); `cirvo` — RNNoise через AudioWorklet
+// (denoiser.ts, интенсивность = dry/wet микс); `cirvo-aggressive` —
 // нативный NS + RNNoise на 100% поверх.
-export type DenoiserMode = "off" | "browser" | "rucord" | "rucord-aggressive";
+export type DenoiserMode = "off" | "browser" | "cirvo" | "cirvo-aggressive";
 
 // Wave 9: эффект камеры (videoEffects.ts) — размытие фона через Mediapipe
 // Selfie Segmentation. Применяется при следующем включении камеры.
@@ -42,7 +42,7 @@ export interface VoiceSettings {
   pttReleaseDelay: number; // 0..2000 ms
 }
 
-const LS_KEY = "rucord:voice-settings";
+const LS_KEY = "cirvo:voice-settings";
 
 const DEFAULTS: VoiceSettings = {
   audioInputId: null,
@@ -116,15 +116,15 @@ export function subscribeVoiceSettings(fn: (s: VoiceSettings) => void): () => vo
 // Constraints для getUserMedia({audio}). Матрица NS по denoiserMode (N.2/N.4):
 //   off               → нативный NS выключен, RNNoise нет;
 //   browser           → только нативный NS Chromium (NS3);
-//   rucord            → нативный NS ВЫКЛЮЧЕН — RNNoise (denoiser.ts) должен
+//   cirvo            → нативный NS ВЫКЛЮЧЕН — RNNoise (denoiser.ts) должен
 //                       видеть сырой шум, иначе два NS подряд режут речь;
-//   rucord-aggressive → нативный NS + RNNoise 100% поверх (максимум подавления).
+//   cirvo-aggressive → нативный NS + RNNoise 100% поверх (максимум подавления).
 export function buildAudioConstraints(): MediaTrackConstraints {
   const s = read();
   const c: MediaTrackConstraints = {
     echoCancellation: s.echoCancellation,
     autoGainControl: s.autoGainControl,
-    noiseSuppression: s.denoiserMode === "browser" || s.denoiserMode === "rucord-aggressive"
+    noiseSuppression: s.denoiserMode === "browser" || s.denoiserMode === "cirvo-aggressive"
   };
   if (s.audioInputId) {
     c.deviceId = { exact: s.audioInputId };

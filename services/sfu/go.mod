@@ -1,11 +1,11 @@
-module github.com/NotReptile/RuCord/services/sfu
+module github.com/NotReptile/Cirvo/services/sfu
 
 go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.15
 	github.com/google/uuid v1.6.0
-	github.com/NotReptile/RuCord/libs/shared-go v0.0.0
+	github.com/NotReptile/Cirvo/libs/shared-go v0.0.0
 	github.com/pion/rtcp v1.2.19
 	github.com/pion/webrtc/v4 v4.2.22
 )
@@ -42,4 +42,4 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 )
 
-replace github.com/NotReptile/RuCord/libs/shared-go => ../../libs/shared-go
+replace github.com/NotReptile/Cirvo/libs/shared-go => ../../libs/shared-go

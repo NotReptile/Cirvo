@@ -161,7 +161,7 @@ export function attachCallsRegion(): void {
         if (v in uiContext.SCREEN_SHARE_PRESETS) {
           uiContext.state.screenShareQuality = v as ScreenShareQualityKey;
           try {
-            localStorage.setItem("rucord:screenShareQuality", v);
+            localStorage.setItem("cirvo:screenShareQuality", v);
           } catch {
             /* ignore */
           }

@@ -1,5 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    rucord_desktop_lib::run()
+    cirvo_desktop_lib::run()
 }

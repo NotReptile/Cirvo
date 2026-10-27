@@ -48,7 +48,7 @@ interface HoldHandler {
   up: () => void;
 }
 
-const LS_KEY = "rucord:hotkeys";
+const LS_KEY = "cirvo:hotkeys";
 
 const ACTIONS: ActionDef[] = [
   {

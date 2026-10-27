@@ -22,14 +22,14 @@
 | `db/migrations` | Нумерованные миграции golang-migrate. `db/schema/README.md` - описание области схемы. |
 | `libs/contracts` | Контракты: `http/openapi.yaml` (неполный, см. [API overview](../api/overview.md)), `realtime/events.json` (`RealtimeEnvelopeV2`), `errors/error-model.json`. |
 | `libs/shared-go` | Общий Go-код: `config`, `httpx`, `jwtauth`, `objectstore`, `observability`, `passwords`, `postgres`, `ratelimit`, `realtimebus`, `redisstore`, `retention`, `wsticket`. |
-| `libs/shared-ts` | Общие TypeScript-типы (`@rucord/shared-ts`). |
+| `libs/shared-ts` | Общие TypeScript-типы (`@cirvo/shared-ts`). |
 | `deploy/local` | compose для разработки: Postgres, Redis, MinIO; профили `tools` (migrate), `turn` (coturn), `public-ip` (HTTP-прокси). Go-сервисы запускаются на хосте. |
 | `deploy/single-node` | Актуальный production-профиль: весь стек в одном compose, включая `sfu` и `coturn`. |
 | `deploy/Dockerfile.service` | Один Dockerfile для `core-api`, `realtime`, `sfu`, `worker` (build-arg `SERVICE_NAME`, контекст - корень репозитория). |
 | `deploy/backup.sh`, `deploy/restore.sh` | Бэкап и восстановление Postgres и MinIO. |
 | `docs` | Wiki, ADR, runbooks. |
 
-Корневые файлы: `go.work` объединяет `libs/shared-go` и четыре сервиса; `package.json` задаёт npm workspaces (`apps/*`, `libs/shared-ts`); `.github/workflows` - `smoke.yml` и `desktop-release.yml`.
+Корневые файлы: `go.work` объединяет `libs/shared-go` и четыре сервиса; `package.json` задаёт npm workspaces (`apps/*`, `libs/shared-ts`); `.github/workflows` - `smoke.yml`, `desktop-check.yml`, `desktop-release.yml` и `minio-image.yml`.
 
 ## Why Monorepo
 

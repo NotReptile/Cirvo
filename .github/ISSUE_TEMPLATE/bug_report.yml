@@ -1,5 +1,5 @@
 name: Ошибка
-description: Что-то работает не так, как ожидалось
+description: Уязвимости сюда не пишите (см. SECURITY.md). Что-то работает не так, как ожидалось
 labels: ["bug"]
 body:
   - type: markdown
@@ -39,7 +39,7 @@ body:
     id: version
     attributes:
       label: Версия клиента
-      placeholder: "0.1.0"
+      placeholder: "0.3.0"
   - type: input
     id: os
     attributes:

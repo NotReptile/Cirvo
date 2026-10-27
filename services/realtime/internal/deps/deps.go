@@ -4,13 +4,13 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/wsticket"
-	"github.com/NotReptile/RuCord/services/realtime/internal/eventjournal"
-	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
+	"github.com/NotReptile/Cirvo/libs/shared-go/jwtauth"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/wsticket"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/eventjournal"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/hub"
 )
 
 type Container struct {

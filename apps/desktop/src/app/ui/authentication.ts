@@ -209,7 +209,7 @@ export function renderAuth(): void {
   uiContext.rootEl.innerHTML = `
     <div class="auth-screen">
       <div class="auth-card">
-        <h1>RuCord</h1>
+        <h1>Cirvo</h1>
         ${
           uiContext.state.registrationOpen === false
             ? `

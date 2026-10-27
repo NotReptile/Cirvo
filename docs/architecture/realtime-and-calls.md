@@ -50,8 +50,8 @@ It is not responsible for canonical message persistence, workspace membership or
 }
 ```
 
-- `mode` - `"sfu"`, если задан `RUCORD_SFU_URL`, иначе `"mesh"`.
-- `sfuUrl` - значение `RUCORD_SFU_URL`; поле опускается, если SFU не развёрнут. Клиент выбирает SFU по наличию `sfuUrl`.
+- `mode` - `"sfu"`, если задан `CIRVO_SFU_URL`, иначе `"mesh"`.
+- `sfuUrl` - значение `CIRVO_SFU_URL`; поле опускается, если SFU не развёрнут. Клиент выбирает SFU по наличию `sfuUrl`.
 - `turnExpiresAt` - только если выданы временные TURN-credentials.
 - Блок TURN попадает в `iceServers`, когда непуст список TURN URL; блок STUN - когда непуст список STUN.
 
@@ -61,13 +61,13 @@ It is not responsible for canonical message persistence, workspace membership or
 - `ICE_TURN_URLS` - comma-separated UDP/TCP/TLS endpoints. Если пусто, берётся одиночный `ICE_TURN_URL`.
 - `ICE_TURN_SHARED_SECRET` - coturn REST secret used to issue per-user one-hour HMAC credentials: `username = "<unix expiry>:<userId>"`, `credential = base64(HMAC-SHA1(secret, username))`.
 - Static `ICE_TURN_USERNAME` / `ICE_TURN_CREDENTIAL` values are legacy fallback only (используются, пока секрет пуст).
-- `RUCORD_SFU_URL` - адрес SFU-сигналинга, например `wss://<domain>/sfu/ws`.
+- `CIRVO_SFU_URL` - адрес SFU-сигналинга, например `wss://<domain>/sfu/ws`.
 
 Если запрос конфигурации не удался, клиент не подставляет запасные серверы: вход в голосовой канал и звонок завершаются ошибкой «Голос недоступен», а следующая попытка запросит конфигурацию заново (`ensureIceServers` в `voiceChannelManager.ts` и `callManager.ts`). Голос работает только через серверы вашего развёртывания.
 
 ## TURN
 
-- `single-node`: сервис `coturn` в `deploy/single-node/docker-compose.yml`, порты `3478` tcp/udp и relay `49160-49200/udp`. При непустом `ICE_TURN_SHARED_SECRET` coturn стартует с `--use-auth-secret` (временные credentials, их выдаёт `core-api`), иначе со статическими `--lt-cred-mech`. TLS/DTLS выключены (`--no-tls --no-dtls`), то есть `turns:` не поддерживается. `external-ip` резолвится из `RUCORD_DOMAIN` при старте.
+- `single-node`: сервис `coturn` в `deploy/single-node/docker-compose.yml`, порты `3478` tcp/udp и relay `49160-49200/udp`. При непустом `ICE_TURN_SHARED_SECRET` coturn стартует с `--use-auth-secret` (временные credentials, их выдаёт `core-api`), иначе со статическими `--lt-cred-mech`. TLS/DTLS выключены (`--no-tls --no-dtls`), то есть `turns:` не поддерживается. `external-ip` резолвится из `CIRVO_DOMAIN` при старте.
 - `local`: `deploy/local/docker-compose.yml` ships a coturn service under the `turn` profile (`docker compose --profile turn up coturn`) со статическими credentials. For local 1-on-1 development host candidates are usually sufficient and the TURN container does not need to run.
 
 ## Voice Channels
@@ -78,7 +78,7 @@ It is not responsible for canonical message persistence, workspace membership or
 
 | | mesh | SFU |
 | --- | --- | --- |
-| Когда | `RUCORD_SFU_URL` пуст (`local`) | `RUCORD_SFU_URL` задан (`single-node`) |
+| Когда | `CIRVO_SFU_URL` пуст (`local`) | `CIRVO_SFU_URL` задан (`single-node`) |
 | Соединений на клиента | N-1 `RTCPeerConnection` | 2 (publisher и subscriber) |
 | Сигналинг | `voice.*` через `realtime` | отдельный WebSocket `/sfu/ws` |
 | Лимит канала | 5 | 50 |
@@ -89,7 +89,7 @@ It is not responsible for canonical message persistence, workspace membership or
 2. Клиент получает тикет: `POST /api/v1/channels/{channelId}/voice/sfu-ticket` (только для участника канала; TTL 30 с, одноразовый).
 3. Клиент открывает `wss://<domain>/sfu/ws?ticket=...` (через Caddy). SFU проверяет тикет, живую сессию и строку в `channel_participants`.
 4. Publisher PC: клиент - offerer (`pub.offer` / `pub.answer`). Subscriber PC: сервер - offerer (`sub.offer` / `sub.answer`). Разделение исключает glare. Кандидаты: `pub.ice`, `sub.ice`.
-5. RTP клиентов принимается на один UDP-порт `RUCORD_SFU_UDP_PORT` (мимо Caddy) и пересылается подписчикам комнаты без транскодинга. Пока жив видеотрек, SFU раз в 2 секунды шлёт паблишеру PLI, чтобы новые зрители получили keyframe.
+5. RTP клиентов принимается на один UDP-порт `CIRVO_SFU_UDP_PORT` (мимо Caddy) и пересылается подписчикам комнаты без транскодинга. Пока жив видеотрек, SFU раз в 2 секунды шлёт паблишеру PLI, чтобы новые зрители получили keyframe.
 
 В коде SFU нет simulcast, серверного mute и active speaker (см. `services/sfu/internal/rtc`).
 

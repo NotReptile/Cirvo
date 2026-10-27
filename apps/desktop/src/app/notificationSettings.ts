@@ -21,7 +21,7 @@ export interface NotificationSettings {
   sound: NotificationSoundKind;
 }
 
-const LS_KEY = "rucord:notifications";
+const LS_KEY = "cirvo:notifications";
 
 const DEFAULTS: NotificationSettings = {
   desktopEnabled: true,

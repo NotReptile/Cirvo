@@ -25,7 +25,7 @@ backups/20260518T120000Z/
 
 ```bash
 deploy/backup.sh                       # пишет в ./backups/<ts>/
-deploy/backup.sh /mnt/external/rucord  # либо в любой каталог
+deploy/backup.sh /mnt/external/cirvo  # либо в любой каталог
 ```
 
 Требования:
@@ -41,10 +41,10 @@ deploy/backup.sh /mnt/external/rucord  # либо в любой каталог
 Если инстанс использует отдельный env-файл или compose override, передай одинаковые параметры и бэкапу, и восстановлению:
 
 ```bash
-export RUCORD_BACKUP_ENV_FILE=/etc/rucord/instance.env
-export RUCORD_BACKUP_COMPOSE_FILE=/opt/rucord/deploy/single-node/docker-compose.yml
-export RUCORD_BACKUP_COMPOSE_OVERRIDE=/etc/rucord/compose.override.yml
-deploy/backup.sh /var/backups/rucord
+export CIRVO_BACKUP_ENV_FILE=/etc/cirvo/instance.env
+export CIRVO_BACKUP_COMPOSE_FILE=/opt/cirvo/deploy/single-node/docker-compose.yml
+export CIRVO_BACKUP_COMPOSE_OVERRIDE=/etc/cirvo/compose.override.yml
+deploy/backup.sh /var/backups/cirvo
 ```
 
 Переменные необязательны; без них используются прежние пути. Для проверки восстановления в отдельном compose-проекте также задай отдельный `COMPOSE_PROJECT_NAME` и отдельные БД, тома и бакет.
@@ -58,8 +58,8 @@ MVCC-снапшот; mc mirror отлично переживает паралл�
 Cron-пример (ежедневно в 03:00 UTC, ротация — хранить 14 последних):
 
 ```cron
-0 3 * * * cd /opt/rucord && deploy/backup.sh /var/backups/rucord && \
-  ls -1dt /var/backups/rucord/*/ | tail -n +15 | xargs -r rm -rf
+0 3 * * * cd /opt/cirvo && deploy/backup.sh /var/backups/cirvo && \
+  ls -1dt /var/backups/cirvo/*/ | tail -n +15 | xargs -r rm -rf
 ```
 
 Снапшоты ОБЯЗАТЕЛЬНО уносить с хоста (rsync на отдельный сервер, rclone

@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
+	"github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
 )
 
 // Missing channels are valid only for notifications unrelated to channel content.

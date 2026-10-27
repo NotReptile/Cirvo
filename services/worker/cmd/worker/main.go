@@ -7,12 +7,13 @@ import (
 	"sync"
 	"syscall"
 
-	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
-	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/observability"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
-	"github.com/NotReptile/RuCord/services/worker/internal/jobs"
+	sharedconfig "github.com/NotReptile/Cirvo/libs/shared-go/config"
+	_ "github.com/NotReptile/Cirvo/libs/shared-go/envcompat"
+	"github.com/NotReptile/Cirvo/libs/shared-go/objectstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/observability"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
+	"github.com/NotReptile/Cirvo/services/worker/internal/jobs"
 )
 
 func main() {

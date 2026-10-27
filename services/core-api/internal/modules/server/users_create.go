@@ -9,11 +9,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
-	"github.com/NotReptile/RuCord/services/core-api/internal/accountrules"
-	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/role"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/passwords"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/accountrules"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/auditlog"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/modules/role"
 )
 
 // Длина сгенерированного временного пароля. 16 знаков из алфавита без похожих

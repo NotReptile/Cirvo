@@ -10,20 +10,21 @@ import (
 	"syscall"
 	"time"
 
-	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
-	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/observability"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	sharedconfig "github.com/NotReptile/Cirvo/libs/shared-go/config"
+	_ "github.com/NotReptile/Cirvo/libs/shared-go/envcompat"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/jwtauth"
+	"github.com/NotReptile/Cirvo/libs/shared-go/objectstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/observability"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/ratelimit"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
 
-	"github.com/NotReptile/RuCord/services/core-api/internal/app"
-	"github.com/NotReptile/RuCord/services/core-api/internal/bootstrap"
-	"github.com/NotReptile/RuCord/services/core-api/internal/deps"
-	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/app"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/bootstrap"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/deps"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/serversettings"
 )
 
 const version = "0.1.0"
@@ -80,7 +81,7 @@ func main() {
 		ObjectStore: objectStore,
 		Limiter:     limiter,
 		Settings:    settings,
-		CORS:        sharedhttp.CORS(parseCORSOrigins(os.Getenv("RUCORD_CORS_ORIGINS"))),
+		CORS:        sharedhttp.CORS(parseCORSOrigins(os.Getenv("CIRVO_CORS_ORIGINS"))),
 	}
 
 	server := app.NewServer(cfg.ServiceName, version, container)

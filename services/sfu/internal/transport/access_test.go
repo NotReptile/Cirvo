@@ -7,7 +7,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/services/sfu/internal/rtc"
+	"github.com/NotReptile/Cirvo/services/sfu/internal/rtc"
 )
 
 type accessSignaler struct {

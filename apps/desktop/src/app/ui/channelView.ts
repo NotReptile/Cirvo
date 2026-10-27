@@ -679,7 +679,7 @@ export function renderInvitesModal(): string {
 // клиенте/девайсе юзер увидит overlay снова, это «фичерное» поведение
 // (Discord так же). Не реализуем server-side ack — он бы только нагружал API.
 export function nsfwAckKey(channelId: string): string {
-  return `rucord:nsfw-ack:${channelId}`;
+  return `cirvo:nsfw-ack:${channelId}`;
 }
 
 export function hasNsfwAck(channelId: string): boolean {

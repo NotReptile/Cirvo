@@ -3,8 +3,8 @@ package system
 import (
 	"net/http"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/routing"
 )
 
 type Module struct{}

@@ -8,9 +8,9 @@
 // одноразовый тикет от core-api + проверка, что сессия уже
 // сделала POST /voice/join (строка в channel_participants).
 //
-// Медиа — один UDP-порт (UDPMux, RUCORD_SFU_UDP_PORT) — простой
+// Медиа — один UDP-порт (UDPMux, CIRVO_SFU_UDP_PORT) — простой
 // проброс через docker/NAT; публичный IP сервера задаётся
-// RUCORD_SFU_PUBLIC_IP (NAT 1:1 host-кандидаты).
+// CIRVO_SFU_PUBLIC_IP (NAT 1:1 host-кандидаты).
 package main
 
 import (
@@ -24,16 +24,17 @@ import (
 	"syscall"
 	"time"
 
-	sharedconfig "github.com/NotReptile/RuCord/libs/shared-go/config"
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
-	"github.com/NotReptile/RuCord/libs/shared-go/observability"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/wsticket"
+	sharedconfig "github.com/NotReptile/Cirvo/libs/shared-go/config"
+	_ "github.com/NotReptile/Cirvo/libs/shared-go/envcompat"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/jwtauth"
+	"github.com/NotReptile/Cirvo/libs/shared-go/observability"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/wsticket"
 
-	"github.com/NotReptile/RuCord/services/sfu/internal/rtc"
-	"github.com/NotReptile/RuCord/services/sfu/internal/transport"
+	"github.com/NotReptile/Cirvo/services/sfu/internal/rtc"
+	"github.com/NotReptile/Cirvo/services/sfu/internal/transport"
 )
 
 const version = "0.1.0"
@@ -71,7 +72,7 @@ func main() {
 
 	engineConfig := loadEngineConfig()
 	if cfg.Environment == "production" && len(engineConfig.PublicIPs) == 0 {
-		logger.Error("RUCORD_SFU_PUBLIC_IP is required in production")
+		logger.Error("CIRVO_SFU_PUBLIC_IP is required in production")
 		return
 	}
 	engine, err := rtc.NewEngine(logger, engineConfig)
@@ -131,12 +132,12 @@ func runHealthcheck() {
 
 func loadEngineConfig() rtc.EngineConfig {
 	cfg := rtc.EngineConfig{UDPPort: 8443}
-	if raw := strings.TrimSpace(os.Getenv("RUCORD_SFU_UDP_PORT")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("CIRVO_SFU_UDP_PORT")); raw != "" {
 		if port, err := strconv.Atoi(raw); err == nil && port > 0 && port < 65536 {
 			cfg.UDPPort = port
 		}
 	}
-	if raw := strings.TrimSpace(os.Getenv("RUCORD_SFU_PUBLIC_IP")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("CIRVO_SFU_PUBLIC_IP")); raw != "" {
 		for _, ip := range strings.Split(raw, ",") {
 			if v := strings.TrimSpace(ip); v != "" {
 				cfg.PublicIPs = append(cfg.PublicIPs, v)

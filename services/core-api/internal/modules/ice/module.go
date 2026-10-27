@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/routing"
 )
 
 type Module struct {
@@ -107,7 +107,7 @@ func loadFromEnv() Config {
 		TURNUsername:   strings.TrimSpace(os.Getenv("ICE_TURN_USERNAME")),
 		TURNCredential: strings.TrimSpace(os.Getenv("ICE_TURN_CREDENTIAL")),
 		TURNSecret:     strings.TrimSpace(os.Getenv("ICE_TURN_SHARED_SECRET")),
-		SFUURL:         strings.TrimSpace(os.Getenv("RUCORD_SFU_URL")),
+		SFUURL:         strings.TrimSpace(os.Getenv("CIRVO_SFU_URL")),
 	}
 }
 
@@ -148,5 +148,5 @@ func stunFromTURN(turns []string) []string {
 
 // SFUEnabled сообщает, развёрнут ли SFU (для voice-лимита в app.go).
 func SFUEnabled() bool {
-	return strings.TrimSpace(os.Getenv("RUCORD_SFU_URL")) != ""
+	return strings.TrimSpace(os.Getenv("CIRVO_SFU_URL")) != ""
 }

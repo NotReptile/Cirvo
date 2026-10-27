@@ -9,7 +9,7 @@
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {
-      "@rucord/shared-ts": [
+      "@cirvo/shared-ts": [
         "./libs/shared-ts/src/index.ts"
       ]
     }

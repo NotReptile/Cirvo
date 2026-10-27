@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
 )
 
 func PublishChanged(ctx context.Context, publisher *realtimebus.Publisher, workspaceID uuid.UUID) {

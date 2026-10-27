@@ -1,5 +1,5 @@
 {
-  "name": "@rucord/desktop",
+  "name": "@cirvo/desktop",
   "version": "0.3.0",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.0.1",
-    "@rucord/shared-ts": "file:../../libs/shared-ts",
+    "@cirvo/shared-ts": "file:../../libs/shared-ts",
     "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-global-shortcut": "^2.4.0",

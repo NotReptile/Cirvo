@@ -9,7 +9,7 @@ let container: HTMLDivElement | null = null;
 function ensureContainer(): HTMLDivElement {
   if (container) return container;
   container = document.createElement("div");
-  container.id = "rucord-dialogs";
+  container.id = "cirvo-dialogs";
   document.body.appendChild(container);
   return container;
 }

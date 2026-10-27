@@ -1,147 +1,161 @@
-# RuCord
+# Cirvo
 
-Self-host чат и голос для дружеских кружков и небольших/средних сообществ
-(десятки—сотни пользователей на инстанс). Скачал, запустил у себя — получил
-«свой Discord» с текстовыми и голосовыми каналами, screen-share, ролями и
-приглашениями. Один инстанс = один сервер; внутри допустимы несколько
-workspace'ов.
+Self-hosted chat and voice for small communities: your own Discord-like server that you run yourself.
 
-Клиенты — десктоп (Tauri, Windows — основная платформа), web (PWA, planned)
-и Android (Tauri mobile, planned) из одной TypeScript-кодовой базы.
+[Русский](README.ru.md)
 
-> **Текущая версия: 0.3.0.** Windows-клиент и серверный стек выпускаются как
-> ранняя версия; web и Android-клиенты пока запланированы.
+[![smoke](https://github.com/NotReptile/Cirvo/actions/workflows/smoke.yml/badge.svg)](https://github.com/NotReptile/Cirvo/actions/workflows/smoke.yml)
+[![desktop-check](https://github.com/NotReptile/Cirvo/actions/workflows/desktop-check.yml/badge.svg)](https://github.com/NotReptile/Cirvo/actions/workflows/desktop-check.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## Быстрые ссылки
+Cirvo is built for friend groups and small to medium communities (tens to hundreds of users per instance). One instance is one server; several workspaces are possible inside it. The server runs on Linux in Docker, and the main client is a Tauri desktop app for Windows.
 
-- Поставить клиент на Windows: [docs/runbooks/windows-client.md](docs/runbooks/windows-client.md)
-- Поднять свой сервер: [Single-node](#single-node-продакшн-на-одной-машине)
-- Выпустить новую версию клиента: [docs/runbooks/desktop-release.md](docs/runbooks/desktop-release.md)
-- Что-то не работает: [docs/runbooks/diagnostics.md](docs/runbooks/diagnostics.md)
-- Работа с репозиторием через ИИ-агентов: [AGENTS.md](AGENTS.md)
+> **Status: early version.** The Windows client and the server stack are released as an early version. Web and Android clients are planned, not available yet. For the current version and what changed, see [CHANGELOG.md](CHANGELOG.md).
 
-## Что внутри
+## Features
 
-| Каталог | Что это |
-| --- | --- |
-| `apps/desktop` | Tauri-клиент на TypeScript |
-| `services/core-api` | Go HTTP API (порт 8080) |
-| `services/realtime` | Go WebSocket-узел, presence, WebRTC signaling (порт 8090) |
-| `services/sfu` | Go SFU для группового голоса и видео (порт 8095, медиа по UDP 50000) |
-| `services/worker` | Go background jobs (thumbnails, retention…) |
-| `db/migrations` | golang-migrate миграции |
-| `deploy/` | compose-файлы: `local` (разработка) и `single-node` (продакшн) |
-| `docs/` | wiki, ADR, runbooks |
+- Workspaces with text channels, categories, attachments and reactions
+- Threads and forum channels
+- Direct messages and friends
+- Voice channels and video calls (mesh for small calls, SFU for groups), screen sharing, noise suppression
+- Roles and permissions (RBAC) with per-channel access
+- Invitations with expiry, and admin-created users with a forced password change
+- Presence and statuses, profiles, notifications
+- Message search and link previews
+- Audit log and an admin panel (registration, attachment size, storage quota)
+- Windows desktop client with signed auto-updates
+- No external services required for voice: STUN/TURN is provided by your own coturn
 
-Кроме Go-сервисов стек включает Postgres, Redis, MinIO, coturn (TURN, порт 3478)
-и Caddy (TLS и reverse-proxy).
+## Architecture
 
-## Требования
+| Component | Description | Port |
+| --- | --- | --- |
+| `apps/desktop` | Client: TypeScript, Vite, Tauri 2 | dev server 1420 |
+| `services/core-api` | Go HTTP API | 8080 |
+| `services/realtime` | Go WebSocket: presence, signaling, event journal | 8090 |
+| `services/sfu` | Go SFU (pion) for group voice and video | 8095, media on UDP 50000 |
+| `services/worker` | Go background jobs: previews, retention, notifications | - |
 
-- Docker (с `docker compose`): единственное требование для запуска сервера
-- Go 1.26+ — только для разработки
-- Node.js 20.19+ или 22.12+ — для сборки десктоп-клиента
-- Rust stable и MSVC Build Tools — только для локальной сборки exe
+Infrastructure: Postgres, Redis, MinIO (object storage), coturn (TURN, port 3478) and Caddy (TLS and reverse proxy).
 
-## Что обязательно поменять перед первым запуском
+```
+                  +-----------+
+  Desktop client  |   Caddy   |  TLS, reverse proxy
+  --------------> | 80 / 443  |
+                  +-----+-----+
+                        | HTTP / WebSocket
+        +---------------+---------------+
+        |               |               |
+   core-api :8080  realtime :8090   sfu :8095  (media: UDP 50000)
+        |               |               |
+        +------+--------+---------------+
+               |
+     Postgres, Redis, MinIO        coturn :3478 (TURN)
 
-`cp deploy/.env.example deploy/.env`, затем в `deploy/.env`:
-
-| Переменная | Зачем |
-| --- | --- |
-| `RUCORD_JWT_SECRET` | Любая случайная строка ≥32 байт. Утечёт → у атакующего твои сессии. |
-| `POSTGRES_PASSWORD` | Пароль БД. Дефолт `change-me` — не оставлять. |
-| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | Доступ к object storage. Тоже не оставлять `change-me`. |
-| `RUCORD_BOOTSTRAP_*` | Логин/пароль первого админа. Создаётся один раз на пустой БД. |
-| `RUCORD_DOMAIN` (single-node) | `chat.example.com` либо `localhost`/IP для приватной сети. |
-| `RUCORD_TLS_EMAIL` (single-node) | Email для Let's Encrypt либо литерал `internal` (self-signed). |
-| `RUCORD_CORS_ORIGINS` (prod) | Список оригинов клиента через запятую, без `*`. Для Windows-клиента обязательно `tauri://localhost,http://tauri.localhost,https://tauri.localhost`. |
-| `RUCORD_SFU_PUBLIC_IP` (single-node) | Внешний IP сервера (в LAN — LAN-адрес). Без него SFU в production не стартует, а вместе с ним не поднимется Caddy. |
-| `ICE_TURN_URLS`, `ICE_TURN_SHARED_SECRET` (single-node) | Адрес и секрет TURN (coturn). Секрет: `openssl rand -hex 32`. |
-
-Без правки этих значений сервер либо не стартует (JWT-секрет короче 32
-байт), либо стартует с известными дефолтными паролями — что эквивалентно
-открытой админке.
-
-## Local: попробовать на ноутбуке
-
-```bash
-cp deploy/.env.example deploy/.env
-# (поправить секреты как описано выше)
-
-# 1) Поднять инфраструктуру (postgres, redis, minio)
-docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env up -d
-
-# 2) Применить миграции (явный шаг — переиграется при добавлении новых)
-docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env run --rm migrate
-
-# 3) Запустить Go-сервисы (в трёх терминалах либо через VSCode task `Run All`)
-go run github.com/NotReptile/RuCord/services/core-api/cmd/core-api
-go run github.com/NotReptile/RuCord/services/realtime/cmd/realtime
-go run github.com/NotReptile/RuCord/services/worker/cmd/worker
-
-# 4) Запустить десктоп-клиент
-cd apps/desktop && npm install && npm run dev
+   worker: background jobs (previews, retention, notifications)
 ```
 
-Для локального режима (mesh-звонки без SFU) очисти `RUCORD_SFU_URL` в
-`deploy/.env`, иначе `core-api` будет анонсировать несуществующий SFU.
-Postgres в local-compose слушает порт `5433`.
+## Quick start
 
-Каждому терминалу нужны env-переменные из `deploy/.env`. На Windows проще
-открыть проект в VSCode и нажать таск `Run All` — он экспортирует env,
-поднимает инфру + миграции + все три сервиса + клиент.
+### Run your own server
 
-Подробности: [docs/runbooks/local-development.md](docs/runbooks/local-development.md).
-
-## Single-node: продакшн на одной машине
-
-Один Linux-хост держит весь стек: Postgres, Redis, MinIO, Caddy (TLS
-терминируется на нём), Go-сервисы.
+Requirements: Docker with `docker compose`.
 
 ```bash
 cp deploy/.env.example deploy/.env
-# (RUCORD_DOMAIN, RUCORD_TLS_EMAIL, секреты — всё из чек-листа выше)
+# edit deploy/.env: secrets, domain, CORS origins, SFU public IP, TURN
 
-# 1) Миграции
 docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env run --rm migrate
-
-# 2) Весь стек: Go-сервисы собираются из исходников, Caddy слушает 80/443
-docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env up -d --build
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env up -d
 ```
 
-На роутере и firewall нужны порты `80/tcp`, `443/tcp`, `3478/tcp+udp`,
-`49160-49200/udp` и `50000/udp`.
+Before the first start you must change at least `CIRVO_JWT_SECRET` (at least 32 bytes), `POSTGRES_PASSWORD`, `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`, the `CIRVO_BOOTSTRAP_*` values (first administrator), `CIRVO_DOMAIN` (for example `chat.example.com`), `CIRVO_CORS_ORIGINS` (no `*`; for the Windows client it must include `tauri://localhost,http://tauri.localhost,https://tauri.localhost`), `CIRVO_SFU_PUBLIC_IP` (`<PUBLIC_IP>`) and the TURN settings (`ICE_TURN_URLS`, `ICE_TURN_SHARED_SECRET`).
 
-Caddy выдаст TLS-сертификат через Let's Encrypt (если `RUCORD_TLS_EMAIL` —
-почта) или self-signed (если `internal`). После этого `https://$RUCORD_DOMAIN`
-отдаёт API и WebSocket; первый админ логинится бутстрап-паролем из
-`RUCORD_BOOTSTRAP_PASSWORD`.
+Ports to open: `80/tcp`, `443/tcp`, `3478/tcp+udp`, `49160-49200/udp` and `50000/udp`.
 
-Подробности: [docs/runbooks/single-node.md](docs/runbooks/single-node.md).
+Full guide: [docs/runbooks/single-node.md](docs/runbooks/single-node.md) (in Russian).
 
-## Бэкапы
+### Develop locally
+
+Requirements: Docker, Go 1.26+, Node.js 20.19+ or 22.12+ (CI uses Node 22). Building the desktop executable also needs Rust (stable) and MSVC Build Tools.
 
 ```bash
-deploy/backup.sh                       # ./backups/<UTC-ts>/
-deploy/restore.sh ./backups/<UTC-ts>   # деструктивно, спросит yes/NO
+cp deploy/.env.example deploy/.env
+# for local mode set CIRVO_SFU_URL= (empty); export the variables from deploy/.env into your shell
+
+docker compose --env-file deploy/.env -f deploy/local/docker-compose.yml up -d postgres redis minio
+docker compose --env-file deploy/.env -f deploy/local/docker-compose.yml run --rm migrate
+
+# each in its own terminal, with the environment exported
+go run github.com/NotReptile/Cirvo/services/core-api/cmd/core-api
+go run github.com/NotReptile/Cirvo/services/realtime/cmd/realtime
+go run github.com/NotReptile/Cirvo/services/worker/cmd/worker
+
+# client
+npm ci
+npm run dev:desktop      # Vite dev server on http://127.0.0.1:1420
 ```
 
-Подробности: [docs/runbooks/backup-and-restore.md](docs/runbooks/backup-and-restore.md).
+Details: [docs/runbooks/local-development.md](docs/runbooks/local-development.md) (in Russian).
 
-## Документация
+## Desktop client
 
-- [docs/README.md](docs/README.md) — индекс wiki, ADR'ы, runbook'и.
-- [docs/architecture/overview.md](docs/architecture/overview.md) — границы
-  сервисов, runtime composition.
-- [docs/security/overview.md](docs/security/overview.md) — auth, сессии,
-  RBAC, секреты.
-- [CHANGELOG.md](CHANGELOG.md) — история версий.
-- [CONTRIBUTING.md](CONTRIBUTING.md) и [SECURITY.md](SECURITY.md).
+The client targets Windows 10/11 (64-bit). Download the installer `Cirvo_<version>_x64-setup.exe` from [GitHub Releases](https://github.com/NotReptile/Cirvo/releases), run it and enter your server address (for example `chat.example.com`). The installer is not Authenticode-signed yet, so Windows SmartScreen shows a warning: choose "More info" and then "Run anyway". Updates are verified with a separate signature key. See [docs/runbooks/windows-client.md](docs/runbooks/windows-client.md) and [docs/runbooks/desktop-release.md](docs/runbooks/desktop-release.md).
 
-## Принципы
+Build from source:
 
-- monorepo с явными границами;
-- сервер — источник истины для домена;
-- realtime — не source of truth, а доставка;
-- local и single-node делят одну архитектуру, меняется только compose и конфиг.
+```bash
+npm ci
+npm run build:desktop                           # web bundle
+npm --workspace apps/desktop run tauri build    # Windows exe; needs Rust and a signing key
+```
+
+## Repository layout
+
+| Path | Contents |
+| --- | --- |
+| `apps/desktop` | Desktop client (TypeScript, Vite, Tauri 2; `src-tauri` is the Rust shell) |
+| `services/core-api` | HTTP API; modules in `internal/modules/*` |
+| `services/realtime` | WebSocket service |
+| `services/sfu` | SFU for group voice and video |
+| `services/worker` | Background jobs |
+| `libs/shared-go` | Shared Go packages (config, jwtauth, ratelimit, retention, wsticket, ...) |
+| `libs/shared-ts`, `libs/contracts` | Shared TypeScript types and contracts |
+| `db/migrations` | Numbered golang-migrate migrations (`up` and `down`) |
+| `deploy/` | `local/` (development) and `single-node/` (production) |
+| `docs/` | Documentation |
+
+## Documentation
+
+Start at [docs/README.md](docs/README.md). The detailed documentation is currently in Russian.
+
+## Contributing
+
+1. Fork the repository and create a branch from `main`.
+2. Make your change. Keep new code consistent with the surrounding style (see `.editorconfig`).
+3. Before opening a pull request, run:
+
+   ```bash
+   npm ci
+   npm run check:desktop
+   npm --workspace apps/desktop test
+   go build ./libs/shared-go/... ./services/core-api/... ./services/realtime/... ./services/sfu/... ./services/worker/...
+   go test -race ./libs/shared-go/... ./services/core-api/... ./services/realtime/... ./services/sfu/...
+   ```
+
+4. Open a pull request against `main`.
+
+Rules:
+
+- Commit messages may be in any language; conventional commits style (`feat(scope): ...`, `fix(scope): ...`) is preferred.
+- A new permission is a new `permission.Action` constant plus an entry in the permission matrix. No `if role == "..."` checks in handlers.
+- Database migrations are added only as a new file with the next number and an `up`/`down` pair. Do not edit old migrations.
+- Never commit secrets (`deploy/.env`, tokens, keys, passwords).
+
+## Security
+
+Please report vulnerabilities privately. See [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) (c) 2026 NotReptile

@@ -69,7 +69,7 @@ export class RealtimeClient {
       this.disconnect();
       return;
     }
-    this.cursorKey = `rucord:realtime-cursor:${this.endpoint}:${nextSubject ?? "unknown"}`;
+    this.cursorKey = `cirvo:realtime-cursor:${this.endpoint}:${nextSubject ?? "unknown"}`;
     this.cursor = readCursor(this.cursorKey);
     void this.connect();
   }

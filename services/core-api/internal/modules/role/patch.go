@@ -7,7 +7,7 @@ import (
 	"io"
 	"net/http"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
 )
 
 func decodePatchBody(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, bool) {

@@ -236,26 +236,26 @@ export function renderSettingsVoiceTab(): string {
 //                       обертоны).
 // - browser           — нативный WebRTC-стек Chromium (NS3). Дефолт.
 //                       Хорошо чистит вентилятор/клавиатуру/эхо.
-// - rucord            — RNNoise (ML) через AudioWorklet, denoiser.ts.
+// - cirvo            — RNNoise (ML) через AudioWorklet, denoiser.ts.
 //                       Слайдер интенсивности = dry/wet микс.
-// - rucord-aggressive — нативный NS + RNNoise на 100% поверх; для сложных
+// - cirvo-aggressive — нативный NS + RNNoise на 100% поверх; для сложных
 //                       шумов (кафе, улица, открытое окно).
 //
-// Slider intensity 0-100 виден всегда, но активен только для rucord:
+// Slider intensity 0-100 виден всегда, но активен только для cirvo:
 // browser-NS не принимает intensity, aggressive всегда работает на 100%.
 // Смена режима применяется со следующего звонка; интенсивность — на лету.
 export function renderDenoiserBlock(s: VoiceSettings): string {
   const modes: { id: DenoiserMode; label: string; sub: string }[] = [
     { id: "off", label: t("vs.dn.off"), sub: t("vs.dn.off.sub") },
     { id: "browser", label: t("vs.dn.browser"), sub: t("vs.dn.browser.sub") },
-    { id: "rucord", label: t("vs.dn.rucord"), sub: t("vs.dn.rucord.sub") },
+    { id: "cirvo", label: t("vs.dn.cirvo"), sub: t("vs.dn.cirvo.sub") },
     {
-      id: "rucord-aggressive",
+      id: "cirvo-aggressive",
       label: t("vs.dn.aggr"),
       sub: t("vs.dn.aggr.sub"),
     },
   ];
-  const intensityActive = s.denoiserMode === "rucord";
+  const intensityActive = s.denoiserMode === "cirvo";
   const radios = modes
     .map((m) => {
       const checked = s.denoiserMode === m.id ? "checked" : "";

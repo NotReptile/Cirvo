@@ -4,25 +4,25 @@
     {
       "label": "core-api",
       "type": "shell",
-      "command": "$go = (Get-Command go -ErrorAction SilentlyContinue).Source; if (-not $go) { $go = @(\"$env:ProgramFiles\\Go\\bin\\go.exe\", \"$env:LOCALAPPDATA\\Programs\\Go\\bin\\go.exe\") | Where-Object { Test-Path $_ } | Select-Object -First 1 }; if (-not $go) { throw 'Go is not installed or not on PATH' }; Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; & $go run github.com/NotReptile/RuCord/services/core-api/cmd/core-api",
+      "command": "$go = (Get-Command go -ErrorAction SilentlyContinue).Source; if (-not $go) { $go = @(\"$env:ProgramFiles\\Go\\bin\\go.exe\", \"$env:LOCALAPPDATA\\Programs\\Go\\bin\\go.exe\") | Where-Object { Test-Path $_ } | Select-Object -First 1 }; if (-not $go) { throw 'Go is not installed or not on PATH' }; Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; & $go run github.com/NotReptile/Cirvo/services/core-api/cmd/core-api",
       "isBackground": true,
-      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "presentation": { "group": "cirvo", "panel": "dedicated" },
       "problemMatcher": []
     },
     {
       "label": "realtime",
       "type": "shell",
-      "command": "$go = (Get-Command go -ErrorAction SilentlyContinue).Source; if (-not $go) { $go = @(\"$env:ProgramFiles\\Go\\bin\\go.exe\", \"$env:LOCALAPPDATA\\Programs\\Go\\bin\\go.exe\") | Where-Object { Test-Path $_ } | Select-Object -First 1 }; if (-not $go) { throw 'Go is not installed or not on PATH' }; Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; & $go run github.com/NotReptile/RuCord/services/realtime/cmd/realtime",
+      "command": "$go = (Get-Command go -ErrorAction SilentlyContinue).Source; if (-not $go) { $go = @(\"$env:ProgramFiles\\Go\\bin\\go.exe\", \"$env:LOCALAPPDATA\\Programs\\Go\\bin\\go.exe\") | Where-Object { Test-Path $_ } | Select-Object -First 1 }; if (-not $go) { throw 'Go is not installed or not on PATH' }; Get-NetTCPConnection -LocalPort 8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; & $go run github.com/NotReptile/Cirvo/services/realtime/cmd/realtime",
       "isBackground": true,
-      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "presentation": { "group": "cirvo", "panel": "dedicated" },
       "problemMatcher": []
     },
     {
       "label": "worker",
       "type": "shell",
-      "command": "$go = (Get-Command go -ErrorAction SilentlyContinue).Source; if (-not $go) { $go = @(\"$env:ProgramFiles\\Go\\bin\\go.exe\", \"$env:LOCALAPPDATA\\Programs\\Go\\bin\\go.exe\") | Where-Object { Test-Path $_ } | Select-Object -First 1 }; if (-not $go) { throw 'Go is not installed or not on PATH' }; Get-CimInstance Win32_Process -Filter \"Name = 'go.exe'\" | Where-Object { $_.CommandLine -match 'services[\\\\/]worker' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }; Get-CimInstance Win32_Process -Filter \"Name = 'worker.exe'\" | Where-Object { $_.ExecutablePath -match 'go-build' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; & $go run github.com/NotReptile/RuCord/services/worker/cmd/worker",
+      "command": "$go = (Get-Command go -ErrorAction SilentlyContinue).Source; if (-not $go) { $go = @(\"$env:ProgramFiles\\Go\\bin\\go.exe\", \"$env:LOCALAPPDATA\\Programs\\Go\\bin\\go.exe\") | Where-Object { Test-Path $_ } | Select-Object -First 1 }; if (-not $go) { throw 'Go is not installed or not on PATH' }; Get-CimInstance Win32_Process -Filter \"Name = 'go.exe'\" | Where-Object { $_.CommandLine -match 'services[\\\\/]worker' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }; Get-CimInstance Win32_Process -Filter \"Name = 'worker.exe'\" | Where-Object { $_.ExecutablePath -match 'go-build' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }; Get-Content deploy/.env -Encoding UTF8 | Where-Object { $_ -match '^\\w+=' } | ForEach-Object { $name, $value = $_ -split '=', 2; $value = $value.Trim(); [Environment]::SetEnvironmentVariable($name, $value, 'Process') }; & $go run github.com/NotReptile/Cirvo/services/worker/cmd/worker",
       "isBackground": true,
-      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "presentation": { "group": "cirvo", "panel": "dedicated" },
       "problemMatcher": []
     },
     {
@@ -30,14 +30,14 @@
       "type": "shell",
       "command": "Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"freed port 1420 (pid $_)\" } catch {} }; Set-Location apps/desktop; npm run dev",
       "isBackground": true,
-      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "presentation": { "group": "cirvo", "panel": "dedicated" },
       "problemMatcher": []
     },
     {
       "label": "infra",
       "type": "shell",
       "command": "docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env up -d postgres redis minio",
-      "presentation": { "group": "rucord", "panel": "shared" },
+      "presentation": { "group": "cirvo", "panel": "shared" },
       "problemMatcher": []
     },
     {
@@ -45,7 +45,7 @@
       "type": "shell",
       "command": "docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env run --rm migrate",
       "dependsOn": ["infra"],
-      "presentation": { "group": "rucord", "panel": "shared" },
+      "presentation": { "group": "cirvo", "panel": "shared" },
       "problemMatcher": []
     },
     {
@@ -53,7 +53,7 @@
       "type": "shell",
       "command": "docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env --profile public-ip up -d public-ip-proxy",
       "dependsOn": ["infra"],
-      "presentation": { "group": "rucord", "panel": "shared" },
+      "presentation": { "group": "cirvo", "panel": "shared" },
       "problemMatcher": []
     },
     {
@@ -61,7 +61,7 @@
       "type": "shell",
       "command": "Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"freed port 1420 (pid $_)\" } catch {} }; Set-Location apps/desktop; npm run tauri dev",
       "isBackground": true,
-      "presentation": { "group": "rucord", "panel": "dedicated" },
+      "presentation": { "group": "cirvo", "panel": "dedicated" },
       "problemMatcher": []
     },
     {
@@ -88,14 +88,14 @@
       "label": "tauri build",
       "type": "shell",
       "command": "Set-Location apps/desktop; npm run tauri build",
-      "presentation": { "group": "rucord", "panel": "shared" },
+      "presentation": { "group": "cirvo", "panel": "shared" },
       "problemMatcher": []
     },
     {
       "label": "Stop All",
       "type": "shell",
-      "command": "Get-NetTCPConnection -LocalPort 1420,8080,8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"killed pid $_ (port)\" } catch {} }; docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env --profile public-ip stop public-ip-proxy; Get-CimInstance Win32_Process -Filter \"Name = 'go.exe'\" | Where-Object { $_.CommandLine -match 'services[\\\\/]worker' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host \"killed worker go pid $($_.ProcessId)\" } catch {} }; Get-CimInstance Win32_Process -Filter \"Name = 'worker.exe'\" | Where-Object { $_.ExecutablePath -match 'go-build' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host \"killed worker exe pid $($_.ProcessId)\" } catch {} }; Get-Process -Name 'rucord-desktop','RuCord' -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; Write-Host \"killed tauri pid $($_.Id) ($($_.ProcessName))\" } catch {} }",
-      "presentation": { "group": "rucord", "panel": "shared" },
+      "command": "Get-NetTCPConnection -LocalPort 1420,8080,8090 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { Stop-Process -Id $_ -Force -ErrorAction Stop; Write-Host \"killed pid $_ (port)\" } catch {} }; docker compose -f deploy/local/docker-compose.yml --env-file deploy/.env --profile public-ip stop public-ip-proxy; Get-CimInstance Win32_Process -Filter \"Name = 'go.exe'\" | Where-Object { $_.CommandLine -match 'services[\\\\/]worker' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host \"killed worker go pid $($_.ProcessId)\" } catch {} }; Get-CimInstance Win32_Process -Filter \"Name = 'worker.exe'\" | Where-Object { $_.ExecutablePath -match 'go-build' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host \"killed worker exe pid $($_.ProcessId)\" } catch {} }; Get-Process -Name 'cirvo-desktop','Cirvo' -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; Write-Host \"killed tauri pid $($_.Id) ($($_.ProcessName))\" } catch {} }",
+      "presentation": { "group": "cirvo", "panel": "shared" },
       "problemMatcher": []
     },
     {

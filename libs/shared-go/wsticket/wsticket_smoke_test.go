@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
 )
 
 func TestTicketIsSingleUse(t *testing.T) {

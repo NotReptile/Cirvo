@@ -39,7 +39,7 @@ function startApp(container: HTMLElement, apiBaseUrl: string, realtimeUrl: strin
   void startAppAsync(container, apiBaseUrl, realtimeUrl).catch(() => {
     container.replaceChildren();
     const message = document.createElement("p");
-    message.textContent = "Не удалось открыть хранилище сессии. Перезапустите RuCord.";
+    message.textContent = "Не удалось открыть хранилище сессии. Перезапустите Cirvo.";
     container.append(message);
   });
 }

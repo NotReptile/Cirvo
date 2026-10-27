@@ -1,6 +1,6 @@
 import { getLocale } from "./i18n";
 
-// Keep the form inputs and their existing change handlers; render RuCord controls
+// Keep the form inputs and their existing change handlers; render Cirvo controls
 // in the top layer so scrollable settings cannot clip the picker.
 let activePicker: HTMLDivElement | null = null;
 
@@ -17,7 +17,7 @@ function labelFor(input: HTMLInputElement): string {
 function pickerFor(trigger: HTMLButtonElement): HTMLDivElement {
   closePicker();
   const picker = document.createElement("div");
-  picker.className = "rucord-input-picker";
+  picker.className = "cirvo-input-picker";
   picker.setAttribute("popover", "auto");
   picker.setAttribute("role", "dialog");
   picker.setAttribute("aria-label", trigger.getAttribute("aria-label") || "");
@@ -59,7 +59,7 @@ function syncTrigger(input: HTMLInputElement, trigger: HTMLButtonElement): void 
 function openColor(input: HTMLInputElement, trigger: HTMLButtonElement): void {
   const picker = pickerFor(trigger);
   const palette = document.createElement("div");
-  palette.className = "rucord-color-palette";
+  palette.className = "cirvo-color-palette";
   for (const color of ["#5865f2", "#3ba55c", "#faa61a", "#ed4245", "#eb459e", "#9b59b6", "#1abc9c", "#ffffff", "#80848e", "#111214"]) {
     const button = document.createElement("button");
     button.type = "button";
@@ -103,7 +103,7 @@ function openDate(input: HTMLInputElement, trigger: HTMLButtonElement): void {
   const draw = () => {
     picker.replaceChildren();
     const header = document.createElement("div");
-    header.className = "rucord-calendar-header";
+    header.className = "cirvo-calendar-header";
     const title = document.createElement("strong");
     title.textContent = new Intl.DateTimeFormat(getLocale(), { month: "long", year: "numeric" }).format(new Date(year, month, 1));
     for (const direction of [-1, 1]) {
@@ -118,7 +118,7 @@ function openDate(input: HTMLInputElement, trigger: HTMLButtonElement): void {
       header.appendChild(nav);
       if (direction < 0) header.appendChild(title);
     }
-    const grid = document.createElement("div"); grid.className = "rucord-calendar-grid";
+    const grid = document.createElement("div"); grid.className = "cirvo-calendar-grid";
     for (let i = 0; i < 7; i++) {
       const weekday = document.createElement("span");
       weekday.textContent = new Intl.DateTimeFormat(getLocale(), { weekday: "short" }).format(new Date(2024, 0, 1 + i));
@@ -150,18 +150,18 @@ function openDate(input: HTMLInputElement, trigger: HTMLButtonElement): void {
 
 export function polishInputControls(root: ParentNode): void {
   if (activePicker && !activePicker.contains(document.activeElement) &&
-      !document.querySelector(".rucord-input-control:focus-within")) closePicker();
+      !document.querySelector(".cirvo-input-control:focus-within")) closePicker();
   for (const input of root.querySelectorAll<HTMLInputElement>('input[type="color"], input[type="date"]')) {
-    if (input.parentElement?.classList.contains("rucord-input-control")) {
+    if (input.parentElement?.classList.contains("cirvo-input-control")) {
       syncTrigger(input, input.parentElement.querySelector("button")!);
       continue;
     }
     const wrapper = document.createElement("span");
-    wrapper.className = `rucord-input-control rucord-${input.type}-control`;
+    wrapper.className = `cirvo-input-control cirvo-${input.type}-control`;
     input.before(wrapper); wrapper.appendChild(input);
     input.tabIndex = -1;
     const trigger = document.createElement("button"); trigger.type = "button";
-    trigger.className = "rucord-input-trigger";
+    trigger.className = "cirvo-input-trigger";
     syncTrigger(input, trigger);
     trigger.addEventListener("click", () => input.type === "color" ? openColor(input, trigger) : openDate(input, trigger));
     input.addEventListener("change", () => syncTrigger(input, trigger));

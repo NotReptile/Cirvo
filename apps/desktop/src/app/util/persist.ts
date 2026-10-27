@@ -2,7 +2,7 @@ import type { ScreenShareQualityKey } from "../types";
 
 export function loadScreenShareQuality(): ScreenShareQualityKey {
   try {
-    const v = localStorage.getItem("rucord:screenShareQuality");
+    const v = localStorage.getItem("cirvo:screenShareQuality");
     if (v && ["720p30", "1080p30", "1080p60", "1440p30"].includes(v))
       return v as ScreenShareQualityKey;
   } catch {
@@ -13,7 +13,7 @@ export function loadScreenShareQuality(): ScreenShareQualityKey {
 
 export function loadCollapsedCategories(): Set<string> {
   try {
-    const raw = localStorage.getItem("rucord:collapsed-categories");
+    const raw = localStorage.getItem("cirvo:collapsed-categories");
     if (!raw) return new Set();
     const arr = JSON.parse(raw);
     return new Set(

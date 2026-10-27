@@ -201,12 +201,12 @@ export async function initUpdateCheck(): Promise<void> {
   if (uiContext.updateCheckStarted) return; // re-login не должен плодить интервалы
   uiContext.updateCheckStarted = true;
   try {
-    const raw = localStorage.getItem("rucord:pending-changelog");
+    const raw = localStorage.getItem("cirvo:pending-changelog");
     if (raw) {
-      localStorage.removeItem("rucord:pending-changelog");
+      localStorage.removeItem("cirvo:pending-changelog");
       const data = JSON.parse(raw) as { version: string; notes?: string };
       void confirmDialog({
-        title: `RuCord обновлён до v${data.version}`,
+        title: `Cirvo обновлён до v${data.version}`,
         body: data.notes?.trim() || "Обновление установлено.",
         confirmLabel: "Ок",
       });
@@ -255,7 +255,7 @@ export async function startUpdateInstall(): Promise<void> {
     });
     // «Что нового» покажем после перезапуска уже новой версией.
     localStorage.setItem(
-      "rucord:pending-changelog",
+      "cirvo:pending-changelog",
       JSON.stringify({
         version: uiContext.updateHandle.version,
         notes: uiContext.updateHandle.notes ?? "",
@@ -855,7 +855,7 @@ export function notificationTitle(item: NotificationItem): string {
 }
 
 export function notificationBody(item: NotificationItem): string {
-  if (item.kind === "call_incoming") return "Нажмите, чтобы открыть RuCord";
+  if (item.kind === "call_incoming") return "Нажмите, чтобы открыть Cirvo";
   if (item.kind === "friend_request")
     return "Откройте вкладку «Друзья», чтобы ответить";
   if (item.kind === "friend_accept") return "";

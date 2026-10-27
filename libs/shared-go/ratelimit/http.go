@@ -9,7 +9,7 @@ import (
 
 	"log/slog"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
 )
 
 // KeyFunc вычисляет идентификатор бакета по запросу. Например, IP или

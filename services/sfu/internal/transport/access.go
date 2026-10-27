@@ -6,8 +6,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
-	"github.com/NotReptile/RuCord/services/sfu/internal/rtc"
+	"github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
+	"github.com/NotReptile/Cirvo/services/sfu/internal/rtc"
 )
 
 const accessCheckInterval = 5 * time.Second

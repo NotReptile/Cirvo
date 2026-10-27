@@ -11,10 +11,10 @@ export function renderOnboarding(container: HTMLElement, onDone: (url: string) =
   container.innerHTML = `
     <div class="onboarding-screen">
       <div class="onboarding-card">
-        <div class="onboarding-logo">RuCord</div>
+        <div class="onboarding-logo">Cirvo</div>
         <h1>Подключение к серверу</h1>
         <p class="onboarding-hint">
-          Введи адрес твоего self-host RuCord сервера. Если ты ещё не поднял свой —
+          Введи адрес твоего self-host Cirvo сервера. Если ты ещё не поднял свой —
           попроси у того, кто им владеет (это администратор сообщества).
         </p>
         <form id="onboarding-form" class="onboarding-form" autocomplete="off">

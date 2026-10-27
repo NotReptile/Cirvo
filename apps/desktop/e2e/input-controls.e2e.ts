@@ -4,17 +4,17 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", route => route.fulfill({ json: { items: [] } }));
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
-  await page.evaluate(() => (window as any).__RUCORD_QA__.seed(20));
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
+  await page.evaluate(() => (window as any).__CIRVO_QA__.seed(20));
 });
 
-test("RuCord color picker updates existing settings and validates HEX", async ({ page }) => {
+test("Cirvo color picker updates existing settings and validates HEX", async ({ page }) => {
   await page.locator("#open-profile").click();
   await page.locator('[data-settings-tab="appearance"]').first().click();
   const input = page.locator("#ap-accent");
   const trigger = input.locator("..").locator("button");
   await trigger.click();
-  const picker = page.locator(".rucord-input-picker");
+  const picker = page.locator(".cirvo-input-picker");
   await expect(picker).toBeVisible();
   await picker.locator('input').fill("#12");
   await picker.getByRole("button", { name: "Применить" }).click();
@@ -27,23 +27,23 @@ test("RuCord color picker updates existing settings and validates HEX", async ({
   expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#123abc");
 });
 
-test("RuCord audit calendar changes and clears the filter within a small window", async ({ page }) => {
+test("Cirvo audit calendar changes and clears the filter within a small window", async ({ page }) => {
   await page.setViewportSize({ width: 800, height: 600 });
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.state().modal = "audit";
     qa.render();
   });
   const input = page.locator("#audit-filter-from");
   const trigger = input.locator("..").locator("button");
   await trigger.click();
-  const picker = page.locator(".rucord-input-picker");
+  const picker = page.locator(".cirvo-input-picker");
   await expect(picker).toBeVisible();
   const box = (await picker.boundingBox())!;
   expect(box.x).toBeGreaterThanOrEqual(0);
   expect(box.x + box.width).toBeLessThanOrEqual(800);
   expect(box.y + box.height).toBeLessThanOrEqual(600);
-  const day = picker.locator('.rucord-calendar-grid button').first();
+  const day = picker.locator('.cirvo-calendar-grid button').first();
   const value = await day.getAttribute("aria-label");
   await day.click();
   await expect(input).toHaveValue(value!);

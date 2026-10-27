@@ -32,4 +32,4 @@
 
 - use external configuration for all addresses, secrets, domains and limits;
 - поддерживаемые профили деплоя - `local` и `single-node`, без изменения структуры кода; публичный деплой - это `single-node` (см. [environments.md](../deployment/environments.md));
-- support runtime stages `dev`, `test` and `prod` through configuration, not through branch-specific code. Сейчас код по `RUCORD_STAGE` не ветвится, а по `RUCORD_ENV` различает только `production` в `sfu`.
+- support runtime stages `dev`, `test` and `prod` through configuration, not through branch-specific code. Сейчас код по `CIRVO_STAGE` не ветвится, а по `CIRVO_ENV` различает только `production` в `sfu`.

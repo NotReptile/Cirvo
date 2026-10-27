@@ -1,4 +1,4 @@
-// N.2+N.4: RuCord-шумодав — RNNoise (xiph.org, GRU, ~85KB весов) через WASM
+// N.2+N.4: Cirvo-шумодав — RNNoise (xiph.org, GRU, ~85KB весов) через WASM
 // в AudioWorklet. Пакет @sapphi-red/web-noise-suppressor (MIT) даёт готовый
 // worklet-процессор и загрузчик wasm (simd-вариант подхватывается сам, если
 // поддерживается). Pipeline:
@@ -8,7 +8,7 @@
 //     └→ dryGain ─────────────────────┴→ MediaStreamDestination → PC
 //
 // Интенсивность (0..100) — dry/wet микс: 100 = только очищенный сигнал,
-// 0 = только оригинал (как ручка Strength в OBS). Режим rucord-aggressive
+// 0 = только оригинал (как ручка Strength в OBS). Режим cirvo-aggressive
 // всегда 100% wet (а browser-NS дополнительно включён в constraints — см.
 // buildAudioConstraints).
 //
@@ -33,8 +33,8 @@ export interface MicPipeline {
   dispose(): void;
 }
 
-function isRucordMode(mode: DenoiserMode): boolean {
-  return mode === "rucord" || mode === "rucord-aggressive";
+function isCirvoMode(mode: DenoiserMode): boolean {
+  return mode === "cirvo" || mode === "cirvo-aggressive";
 }
 
 // WASM-байты кэшируем на модуль (один fetch на сессию приложения);
@@ -72,7 +72,7 @@ function passthrough(raw: MediaStream): MicPipeline {
 
 export async function wrapMicStream(raw: MediaStream): Promise<MicPipeline> {
   const settings = getVoiceSettings();
-  if (!isRucordMode(settings.denoiserMode)) {
+  if (!isCirvoMode(settings.denoiserMode)) {
     return passthrough(raw);
   }
 
@@ -99,8 +99,8 @@ export async function wrapMicStream(raw: MediaStream): Promise<MicPipeline> {
 
     const applyMix = () => {
       const s = getVoiceSettings();
-      // aggressive — всегда полный wet; интенсивность слайдера только для rucord.
-      const wet = s.denoiserMode === "rucord-aggressive" ? 1 : Math.min(100, Math.max(0, s.denoiserIntensity)) / 100;
+      // aggressive — всегда полный wet; интенсивность слайдера только для cirvo.
+      const wet = s.denoiserMode === "cirvo-aggressive" ? 1 : Math.min(100, Math.max(0, s.denoiserIntensity)) / 100;
       wetGain.gain.value = wet;
       dryGain.gain.value = 1 - wet;
     };
@@ -135,7 +135,7 @@ export async function wrapMicStream(raw: MediaStream): Promise<MicPipeline> {
     };
   } catch (err) {
     console.warn("denoiser: RNNoise pipeline failed, falling back to raw mic", err);
-    // В rucord-режиме browser-NS отключён в constraints (RNNoise должен
+    // В cirvo-режиме browser-NS отключён в constraints (RNNoise должен
     // видеть сырой шум) — при fallback'е возвращаем хотя бы нативный NS,
     // чтобы юзер не остался совсем без шумодава.
     void raw.getAudioTracks()[0]?.applyConstraints({ noiseSuppression: true }).catch(() => undefined);

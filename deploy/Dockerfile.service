@@ -1,4 +1,4 @@
-# Универсальный Dockerfile для Go-сервисов RuCord (core-api / realtime /
+# Универсальный Dockerfile для Go-сервисов Cirvo (core-api / realtime /
 # sfu / worker). Передаётся через `--build-arg SERVICE_NAME=...`; контекст билда
 # должен быть КОРНЕМ репозитория, чтобы go.work + libs/shared-go попали
 # в образ (у каждого сервиса в go.mod стоит replace на ../../libs/shared-go).

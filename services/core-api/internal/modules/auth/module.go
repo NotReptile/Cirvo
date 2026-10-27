@@ -14,15 +14,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/jwtauth"
-	"github.com/NotReptile/RuCord/libs/shared-go/passwords"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/ratelimit"
-	"github.com/NotReptile/RuCord/services/core-api/internal/accountrules"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
-	"github.com/NotReptile/RuCord/services/core-api/internal/serversettings"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/jwtauth"
+	"github.com/NotReptile/Cirvo/libs/shared-go/passwords"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/ratelimit"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/accountrules"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/routing"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/serversettings"
 )
 
 // Лимиты anti brute-force на auth-эндпоинтах. Считаются per-IP (за Caddy —

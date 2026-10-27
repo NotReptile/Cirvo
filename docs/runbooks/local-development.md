@@ -17,8 +17,8 @@ Copy-Item deploy/.env.example deploy/.env
 ```
 
 Минимум, что нужно проверить:
-- `RUCORD_SFU_URL` — для локального режима очистите значение (оставьте `RUCORD_SFU_URL=`). Иначе `core-api` анонсирует клиентам несуществующий SFU, и групповые звонки не соединятся. Локально работает mesh;
-- `RUCORD_JWT_SECRET` — должен быть длиной ≥32 символа (по умолчанию подходит)
+- `CIRVO_SFU_URL` — для локального режима очистите значение (оставьте `CIRVO_SFU_URL=`). Иначе `core-api` анонсирует клиентам несуществующий SFU, и групповые звонки не соединятся. Локально работает mesh;
+- `CIRVO_JWT_SECRET` — должен быть длиной ≥32 символа (по умолчанию подходит)
 - `POSTGRES_PASSWORD` — пароль для локального Postgres
 
 Экспортируйте переменные в текущую сессию (PowerShell):
@@ -38,7 +38,7 @@ docker compose --env-file deploy/.env -f deploy/local/docker-compose.yml up -d p
 docker compose --env-file deploy/.env -f deploy/local/docker-compose.yml run --rm migrate
 ```
 
-Контейнер `migrate` использует образ `migrate/migrate:v4.17.1` и прогоняет все миграции из `db/migrations/` поверх БД `rucord`.
+Контейнер `migrate` использует образ `migrate/migrate:v4.17.1` и прогоняет все миграции из `db/migrations/` поверх БД `cirvo`.
 
 Проверьте, что Postgres готов:
 
@@ -53,9 +53,9 @@ docker exec -it $(docker ps -qf "name=postgres") psql -U rucord -d rucord -c "\d
 В трёх отдельных терминалах (каждый с экспортированными env-переменными из шага 1):
 
 ```powershell
-go run github.com/NotReptile/RuCord/services/core-api/cmd/core-api
-go run github.com/NotReptile/RuCord/services/realtime/cmd/realtime
-go run github.com/NotReptile/RuCord/services/worker/cmd/worker
+go run github.com/NotReptile/Cirvo/services/core-api/cmd/core-api
+go run github.com/NotReptile/Cirvo/services/realtime/cmd/realtime
+go run github.com/NotReptile/Cirvo/services/worker/cmd/worker
 ```
 
 Ожидаемый вывод:

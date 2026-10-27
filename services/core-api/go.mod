@@ -1,10 +1,10 @@
-module github.com/NotReptile/RuCord/services/core-api
+module github.com/NotReptile/Cirvo/services/core-api
 
 go 1.26.0
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/NotReptile/RuCord/libs/shared-go v0.0.0
+	github.com/NotReptile/Cirvo/libs/shared-go v0.0.0
 	github.com/jackc/pgx/v5 v5.11.0
 )
 
@@ -36,4 +36,4 @@ require (
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
 
-replace github.com/NotReptile/RuCord/libs/shared-go => ../../libs/shared-go
+replace github.com/NotReptile/Cirvo/libs/shared-go => ../../libs/shared-go

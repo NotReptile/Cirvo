@@ -10,7 +10,7 @@
 //     message_attachments, reactions, mentions, read_receipts и т.п.
 //  2. Orphan media_objects — те, что не привязаны ни к одному
 //     message_attachment'у и созданы дольше getOrphanGrace назад. Параллельно
-//     решает техдолг про auto-cleanup orphaned media (см. TASKS.md).
+//     решает техдолг про auto-cleanup orphaned media.
 //  3. Storage quota: если storage_quota_bytes > 0 и текущий sum(size_bytes)
 //     превышает квоту — удаляет самые старые media_objects (с cascade на
 //     attachment'ы) пока не уложимся. Сами сообщения остаются без файлов.
@@ -29,8 +29,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/objectstore"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/objectstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
 )
 
 // orphanGrace — media без attachment'а считается orphan'ом только спустя

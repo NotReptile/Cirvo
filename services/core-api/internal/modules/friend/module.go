@@ -23,12 +23,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"encoding/json"
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/modules/notification"
-	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/modules/notification"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/routing"
 )
 
 type Module struct {

@@ -5,7 +5,7 @@
 # из deploy/Dockerfile.service.
 #
 # Перед запуском:
-#   1) cp deploy/.env.example deploy/.env и поправить секреты + RUCORD_DOMAIN
+#   1) cp deploy/.env.example deploy/.env и поправить секреты + CIRVO_DOMAIN
 #   2) Миграции БД:
 #        docker compose -f deploy/single-node/docker-compose.yml \
 #          --env-file deploy/.env run --rm migrate
@@ -17,11 +17,11 @@
 # go.work + libs/shared-go нужны для replace-directives.
 
 x-go-service-env: &go-service-env
-  RUCORD_ENV: production
-  RUCORD_STAGE: prod
-  RUCORD_JWT_SECRET: ${RUCORD_JWT_SECRET:?RUCORD_JWT_SECRET is required}
-  RUCORD_JWT_ACCESS_TTL: ${RUCORD_JWT_ACCESS_TTL:-15m}
-  RUCORD_CORS_ORIGINS: ${RUCORD_CORS_ORIGINS:-}
+  CIRVO_ENV: production
+  CIRVO_STAGE: prod
+  CIRVO_JWT_SECRET: ${CIRVO_JWT_SECRET:?CIRVO_JWT_SECRET is required}
+  CIRVO_JWT_ACCESS_TTL: ${CIRVO_JWT_ACCESS_TTL:-15m}
+  CIRVO_CORS_ORIGINS: ${CIRVO_CORS_ORIGINS:-}
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
   POSTGRES_DB: ${POSTGRES_DB:-rucord}
@@ -39,7 +39,7 @@ x-go-service-env: &go-service-env
   MINIO_USE_SSL: "false"
   # Пусто = STUN отвечает тот же coturn, что и TURN (адрес берётся из ICE_TURN_URLS).
   ICE_STUN_URLS: ${ICE_STUN_URLS:-}
-  ICE_TURN_URLS: ${ICE_TURN_URLS:-turn:${RUCORD_DOMAIN}:3478?transport=udp,turn:${RUCORD_DOMAIN}:3478?transport=tcp}
+  ICE_TURN_URLS: ${ICE_TURN_URLS:-turn:${CIRVO_DOMAIN}:3478?transport=udp,turn:${CIRVO_DOMAIN}:3478?transport=tcp}
   ICE_TURN_URL: ${ICE_TURN_URL:-}
   ICE_TURN_USERNAME: ${ICE_TURN_USERNAME:-}
   ICE_TURN_CREDENTIAL: ${ICE_TURN_CREDENTIAL:-}
@@ -48,7 +48,7 @@ x-go-service-env: &go-service-env
   # Сервис sfu в этом compose включён всегда (профиля у него нет). Пустое
   # значение не отключает SFU: `:-` подставит адрес по умолчанию. Mesh
   # (до 5 участников) остаётся режимом deploy/local.
-  RUCORD_SFU_URL: ${RUCORD_SFU_URL:-wss://${RUCORD_DOMAIN}/sfu/ws}
+  CIRVO_SFU_URL: ${CIRVO_SFU_URL:-wss://${CIRVO_DOMAIN}/sfu/ws}
 
 services:
   reverse-proxy:
@@ -58,11 +58,11 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      RUCORD_DOMAIN: ${RUCORD_DOMAIN:-localhost}
-      RUCORD_TLS_EMAIL: ${RUCORD_TLS_EMAIL:-internal}
-      RUCORD_CORE_API_HOST: ${RUCORD_CORE_API_HOST:-core-api}
-      RUCORD_REALTIME_HOST: ${RUCORD_REALTIME_HOST:-realtime}
-      RUCORD_SFU_HOST: ${RUCORD_SFU_HOST:-sfu}
+      CIRVO_DOMAIN: ${CIRVO_DOMAIN:-localhost}
+      CIRVO_TLS_EMAIL: ${CIRVO_TLS_EMAIL:-internal}
+      CIRVO_CORE_API_HOST: ${CIRVO_CORE_API_HOST:-core-api}
+      CIRVO_REALTIME_HOST: ${CIRVO_REALTIME_HOST:-realtime}
+      CIRVO_SFU_HOST: ${CIRVO_SFU_HOST:-sfu}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -85,14 +85,14 @@ services:
     restart: unless-stopped
     environment:
       <<: *go-service-env
-      RUCORD_HTTP_ADDRESS: ":8080"
+      CIRVO_HTTP_ADDRESS: ":8080"
       # Bootstrap первого админа — применяется один раз при пустой БД.
-      RUCORD_BOOTSTRAP_EMAIL: ${RUCORD_BOOTSTRAP_EMAIL:-}
-      RUCORD_BOOTSTRAP_USERNAME: ${RUCORD_BOOTSTRAP_USERNAME:-}
-      RUCORD_BOOTSTRAP_PASSWORD: ${RUCORD_BOOTSTRAP_PASSWORD:-}
-      RUCORD_BOOTSTRAP_DISPLAY_NAME: ${RUCORD_BOOTSTRAP_DISPLAY_NAME:-}
-      RUCORD_BOOTSTRAP_WORKSPACE_SLUG: ${RUCORD_BOOTSTRAP_WORKSPACE_SLUG:-}
-      RUCORD_BOOTSTRAP_WORKSPACE_NAME: ${RUCORD_BOOTSTRAP_WORKSPACE_NAME:-}
+      CIRVO_BOOTSTRAP_EMAIL: ${CIRVO_BOOTSTRAP_EMAIL:-}
+      CIRVO_BOOTSTRAP_USERNAME: ${CIRVO_BOOTSTRAP_USERNAME:-}
+      CIRVO_BOOTSTRAP_PASSWORD: ${CIRVO_BOOTSTRAP_PASSWORD:-}
+      CIRVO_BOOTSTRAP_DISPLAY_NAME: ${CIRVO_BOOTSTRAP_DISPLAY_NAME:-}
+      CIRVO_BOOTSTRAP_WORKSPACE_SLUG: ${CIRVO_BOOTSTRAP_WORKSPACE_SLUG:-}
+      CIRVO_BOOTSTRAP_WORKSPACE_NAME: ${CIRVO_BOOTSTRAP_WORKSPACE_NAME:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,7 +111,7 @@ services:
     restart: unless-stopped
     environment:
       <<: *go-service-env
-      RUCORD_HTTP_ADDRESS: ":8090"
+      CIRVO_HTTP_ADDRESS: ":8090"
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,7 +144,7 @@ services:
   # Требует проброса на роутере (в дополнение к 80/443):
   #   UDP+TCP 3478              — control/allocation
   #   UDP 49160-49200          — relay-диапазон (хватает на небольшую группу)
-  # external-ip резолвится из RUCORD_DOMAIN при старте (duckdns → публичный IP),
+  # external-ip резолвится из CIRVO_DOMAIN при старте (duckdns → публичный IP),
   # чтобы relay-кандидаты содержали внешний адрес, а не внутренний docker-IP.
   coturn:
     image: coturn/coturn:4.6
@@ -156,8 +156,8 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
-        EXTIP=$$(getent hosts ${RUCORD_DOMAIN:-localhost} | awk '{print $$1}');
-        echo "coturn external-ip=$$EXTIP realm=${RUCORD_DOMAIN:-localhost}";
+        EXTIP=$$(getent hosts ${CIRVO_DOMAIN:-localhost} | awk '{print $$1}');
+        echo "coturn external-ip=$$EXTIP realm=${CIRVO_DOMAIN:-localhost}";
         if [ -n "${ICE_TURN_SHARED_SECRET:-}" ]; then
           AUTH="--use-auth-secret --static-auth-secret=${ICE_TURN_SHARED_SECRET}";
         else
@@ -166,14 +166,14 @@ services:
         exec turnserver -n --no-cli --no-tls --no-dtls
         --listening-port=3478
         --min-port=49160 --max-port=49200
-        --realm=${RUCORD_DOMAIN:-localhost}
+        --realm=${CIRVO_DOMAIN:-localhost}
         $$AUTH
         $${EXTIP:+--external-ip=$$EXTIP}
         --log-file=stdout --simple-log
 
   # SFU — основной production-транспорт голоса/видео/screen share.
-  # Mesh остаётся только для локального запуска без RUCORD_SFU_URL.
-  # Медиа (RTP) идёт ОДНИМ UDP-портом RUCORD_SFU_UDP_PORT — его нужно
+  # Mesh остаётся только для локального запуска без CIRVO_SFU_URL.
+  # Медиа (RTP) идёт ОДНИМ UDP-портом CIRVO_SFU_UDP_PORT — его нужно
   # пробросить на роутере (UDP), как relay-диапазон coturn. Сигналинг
   # (WebSocket) проходит через Caddy на /sfu/ws, медиа — мимо, напрямую.
   sfu:
@@ -186,14 +186,14 @@ services:
     restart: unless-stopped
     environment:
       <<: *go-service-env
-      RUCORD_HTTP_ADDRESS: ":8095"
-      RUCORD_SFU_UDP_PORT: ${RUCORD_SFU_UDP_PORT:-50000}
+      CIRVO_HTTP_ADDRESS: ":8095"
+      CIRVO_SFU_UDP_PORT: ${CIRVO_SFU_UDP_PORT:-50000}
       # Публичный IP сервера для NAT 1:1 host-кандидатов. Без него ICE
       # анонсирует только внутренние docker-адреса — медиа не пройдёт
       # из интернета. На чистом LAN можно оставить пустым.
-      RUCORD_SFU_PUBLIC_IP: ${RUCORD_SFU_PUBLIC_IP:-}
+      CIRVO_SFU_PUBLIC_IP: ${CIRVO_SFU_PUBLIC_IP:-}
     ports:
-      - "${RUCORD_SFU_UDP_PORT:-50000}:${RUCORD_SFU_UDP_PORT:-50000}/udp"
+      - "${CIRVO_SFU_UDP_PORT:-50000}:${CIRVO_SFU_UDP_PORT:-50000}/udp"
     depends_on:
       postgres:
         condition: service_healthy

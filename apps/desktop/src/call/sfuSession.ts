@@ -21,7 +21,7 @@ interface SfuSessionOptions {
   // Допускается и относительный путь (начинается с "/") — тогда он строится
   // от serverUrl.
   wsUrl: string;
-  // Адрес сервера RuCord (HttpClient.baseUrl); пусто в dev-режиме через прокси.
+  // Адрес сервера Cirvo (HttpClient.baseUrl); пусто в dev-режиме через прокси.
   serverUrl: string;
   getAccessToken: () => string | null;
   getTicket?: () => Promise<string | null>;

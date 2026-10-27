@@ -6,11 +6,11 @@ import (
 
 	"github.com/google/uuid"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	sharedticket "github.com/NotReptile/RuCord/libs/shared-go/wsticket"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/routing"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	sharedticket "github.com/NotReptile/Cirvo/libs/shared-go/wsticket"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/routing"
 )
 
 type Module struct {

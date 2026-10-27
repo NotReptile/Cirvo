@@ -21,7 +21,7 @@ describe("describeUserAgent", () => {
 
 describe("describeDeviceLabel", () => {
   it("подменяет служебную метку клиента", () => {
-    expect(describeDeviceLabel("rucord-desktop")).toBe("Приложение RuCord");
+    expect(describeDeviceLabel("cirvo-desktop")).toBe("Приложение Cirvo");
     expect(describeDeviceLabel("Мой ноутбук")).toBe("Мой ноутбук");
     expect(describeDeviceLabel(undefined)).toBe("");
   });

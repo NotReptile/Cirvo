@@ -131,7 +131,7 @@ export class VoiceChannelManager {
   private snapshot: VoiceSnapshot = { ...IDLE };
   private listeners = new Set<Listener>();
   private localStream: MediaStream | null = null;
-  // N.4: pipeline RuCord-шумодава. Владеет raw mic-стримом и AudioContext'ом;
+  // N.4: pipeline Cirvo-шумодава. Владеет raw mic-стримом и AudioContext'ом;
   // localStream выше — это pipeline.stream (для off/browser он же raw).
   private micPipeline: MicPipeline | null = null;
   // Wave 9: pipeline эффекта камеры (размытие фона). Владеет raw-track'ом;
@@ -691,7 +691,7 @@ export class VoiceChannelManager {
     }
     // N.4: dispose до stop'а localStream — он гасит raw mic-треки и
     // AudioContext (иначе после выхода остаётся висеть mic-индикатор:
-    // localStream.getTracks() для rucord-режимов содержит только
+    // localStream.getTracks() для cirvo-режимов содержит только
     // обработанный track, а не сырой).
     if (this.micPipeline) {
       this.micPipeline.dispose();
@@ -791,7 +791,7 @@ export class VoiceChannelManager {
       audio: buildAudioConstraints(),
       video: false
     });
-    // N.4: rucord-режимы оборачивают микрофон в RNNoise-worklet; для
+    // N.4: cirvo-режимы оборачивают микрофон в RNNoise-worklet; для
     // off/browser pipeline прозрачный. При ошибке — fallback на raw внутри.
     this.micPipeline = await wrapMicStream(raw);
     this.localStream = this.micPipeline.stream;

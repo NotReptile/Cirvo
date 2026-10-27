@@ -49,9 +49,9 @@ jobs:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
       MINIO_BUCKET: rucord
-      RUCORD_JWT_SECRET: smoke-secret-with-at-least-32-bytes-of-padding
-      RUCORD_ENV: ci
-      RUCORD_STAGE: smoke
+      CIRVO_JWT_SECRET: smoke-secret-with-at-least-32-bytes-of-padding
+      CIRVO_ENV: ci
+      CIRVO_STAGE: smoke
 
     steps:
       - uses: actions/checkout@v7

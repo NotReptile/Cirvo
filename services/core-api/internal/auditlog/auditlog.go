@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
 )
 
 // Action codes used across modules.

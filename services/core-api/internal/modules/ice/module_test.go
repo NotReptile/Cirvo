@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
 )
 
 func TestMediaConfigIssuesTemporaryTurnCredentials(t *testing.T) {

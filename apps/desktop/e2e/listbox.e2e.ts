@@ -11,8 +11,8 @@ test("device labels survive asynchronous enumeration and repeated refreshes", as
   await page.route("**/api/**", route => route.fulfill({ json: { items: [] } }));
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
-  await page.evaluate(() => (window as any).__RUCORD_QA__.seed(20));
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
+  await page.evaluate(() => (window as any).__CIRVO_QA__.seed(20));
   await page.locator("#open-profile").click();
   await page.locator("[data-settings-tab=voice]").first().click();
   const trigger = page.getByRole("combobox", { name: "Микрофон", exact: true });
@@ -32,8 +32,8 @@ test("custom selects support keyboard access and escape modal clipping", async (
   await page.route("**/api/**", (route) => route.fulfill({ json: { items: [] } }));
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
-  await page.evaluate(() => (window as any).__RUCORD_QA__.seed(20));
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
+  await page.evaluate(() => (window as any).__CIRVO_QA__.seed(20));
 
   await page.evaluate(async () => {
     const shell = document.querySelector<HTMLElement>(".shell");

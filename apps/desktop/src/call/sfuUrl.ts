@@ -1,5 +1,5 @@
 // Адрес SFU-сокета. Сервер обычно отдаёт абсолютный wss://, но относительный
-// путь ("/sfu/ws") тоже допустим: тогда он строится от адреса сервера RuCord.
+// путь ("/sfu/ws") тоже допустим: тогда он строится от адреса сервера Cirvo.
 // Хост страницы тут не подходит: в десктопном клиенте это tauri.localhost.
 export function resolveSfuWsUrl(wsUrl: string, serverUrl: string, pageOrigin?: string): string {
   if (/^wss?:\/\//i.test(wsUrl)) return wsUrl;

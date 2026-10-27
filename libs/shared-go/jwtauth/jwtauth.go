@@ -29,18 +29,18 @@ type Issuer struct {
 }
 
 func NewIssuerFromEnv(serviceName string) (*Issuer, error) {
-	secret := os.Getenv("RUCORD_JWT_SECRET")
+	secret := os.Getenv("CIRVO_JWT_SECRET")
 	if secret == "" {
-		return nil, errors.New("RUCORD_JWT_SECRET is not configured")
+		return nil, errors.New("CIRVO_JWT_SECRET is not configured")
 	}
 	if len(secret) < 32 {
-		return nil, errors.New("RUCORD_JWT_SECRET must be at least 32 characters")
+		return nil, errors.New("CIRVO_JWT_SECRET must be at least 32 characters")
 	}
 	ttl := 15 * time.Minute
-	if v := os.Getenv("RUCORD_JWT_ACCESS_TTL"); v != "" {
+	if v := os.Getenv("CIRVO_JWT_ACCESS_TTL"); v != "" {
 		parsed, err := time.ParseDuration(v)
 		if err != nil {
-			return nil, fmt.Errorf("invalid RUCORD_JWT_ACCESS_TTL: %w", err)
+			return nil, fmt.Errorf("invalid CIRVO_JWT_ACCESS_TTL: %w", err)
 		}
 		ttl = parsed
 	}

@@ -2747,7 +2747,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .composer-emoji-btn:hover:not([disabled]) { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .composer-emoji-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
-#rucord-emoji-picker .ep-card {
+#cirvo-emoji-picker .ep-card {
   position: fixed;
   z-index: 210;
   width: 332px;
@@ -2761,7 +2761,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   overflow: hidden;
   animation: lb-fade-in 0.12s ease-out;
 }
-#rucord-emoji-picker .ep-search {
+#cirvo-emoji-picker .ep-search {
   margin: 10px;
   padding: 7px 10px;
   border: 1px solid var(--border);
@@ -2771,12 +2771,12 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   font-size: 13px;
   flex-shrink: 0;
 }
-#rucord-emoji-picker .ep-body {
+#cirvo-emoji-picker .ep-body {
   flex: 1;
   overflow-y: auto;
   padding: 0 10px 10px;
 }
-#rucord-emoji-picker .ep-section-title {
+#cirvo-emoji-picker .ep-section-title {
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -2787,11 +2787,11 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   top: 0;
   background: var(--bg-elev-2);
 }
-#rucord-emoji-picker .ep-grid {
+#cirvo-emoji-picker .ep-grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
 }
-#rucord-emoji-picker .ep-emoji {
+#cirvo-emoji-picker .ep-emoji {
   border: none;
   background: transparent;
   font-size: 20px;
@@ -2800,8 +2800,8 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   border-radius: 6px;
   cursor: pointer;
 }
-#rucord-emoji-picker .ep-emoji:hover { background: rgba(255, 255, 255, 0.08); }
-#rucord-emoji-picker .ep-empty {
+#cirvo-emoji-picker .ep-emoji:hover { background: rgba(255, 255, 255, 0.08); }
+#cirvo-emoji-picker .ep-empty {
   padding: 24px 0;
   text-align: center;
   color: var(--text-mute);
@@ -2809,7 +2809,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 
 /* Wave 2 — lightbox для изображений */
-#rucord-lightbox .lb-backdrop {
+#cirvo-lightbox .lb-backdrop {
   position: fixed;
   inset: 0;
   z-index: 220;
@@ -2823,7 +2823,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   from { opacity: 0; }
   to { opacity: 1; }
 }
-#rucord-lightbox .lb-figure {
+#cirvo-lightbox .lb-figure {
   margin: 0;
   max-width: 92vw;
   max-height: 92vh;
@@ -2831,14 +2831,14 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   flex-direction: column;
   gap: 10px;
 }
-#rucord-lightbox .lb-stage {
+#cirvo-lightbox .lb-stage {
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 240px;
   min-height: 160px;
 }
-#rucord-lightbox .lb-img {
+#cirvo-lightbox .lb-img {
   max-width: 92vw;
   max-height: 84vh;
   object-fit: contain;
@@ -2846,8 +2846,8 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
   user-select: none;
 }
-#rucord-lightbox .lb-img.loading { filter: brightness(0.85); }
-#rucord-lightbox .lb-caption {
+#cirvo-lightbox .lb-img.loading { filter: brightness(0.85); }
+#cirvo-lightbox .lb-caption {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -2855,13 +2855,13 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   color: #d8dadf;
   font-size: 13px;
 }
-#rucord-lightbox .lb-filename {
+#cirvo-lightbox .lb-filename {
   max-width: 50vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#rucord-lightbox .lb-download {
+#cirvo-lightbox .lb-download {
   border: none;
   border-radius: 4px;
   padding: 4px 14px;
@@ -2870,9 +2870,9 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   font-size: 13px;
   cursor: pointer;
 }
-#rucord-lightbox .lb-download:hover:not([disabled]) { background: rgba(255, 255, 255, 0.2); }
-#rucord-lightbox .lb-download[disabled] { opacity: 0.45; cursor: default; }
-#rucord-lightbox .lb-close {
+#cirvo-lightbox .lb-download:hover:not([disabled]) { background: rgba(255, 255, 255, 0.2); }
+#cirvo-lightbox .lb-download[disabled] { opacity: 0.45; cursor: default; }
+#cirvo-lightbox .lb-close {
   border: none;
   border-radius: 4px;
   width: 28px;
@@ -2882,8 +2882,8 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   font-size: 14px;
   cursor: pointer;
 }
-#rucord-lightbox .lb-close:hover { background: rgba(255, 255, 255, 0.2); }
-#rucord-lightbox .lb-spinner {
+#cirvo-lightbox .lb-close:hover { background: rgba(255, 255, 255, 0.2); }
+#cirvo-lightbox .lb-spinner {
   width: 28px;
   height: 28px;
   border-radius: 50%;
@@ -2891,7 +2891,7 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   border-top-color: #fff;
   animation: conn-banner-spin 0.8s linear infinite;
 }
-#rucord-lightbox .lb-error { color: #ed4245; font-size: 14px; }
+#cirvo-lightbox .lb-error { color: #ed4245; font-size: 14px; }
 .attach-image { cursor: zoom-in; }
 
 /* F.8 — баннер auto-update (зелёный pill, верх-право; conn-banner — центр) */
@@ -5285,10 +5285,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   padding-top: 12px;
 }
 
-/* K.8: стилизованные confirm/prompt-диалоги. Живут в #rucord-dialogs
+/* K.8: стилизованные confirm/prompt-диалоги. Живут в #cirvo-dialogs
    контейнере, z-index выше всего (даже settings-modal). Caller получает
    Promise; backdrop-click и Esc — отмена. */
-#rucord-dialogs { position: fixed; inset: 0; z-index: 200; pointer-events: none; }
+#cirvo-dialogs { position: fixed; inset: 0; z-index: 200; pointer-events: none; }
 .dlg-backdrop {
   position: fixed;
   inset: 0;
@@ -5785,11 +5785,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   pointer-events: none;
 }
 .message { position: relative; }
-@keyframes rucord-pin-flash {
+@keyframes cirvo-pin-flash {
   0% { background: rgba(var(--accent-rgb, 88,101,242), 0.25); }
   100% { background: transparent; }
 }
-.message-highlight { animation: rucord-pin-flash 1500ms ease-out; }
+.message-highlight { animation: cirvo-pin-flash 1500ms ease-out; }
 
 /* K.7(b): lock-overlay для приватных каналов. Раньше lock полностью
    замещал kind-иконку — теперь base-иконка (text/voice) + lock в правом
@@ -5829,7 +5829,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 /* K.8(b): кастомные tooltip'ы — fade-in 120ms, маленькая тёмная карточка,
    располагается через JS (см. tooltips.ts). Native title-popup'ы стрипуются
    при hover, восстанавливаются на mouseleave для keyboard-focus. */
-#rucord-tooltip {
+#cirvo-tooltip {
   position: fixed;
   z-index: 300;
   background: var(--bg-elev-2);
@@ -5842,10 +5842,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   max-width: 260px;
   pointer-events: none;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  animation: rucord-tooltip-in 0.12s ease-out;
+  animation: cirvo-tooltip-in 0.12s ease-out;
   white-space: pre-wrap;
 }
-@keyframes rucord-tooltip-in {
+@keyframes cirvo-tooltip-in {
   from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }
 }
@@ -5886,25 +5886,25 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
    позиционированный 0×0 (но не display:none — иначе теряет
    form-функциональность и события); поверх рисуется кастомный trigger
    и popup в стиле channel-menu. */
-.rucord-input-control { position: relative; display: inline-flex; min-width: 0; }
-.rucord-input-control > input { position: absolute; width: 1px !important; height: 1px; opacity: 0; pointer-events: none; }
-.rucord-input-trigger { display: flex; align-items: center; gap: 8px; min-height: 32px; font-variant-numeric: tabular-nums; }
-.rucord-color-control .rucord-input-trigger::before { content: ""; width: 20px; height: 20px; border: 1px solid var(--text-mute); border-radius: 4px; background: var(--control-color); }
-.rucord-input-picker {
+.cirvo-input-control { position: relative; display: inline-flex; min-width: 0; }
+.cirvo-input-control > input { position: absolute; width: 1px !important; height: 1px; opacity: 0; pointer-events: none; }
+.cirvo-input-trigger { display: flex; align-items: center; gap: 8px; min-height: 32px; font-variant-numeric: tabular-nums; }
+.cirvo-color-control .cirvo-input-trigger::before { content: ""; width: 20px; height: 20px; border: 1px solid var(--text-mute); border-radius: 4px; background: var(--control-color); }
+.cirvo-input-picker {
   position: fixed; inset: auto; margin: 0; width: 280px; max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px); overflow: auto; padding: 12px;
   background: var(--bg-elev); color: var(--text); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: 0 8px 32px #0006;
 }
-.rucord-input-picker label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 12px; }
-.rucord-color-palette { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
-.rucord-color-palette button { height: 30px; border: 1px solid var(--text-mute); }
-.rucord-calendar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
-.rucord-calendar-header strong { text-align: center; font-size: 13px; }
-.rucord-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-bottom: 10px; }
-.rucord-calendar-grid span { text-align: center; font-size: 11px; color: var(--text-mute); }
-.rucord-calendar-grid button { padding: 6px 0; }
-.rucord-calendar-grid button[aria-pressed="true"] { background: var(--accent); color: white; }
+.cirvo-input-picker label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; font-size: 12px; }
+.cirvo-color-palette { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+.cirvo-color-palette button { height: 30px; border: 1px solid var(--text-mute); }
+.cirvo-calendar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.cirvo-calendar-header strong { text-align: center; font-size: 13px; }
+.cirvo-calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin-bottom: 10px; }
+.cirvo-calendar-grid span { text-align: center; font-size: 11px; color: var(--text-mute); }
+.cirvo-calendar-grid button { padding: 6px 0; }
+.cirvo-calendar-grid button[aria-pressed="true"] { background: var(--accent); color: white; }
 
 .listbox-wrapper {
   position: relative;
@@ -5971,7 +5971,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
   max-height: 280px;
   overflow-y: auto;
   display: none;
-  animation: rucord-tooltip-in 0.12s ease-out;
+  animation: cirvo-tooltip-in 0.12s ease-out;
 }
 .listbox-wrapper.listbox-open .listbox-popup { display: block; }
 /* Drop-up: у нижнего края экрана popup разворачивается вверх (openPopup

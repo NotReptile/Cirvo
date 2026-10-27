@@ -17,10 +17,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
 )
 
 // NotificationJob — claim'ленная задача из notification_jobs.

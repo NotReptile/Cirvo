@@ -163,11 +163,11 @@ jobs:
         with:
           projectPath: apps/desktop
           tagName: ${{ env.RELEASE_TAG }}
-          releaseName: "RuCord ${{ env.RELEASE_TAG }}"
+          releaseName: "Cirvo ${{ env.RELEASE_TAG }}"
           releaseBody: |
             ## Установка (Windows)
 
-            1. Скачать `RuCord_*_x64-setup.exe` из блока **Assets** ниже.
+            1. Скачать `Cirvo_*_x64-setup.exe` из блока **Assets** ниже.
             2. Запустить. Установщик не подписан сертификатом издателя, поэтому SmartScreen
                покажет предупреждение: **Подробнее → Выполнить в любом случае**.
             3. При первом запуске ввести адрес сервера, например `chat.example.com`.

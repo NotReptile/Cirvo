@@ -23,8 +23,8 @@ if [[ $# -ne 1 ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${RUCORD_BACKUP_ENV_FILE:-$ROOT/deploy/.env}"
-COMPOSE_FILE="${RUCORD_BACKUP_COMPOSE_FILE:-$ROOT/deploy/single-node/docker-compose.yml}"
+ENV_FILE="${CIRVO_BACKUP_ENV_FILE:-$ROOT/deploy/.env}"
+COMPOSE_FILE="${CIRVO_BACKUP_COMPOSE_FILE:-$ROOT/deploy/single-node/docker-compose.yml}"
 BACKUP="$(cd "$1" && pwd)"
 
 for f in "$BACKUP/postgres.sql.gz" "$BACKUP/minio"; do
@@ -44,8 +44,8 @@ POSTGRES_USER="${POSTGRES_USER:-rucord}"
 MINIO_BUCKET="${MINIO_BUCKET:-rucord}"
 
 DC=(docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE")
-if [[ -n "${RUCORD_BACKUP_COMPOSE_OVERRIDE:-}" ]]; then
-  DC+=(-f "$RUCORD_BACKUP_COMPOSE_OVERRIDE")
+if [[ -n "${CIRVO_BACKUP_COMPOSE_OVERRIDE:-}" ]]; then
+  DC+=(-f "$CIRVO_BACKUP_COMPOSE_OVERRIDE")
 fi
 
 echo "[restore] source: $BACKUP"

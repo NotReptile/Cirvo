@@ -1,11 +1,11 @@
-// Обновления с выбранного RuCord-сервера: /updates/latest.json и установщик
+// Обновления с выбранного Cirvo-сервера: /updates/latest.json и установщик
 // требуют активную сессию. Подпись проверяет нативный tauri-plugin-updater.
 // Web-сборка / mobile / dev без плагина / битая
 // подпись — тихий no-op: checkForUpdate() возвращает null, UI ничего
 // не показывает.
 //
 // Бизнес-логика (ui.ts) видит только абстракцию UpdateHandle — прямых
-// импортов @tauri-apps/* там нет (правило из «Решений» TASKS.md).
+// импортов @tauri-apps/* там нет.
 
 export interface UpdateHandle {
   version: string;

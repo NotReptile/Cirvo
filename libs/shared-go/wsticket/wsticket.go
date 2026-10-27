@@ -16,7 +16,7 @@ const (
 	PurposeRealtime = "realtime"
 	PurposeSFU      = "sfu"
 	TTL             = 30 * time.Second
-	keyPrefix       = "rucord:ws-ticket:"
+	keyPrefix       = "cirvo:ws-ticket:"
 )
 
 var ErrInvalid = errors.New("invalid or expired websocket ticket")

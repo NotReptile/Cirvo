@@ -1,6 +1,6 @@
 package permission
 
-import "github.com/NotReptile/RuCord/libs/shared-go/channelacl"
+import "github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
 
 type Snapshot = channelacl.Snapshot
 

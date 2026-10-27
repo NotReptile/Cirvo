@@ -1,7 +1,7 @@
 # Настройка мини-ПК под self-host сервер
 
 Гайд: с нуля (предустановленный Win11) до Linux + Docker, готового
-принимать RuCord и другие сервисы. Подходит для любого x86-мини-ПК
+принимать Cirvo и другие сервисы. Подходит для любого x86-мини-ПК.
 
 > Зачем Linux вместо Windows: Docker Desktop под Windows гоняет
 > контейнеры в скрытой VM с двойным NAT — это ломает UDP-релей TURN
@@ -14,7 +14,7 @@
 
 - USB-флешка ≥ 8 ГБ (содержимое сотрётся).
 - Монитор + клавиатура для мини-ПК на время установки (дальше — по SSH).
-- Доступ к роутеру Keenetic (проброс портов + маршрут через основного
+- Доступ к роутеру (проброс портов + маршрут через основного
   провайдера, **не** через VPN).
 
 ---
@@ -26,7 +26,7 @@
 
 - Страница: <https://ubuntu.com/download/server>
 - Файл: `ubuntu-24.04.x-live-server-amd64.iso` (~2–3 ГБ).
-- 24.04 LTS — поддержка до 2029, ядро 6.8 хорошо знает Ryzen 8000-серию.
+- 24.04 LTS — поддержка до 2029, ядро 6.8 хорошо знает современное железо.
 
 Альтернатива для любителей минимализма — **Debian 12** (тоже отлично,
 чуть консервативнее пакеты). Гайд писан под Ubuntu; для Debian шаги
@@ -46,8 +46,7 @@
 
 ## 3. BIOS/UEFI мини-ПК
 
-Воткнуть флешку, включить, жать `Del` или `F7`/`F2` при старте (у BMAX
-обычно `Del` для BIOS, `F7` — boot menu).
+Воткнуть флешку, включить, жать `Del` или `F7`/`F2` при старте (обычно `Del` для BIOS, `F7` — boot menu).
 
 В BIOS:
 
@@ -84,9 +83,9 @@
    - Confirm → Continue (диск будет отформатирован).
 8. **Profile**:
    - Your name: любое.
-   - Server name (hostname): например `rucord-server`.
+   - Server name (hostname): например `cirvo-server`.
    - Username: например `admin` (это твой Linux-юзер, не путать с
-     RuCord-админом).
+     Cirvo-админом).
    - Пароль: надёжный, запомни/запиши.
 9. **Upgrade to Ubuntu Pro**: Skip.
 10. **SSH Setup**: ✅ **Install OpenSSH server** — обязательно (иначе не
@@ -100,17 +99,17 @@
 ## 5. Первый вход и базовая настройка
 
 После ребута на экране мини-ПК будет строка вида
-`rucord-server login:`. Узнай IP:
+`cirvo-server login:`. Узнай IP:
 
 ```bash
 ip -4 addr show | grep inet
 ```
 
-Запиши LAN-IP (например `192.168.1.50`). Дальше можно отключить
+Запиши LAN-IP (например `<LAN_IP>`). Дальше можно отключить
 монитор/клаву и зайти с рабочего ПК по SSH:
 
 ```bash
-ssh admin@192.168.1.50
+ssh <USER>@<LAN_IP>
 ```
 
 ### 5.1 Обновления
@@ -125,7 +124,7 @@ sudo reboot
 Чтобы проброс портов на роутере не «съезжал» при смене DHCP-аренды.
 Два варианта — выбери один:
 
-**Вариант A (проще, рекомендую): DHCP-резервация на Keenetic.**
+**Вариант A (проще, рекомендую): DHCP-резервация на роутере.**
 В вебе роутера → список устройств → найди сервер по MAC → «Закрепить
 IP-адрес». Готово, на стороне сервера ничего не трогаешь.
 
@@ -144,12 +143,12 @@ network:
   ethernets:
     enp1s0:
       dhcp4: false
-      addresses: [192.168.1.50/24]
+      addresses: [<LAN_IP>/24]
       routes:
         - to: default
-          via: 192.168.1.1        # IP роутера
+          via: <ROUTER_IP>        # IP роутера
       nameservers:
-        addresses: [192.168.1.1, 1.1.1.1]
+        addresses: [<ROUTER_IP>, 1.1.1.1]
 ```
 
 ```bash
@@ -162,7 +161,7 @@ sudo netplan apply
 
 ```powershell
 ssh-keygen -t ed25519          # если ключа ещё нет
-type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh admin@192.168.1.50 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh <USER>@<LAN_IP> "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
 ```
 
 Затем на сервере запретить вход по паролю:
@@ -187,7 +186,7 @@ sudo ufw enable
 sudo ufw status
 ```
 
-(Порты — под RuCord + coturn. Другие сервисы добавишь по мере надобности.)
+(Порты — под Cirvo + coturn. Другие сервисы добавишь по мере надобности.)
 
 ### 5.5 Авто-обновления безопасности
 
@@ -233,10 +232,10 @@ docker compose version
 
 ---
 
-## 7. Роутер Keenetic
+## 7. Роутер: проброс портов
 
 1. **Проброс портов** (Переадресация портов) — перенаправить на
-   **новый IP сервера** (например `192.168.1.50`), а не на старый
+   **новый IP сервера** (например `<LAN_IP>`), а не на старый
    Windows-ПК:
    - TCP 80, TCP 443 (UDP 443 не нужен: HTTP/3 в Caddyfile отключён)
    - TCP 3478, UDP 3478
@@ -258,23 +257,23 @@ docker compose version
 
 ---
 
-## 8. Деплой RuCord
+## 8. Деплой Cirvo
 
 ```bash
 sudo apt install -y git
-git clone https://github.com/NotReptile/RuCord.git rucord   # приватный репозиторий: нужен токен или SSH-ключ
-cd rucord
+git clone https://github.com/NotReptile/Cirvo.git cirvo
+cd cirvo
 
 # Конфиг
 cp deploy/.env.example deploy/.env
 nano deploy/.env
-#   - POSTGRES_PASSWORD, MINIO_*, RUCORD_JWT_SECRET — свои секреты
-#   - RUCORD_DOMAIN=chat.example.com
-#   - RUCORD_TLS_EMAIL=<твой email>
-#   - RUCORD_CORS_ORIGINS=tauri://localhost,http://tauri.localhost,https://tauri.localhost
+#   - POSTGRES_PASSWORD, MINIO_*, CIRVO_JWT_SECRET — свои секреты
+#   - CIRVO_DOMAIN=chat.example.com
+#   - CIRVO_TLS_EMAIL=<твой email>
+#   - CIRVO_CORS_ORIGINS=tauri://localhost,http://tauri.localhost,https://tauri.localhost
 #   - ICE_TURN_URLS и ICE_TURN_SHARED_SECRET — TURN UDP/TCP + временные credentials
-#   - RUCORD_SFU_URL, RUCORD_SFU_PUBLIC_IP, RUCORD_SFU_UDP_PORT=50000
-#   - RUCORD_BOOTSTRAP_* — первый админ
+#   - CIRVO_SFU_URL, CIRVO_SFU_PUBLIC_IP, CIRVO_SFU_UDP_PORT=50000
+#   - CIRVO_BOOTSTRAP_* — первый админ
 
 # Миграции
 docker compose -f deploy/single-node/docker-compose.yml \
@@ -306,7 +305,7 @@ IP у duckdns динамический. Нужен апдейтер, чтобы 
 ```bash
 crontab -e
 # каждые 5 минут обновлять duckdns
-*/5 * * * * curl -fsS "https://www.duckdns.org/update?domains=<ПОДДОМЕН>&token=<ТВОЙ_ТОКЕН>&ip=" >/dev/null 2>&1
+*/5 * * * * curl -fsS "https://www.duckdns.org/update?domains=<SUBDOMAIN>&token=<TOKEN>&ip=" >/dev/null 2>&1
 ```
 
 (пустой `ip=` → duckdns берёт IP из запроса; т.к. сервер ходит через
@@ -320,7 +319,7 @@ crontab -e
 
 ## 10. Несколько сервисов на одной коробке
 
-RuCord уже за Caddy (reverse-proxy). Другие сервисы вешаются туда же по
+Cirvo уже за Caddy (reverse-proxy). Другие сервисы вешаются туда же по
 поддоменам или путям. Для отдельных поддоменов удобно завести ещё
-duckdns-домены и роутить их в Caddyfile на нужные контейнеры. На мини-ПК с
-8745HS и 16 ГБ спокойно живёт десяток лёгких сервисов.
+duckdns-домены и роутить их в Caddyfile на нужные контейнеры. На типовом
+x86-мини-ПК с 16 ГБ RAM спокойно живёт десяток лёгких сервисов.

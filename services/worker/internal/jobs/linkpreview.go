@@ -31,9 +31,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/net/html"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
-	"github.com/NotReptile/RuCord/libs/shared-go/redisstore"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/libs/shared-go/redisstore"
 )
 
 const (
@@ -283,7 +283,7 @@ func (r *LinkPreviewRunner) fetchPreview(ctx context.Context, rawURL string) (li
 	if err != nil {
 		return linkPreview{}, err
 	}
-	req.Header.Set("User-Agent", "RuCord-LinkPreview/1.0 (+self-hosted)")
+	req.Header.Set("User-Agent", "Cirvo-LinkPreview/1.0 (+self-hosted)")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
 	resp, err := r.client.Do(req)

@@ -21,7 +21,7 @@ let keydownHandler: ((ev: KeyboardEvent) => void) | null = null;
 function ensureContainer(): HTMLDivElement {
   if (containerEl && document.body.contains(containerEl)) return containerEl;
   containerEl = document.createElement("div");
-  containerEl.id = "rucord-lightbox";
+  containerEl.id = "cirvo-lightbox";
   document.body.appendChild(containerEl);
   return containerEl;
 }

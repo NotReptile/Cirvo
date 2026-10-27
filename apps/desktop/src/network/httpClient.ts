@@ -214,7 +214,7 @@ export class HttpClient {
   async login(login: string, password: string): Promise<AuthSession> {
     const session = await this.post<AuthSession>(
       "/api/v1/auth/login",
-      { login, password, deviceLabel: "rucord-desktop" },
+      { login, password, deviceLabel: "cirvo-desktop" },
       { auth: false }
     );
     this.setTokens(extractTokens(session));
@@ -230,7 +230,7 @@ export class HttpClient {
   }): Promise<AuthSession> {
     const session = await this.post<AuthSession>(
       "/api/v1/auth/register",
-      { ...payload, deviceLabel: "rucord-desktop" },
+      { ...payload, deviceLabel: "cirvo-desktop" },
       { auth: false }
     );
     this.setTokens(extractTokens(session));

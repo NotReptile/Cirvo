@@ -4,13 +4,13 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", (route) => route.fulfill({ json: { items: [] } }));
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
-  await page.evaluate(() => (window as any).__RUCORD_QA__.seed(20));
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
+  await page.evaluate(() => (window as any).__CIRVO_QA__.seed(20));
 });
 
 test("role permission changes enable Save immediately and reverting disables it", async ({ page }) => {
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     const role = { id: "qa-role", code: "member", name: "Member", color: null,
       position: 1, hoisted: false, system: true, memberUserIds: [],
       baseActionMask: ["message.write"] };
@@ -54,25 +54,25 @@ test("late channel permission response cannot overwrite a newly opened editor", 
   await page.route("**/api/v1/channels/qa-chat/user-permissions", (route) =>
     route.fulfill({ json: { channelId: "qa-chat", actions: [], overrides: [] } }));
   await page.evaluate(async () => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.state().channelSettings = { channelId: "qa-chat", loading: true, draft: {}, userDraft: {} };
     (window as any).__permissionLoad = qa.permissions.loadChannelPermissions();
   });
   await expect.poll(() => page.evaluate(() => Boolean((window as any).__permissionLoad))).toBe(true);
   await page.evaluate(() => {
-    (window as any).__RUCORD_QA__.state().channelSettings = {
+    (window as any).__CIRVO_QA__.state().channelSettings = {
       channelId: "qa-other", loading: true, draft: { sentinel: {} }, userDraft: {}, data: null,
     };
   });
   release();
   await page.evaluate(() => (window as any).__permissionLoad);
-  expect(await page.evaluate(() => (window as any).__RUCORD_QA__.state().channelSettings))
+  expect(await page.evaluate(() => (window as any).__CIRVO_QA__.state().channelSettings))
     .toMatchObject({ channelId: "qa-other", loading: true, data: null, draft: { sentinel: {} } });
 });
 
 test("saving one role preserves an unsaved draft in another selected role", async ({ page }) => {
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     const roles = ["first", "second"].map((id) => ({ id, code: id, name: id,
       color: null, position: 1, hoisted: false, system: false, memberUserIds: [], baseActionMask: [] }));
     qa.state().modal = "workspaceRoles";
@@ -94,7 +94,7 @@ test("saving one role preserves an unsaved draft in another selected role", asyn
   release();
   await expect(page.locator("#role-save")).toBeEnabled();
   await expect(page.locator("#role-name")).toHaveValue("Unsaved second");
-  expect(await page.evaluate(() => (window as any).__RUCORD_QA__.state().workspaceRoles.draft.name))
+  expect(await page.evaluate(() => (window as any).__CIRVO_QA__.state().workspaceRoles.draft.name))
     .toBe("Unsaved second");
 });
 
@@ -110,7 +110,7 @@ for (const kind of ["category", "roles"] as const) {
         : { items: [{ id: "old-role", baseActionMask: [], memberUserIds: [] }] } });
     });
     await page.evaluate(async (kind) => {
-      const qa = (window as any).__RUCORD_QA__;
+      const qa = (window as any).__CIRVO_QA__;
       const mod = qa.permissions;
       if (kind === "category") (window as any).__permissionLoad = mod.openCategoryPermissions("qa-category");
       else {
@@ -119,14 +119,14 @@ for (const kind of ["category", "roles"] as const) {
       }
     }, kind);
     await page.evaluate((kind) => {
-      const state = (window as any).__RUCORD_QA__.state();
+      const state = (window as any).__CIRVO_QA__.state();
       if (kind === "category") state.categoryPerms = { categoryId: "new-category", loading: true, data: null, draft: {} };
       else state.workspaceRoles = { workspaceId: "new-ws", loading: true, roles: [], draft: null };
     }, kind);
     release();
     await page.evaluate(() => (window as any).__permissionLoad);
     const result = await page.evaluate((kind) => {
-      const state = (window as any).__RUCORD_QA__.state();
+      const state = (window as any).__CIRVO_QA__.state();
       return kind === "category" ? state.categoryPerms : state.workspaceRoles;
     }, kind);
     expect(result).toMatchObject(kind === "category"

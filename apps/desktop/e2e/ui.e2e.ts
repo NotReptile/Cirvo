@@ -10,8 +10,8 @@ test.beforeEach(async ({ page }) => {
   );
   await page.routeWebSocket("**/ws*", () => {});
   await page.goto("/");
-  await page.waitForFunction(() => "__RUCORD_QA__" in window);
-  await page.evaluate(() => (window as any).__RUCORD_QA__.seed(3000));
+  await page.waitForFunction(() => "__CIRVO_QA__" in window);
+  await page.evaluate(() => (window as any).__CIRVO_QA__.seed(3000));
 });
 
 test("presence and typing leave composer, message nodes and scroll intact", async ({
@@ -21,7 +21,7 @@ test("presence and typing leave composer, message nodes and scroll intact", asyn
     .locator("#send-form input[name=body]")
     .fill("Несохранённый черновик");
   const result = await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__,
+    const qa = (window as any).__CIRVO_QA__,
       list = document.querySelector("#message-list") as HTMLElement;
     const input = document.querySelector(
       "#send-form input[name=body]",
@@ -64,7 +64,7 @@ test("created, edited, deleted and reacted messages update only affected rows", 
   page,
 }) => {
   const result = await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__,
+    const qa = (window as any).__CIRVO_QA__,
       state = qa.state();
     const old = document.querySelector('[data-id="qa-message-2900"]');
     const started = performance.now();
@@ -107,7 +107,7 @@ test("created, edited, deleted and reacted messages update only affected rows", 
     "👍",
   );
   await page.evaluate(() =>
-    (window as any).__RUCORD_QA__.event({
+    (window as any).__CIRVO_QA__.event({
       event: "message.deleted",
       channelId: "qa-chat",
       payload: { id: "qa-created" },
@@ -120,7 +120,7 @@ test("edit draft survives full renders, one submit stays one request", async ({
   page,
 }) => {
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.state().messages = qa
       .state()
       .messages.map((m: any) =>
@@ -138,7 +138,7 @@ test("edit draft survives full renders, one submit stays one request", async ({
   await edit.fill("Новый черновик правки");
   await page.locator("#send-form input[name=body]").focus();
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     for (let i = 0; i < 20; i++) qa.render();
   });
   await expect(edit).toHaveValue("Новый черновик правки");
@@ -178,7 +178,7 @@ test("cached history windows preserve anchor and replies reach outside the DOM",
     "qa-message-2700",
   );
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.state().messages = qa.state().messages.map((m: any) =>
       m.id === "qa-message-2750"
         ? {
@@ -217,7 +217,7 @@ test("pins fetch around messages outside the cache", async ({ page }) => {
     }),
   );
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__,
+    const qa = (window as any).__CIRVO_QA__,
       s = qa.state();
     s.pinsPopupOpen = true;
     s.channelPinsChannelId = "qa-chat";
@@ -260,7 +260,7 @@ test("pins refresh in place and equal-size block lists invalidate the right rows
   page,
 }) => {
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__,
+    const qa = (window as any).__CIRVO_QA__,
       state = qa.state();
     state.pinsPopupOpen = true;
     state.channelPinsChannelId = "qa-chat";
@@ -275,7 +275,7 @@ test("pins refresh in place and equal-size block lists invalidate the right rows
   });
   await expect(page.locator(".pins-popup .pin-row")).toHaveCount(1);
   await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__,
+    const qa = (window as any).__CIRVO_QA__,
       s = qa.state();
     s.blockedIds = new Set(["qa-user-1"]);
     qa.render();
@@ -287,7 +287,7 @@ test("pins refresh in place and equal-size block lists invalidate the right rows
     page.locator('[data-reveal-blocked="qa-message-2981"]'),
   ).toBeVisible();
   await page.evaluate(() =>
-    (window as any).__RUCORD_QA__.event({
+    (window as any).__CIRVO_QA__.event({
       event: "message.unpinned",
       channelId: "qa-chat",
       payload: { id: "qa-message-2999", channelId: "qa-chat" },
@@ -300,7 +300,7 @@ test("voice video nodes survive presence and full updates without duplicate ids"
   page,
 }) => {
   const result = await page.evaluate(() => {
-    const qa = (window as any).__RUCORD_QA__,
+    const qa = (window as any).__CIRVO_QA__,
       s = qa.state();
     s.selectedChannelId = "qa-voice";
     s.voiceSnapshot = {
@@ -347,7 +347,7 @@ test("chat and direct messages fill the window while overlay regions update", as
     await page.setViewportSize({ width, height: width === 800 ? 600 : 800 });
     for (const dmMode of [false, true]) {
       await page.evaluate((dmMode) => {
-        const qa = (window as any).__RUCORD_QA__;
+        const qa = (window as any).__CIRVO_QA__;
         qa.state().dmMode = dmMode;
         qa.state().selectedChannelId = dmMode ? null : "qa-chat";
         qa.state().status = "Проверка уведомления";
@@ -385,7 +385,7 @@ test("light theme fits supported window sizes with an active call", async ({
   await page.evaluate(async () => {
     const appearance = await import("/src/app/appearance.ts");
     appearance.updateAppearance({ theme: "light" });
-    const qa = (window as any).__RUCORD_QA__;
+    const qa = (window as any).__CIRVO_QA__;
     qa.state().callSnapshot = {
       state: "active",
       peerUserId: "qa-user-1",
@@ -427,7 +427,7 @@ test("RNNoise worklet and MediaPipe WASM load under the release CSP", async ({
 }) => {
   await page.context().grantPermissions(["microphone", "camera"]);
   const result = await page.evaluate(async () => {
-    const media = (window as any).__RUCORD_QA__.media;
+    const media = (window as any).__CIRVO_QA__.media;
     const config = await fetch("/src-tauri/tauri.conf.json").then((r) =>
       r.json(),
     );
@@ -436,7 +436,7 @@ test("RNNoise worklet and MediaPipe WASM load under the release CSP", async ({
     meta.content = config.app.security.csp;
     document.head.append(meta);
     media.updateVoiceSettings({
-      denoiserMode: "rucord",
+      denoiserMode: "cirvo",
       cameraEffect: "blur-light",
     });
     const audio = await navigator.mediaDevices.getUserMedia({ audio: true });

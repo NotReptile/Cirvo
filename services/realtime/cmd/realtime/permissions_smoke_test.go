@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/libs/shared-go/realtimebus"
-	"github.com/NotReptile/RuCord/services/realtime/internal/eventjournal"
-	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
-	"github.com/NotReptile/RuCord/services/realtime/internal/modules/typing"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/libs/shared-go/realtimebus"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/eventjournal"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/hub"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/modules/typing"
 )
 
 func TestChannelPermissionsFilterLiveReplayAndTyping(t *testing.T) {

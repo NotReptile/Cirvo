@@ -69,7 +69,7 @@ describe("checkServerReachable", () => {
     throw new Error("ожидалась ошибка");
   }
 
-  it("принимает ответ RuCord со status ready", async () => {
+  it("принимает ответ Cirvo со status ready", async () => {
     const fetchMock = vi.fn().mockResolvedValue(readyResponse({ module: "system", status: "ready" }));
     vi.stubGlobal("fetch", fetchMock);
     await expect(checkServerReachable("chat.example.com")).resolves.toBeUndefined();
@@ -83,16 +83,16 @@ describe("checkServerReachable", () => {
     expect(err.status).toBe(503);
   });
 
-  it("чужой сервер (200, но не RuCord) даёт not-rucord", async () => {
+  it("чужой сервер (200, но не Cirvo) даёт not-cirvo", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(readyResponse("<html>hello</html>")));
     const err = await failureOf(checkServerReachable("chat.example.com"));
-    expect(err.kind).toBe("not-rucord");
+    expect(err.kind).toBe("not-cirvo");
   });
 
-  it("JSON без status ready тоже не RuCord", async () => {
+  it("JSON без status ready тоже не Cirvo", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(readyResponse({ status: "ok" })));
     const err = await failureOf(checkServerReachable("chat.example.com"));
-    expect(err.kind).toBe("not-rucord");
+    expect(err.kind).toBe("not-cirvo");
   });
 
   it("сбой сети даёт network с перечислением причин", async () => {

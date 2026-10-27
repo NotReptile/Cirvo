@@ -76,5 +76,5 @@ pub fn run() {
 
     builder
         .run(tauri::generate_context!())
-        .expect("failed to run RuCord application");
+        .expect("failed to run Cirvo application");
 }

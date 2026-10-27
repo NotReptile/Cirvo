@@ -18,7 +18,7 @@ export interface AppearanceSettings {
   gifAvatars: GifAvatarsMode;
 }
 
-const LS_KEY = "rucord:appearance";
+const LS_KEY = "cirvo:appearance";
 
 const DEFAULTS: AppearanceSettings = {
   theme: "dark",

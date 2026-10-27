@@ -47,7 +47,7 @@ let _lastTimedStatus = "";
 
 // Draft per-channel в localStorage. Незавершённый текст переживает
 // переключение каналов и refresh. Чистится при успешной отправке.
-const DRAFT_KEY_PREFIX = "rucord:draft:";
+const DRAFT_KEY_PREFIX = "cirvo:draft:";
 
 const ACTION_LABELS_RU: Record<string, string> = {
   "message.write": "Писать сообщения",
@@ -98,13 +98,13 @@ export const SCREEN_SHARE_PRESETS: Record<
   },
 };
 
-const SCREEN_SHARE_QUALITY_LS = "rucord:screenShareQuality";
+const SCREEN_SHARE_QUALITY_LS = "cirvo:screenShareQuality";
 
 const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
 
 // J.6: persisting collapsed-categories state в localStorage. Per-категории
 // идентификатор — workspace-scoped UUID; кросс-workspace утечки не страшны.
-const COLLAPSED_CATEGORIES_KEY = "rucord:collapsed-categories";
+const COLLAPSED_CATEGORIES_KEY = "cirvo:collapsed-categories";
 
 export function createInitialState(): AppState {
   return {
@@ -488,7 +488,7 @@ const AUDIT_ACTION_INFO: Record<string, { ru: string; icon: string }> = {
 // Wave 8: блок «Архив» — отдельная секция в самом низу. По умолчанию
 // свёрнута (persist в localStorage); свёрнутая показывает только активный
 // канал, как и обычные категории (J.6).
-const ARCHIVE_COLLAPSED_KEY = "rucord:archive-collapsed";
+const ARCHIVE_COLLAPSED_KEY = "cirvo:archive-collapsed";
 
 const SPEAKING_THRESHOLD = 12;
 

@@ -1,6 +1,6 @@
 import { FetchTimeoutError, fetchWithTimeout } from "../network/fetchWithTimeout";
 
-const STORAGE_KEY = "rucord:server-url";
+const STORAGE_KEY = "cirvo:server-url";
 
 export function getStoredServerUrl(): string | null {
   try {
@@ -86,7 +86,7 @@ export function isInsecureServerUrl(raw: string): boolean {
   }
 }
 
-export type ServerCheckKind = "invalid-url" | "timeout" | "network" | "http" | "not-rucord";
+export type ServerCheckKind = "invalid-url" | "timeout" | "network" | "http" | "not-cirvo";
 
 // Ошибка проверки сервера. message уже написан для пользователя и показывается как есть.
 export class ServerCheckError extends Error {
@@ -141,7 +141,7 @@ export async function checkServerReachable(
     /* тело не JSON */
   }
   if (!isReadyPayload(payload)) {
-    throw new ServerCheckError("not-rucord", "Это не сервер RuCord: ответ на /readyz не распознан");
+    throw new ServerCheckError("not-cirvo", "Это не сервер Cirvo: ответ на /readyz не распознан");
   }
 }
 

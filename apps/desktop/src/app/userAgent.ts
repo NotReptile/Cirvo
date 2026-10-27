@@ -29,6 +29,6 @@ export function describeUserAgent(ua: string | undefined | null): string {
 // Метка устройства, которую клиент передаёт при входе.
 export function describeDeviceLabel(label: string | undefined | null): string {
   if (!label) return "";
-  if (label === "rucord-desktop") return "Приложение RuCord";
+  if (label === "cirvo-desktop" || label === "rucord-desktop") return "Приложение Cirvo";
   return label;
 }

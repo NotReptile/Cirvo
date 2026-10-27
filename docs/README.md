@@ -1,12 +1,11 @@
-# Документация RuCord
+# Документация Cirvo
 
 Этот каталог: версионируемый источник правды по технической документации.
 Язык: основные руководства и runbook'и на русском, часть
 архитектурных заметок на английском.
 
-Корневые файлы: [README.md](../README.md) (быстрый старт),
-[AGENTS.md](../AGENTS.md) (правила для ИИ-агентов), [CHANGELOG.md](../CHANGELOG.md),
-[CONTRIBUTING.md](../CONTRIBUTING.md), [SECURITY.md](../SECURITY.md).
+Корневые файлы: [README.md](../README.md) (быстрый старт), [CHANGELOG.md](../CHANGELOG.md),
+[SECURITY.md](../SECURITY.md).
 
 ## Оператору сервера
 
@@ -23,7 +22,6 @@
 | Документ | Для чего |
 | --- | --- |
 | [runbooks/windows-client.md](runbooks/windows-client.md) | Установка клиента на Windows, подключение к серверу |
-| [runbooks/public-vpn-manual-test-checklist.md](runbooks/public-vpn-manual-test-checklist.md) | Подробный ручной тест с двумя компьютерами |
 | [runbooks/desktop-release.md](runbooks/desktop-release.md) | Как собрать exe и выпустить релиз |
 
 ## Разработчику
@@ -39,18 +37,10 @@
 | [database/domain-model.md](database/domain-model.md) | Модель данных |
 | [database/migrations-strategy.md](database/migrations-strategy.md) | Миграции и bootstrap |
 | [api/overview.md](api/overview.md) | HTTP-контракты |
+| [api/permissions.md](api/permissions.md) | Матрица прав и проверка доступа к каналам |
+| [api/presence.md](api/presence.md) | Presence и онлайн-статусы |
 | [security/overview.md](security/overview.md) | Auth, сессии, права, секреты |
 | [deployment/environments.md](deployment/environments.md) | Окружения local и single-node |
 | [engineering/conventions.md](engineering/conventions.md) | Соглашения репозитория |
 | [adr/](adr/) | Записи архитектурных решений, в том числе [SFU и медиа-путь](adr/adr-sfu-media-path.md) |
 | [`../libs/contracts/README.md`](../libs/contracts/README.md) | Контракты между сервисами |
-
-## Исходное ТЗ
-
-| Документ | Для чего |
-| --- | --- |
-| [tz_communication_platform_architecture.md](tz_communication_platform_architecture.md) | Исходное ТЗ (март 2026). Не as-built: актуальное состояние смотри в `architecture/` |
-
-## Исторические материалы
-
-- [runbooks/static-ip-http.md](runbooks/static-ip-http.md): тест по HTTP на голом IP, сервер был на Windows.

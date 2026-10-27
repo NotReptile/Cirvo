@@ -15,9 +15,9 @@ import (
 
 	"github.com/google/uuid"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/services/core-api/internal/auditlog"
-	"github.com/NotReptile/RuCord/services/core-api/internal/authctx"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/auditlog"
+	"github.com/NotReptile/Cirvo/services/core-api/internal/authctx"
 )
 
 const (

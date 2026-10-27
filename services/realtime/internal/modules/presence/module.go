@@ -3,8 +3,8 @@ package presence
 import (
 	"net/http"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/hub"
 )
 
 type Module struct {

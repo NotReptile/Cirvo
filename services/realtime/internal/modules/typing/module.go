@@ -17,10 +17,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/NotReptile/RuCord/libs/shared-go/channelacl"
+	"github.com/NotReptile/Cirvo/libs/shared-go/channelacl"
 
-	"github.com/NotReptile/RuCord/libs/shared-go/postgres"
-	"github.com/NotReptile/RuCord/services/realtime/internal/hub"
+	"github.com/NotReptile/Cirvo/libs/shared-go/postgres"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/hub"
 )
 
 const (

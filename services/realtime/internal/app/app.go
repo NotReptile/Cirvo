@@ -3,12 +3,12 @@ package app
 import (
 	"net/http"
 
-	sharedhttp "github.com/NotReptile/RuCord/libs/shared-go/httpx"
-	"github.com/NotReptile/RuCord/services/realtime/internal/deps"
-	"github.com/NotReptile/RuCord/services/realtime/internal/modules/presence"
-	"github.com/NotReptile/RuCord/services/realtime/internal/modules/signaling"
-	"github.com/NotReptile/RuCord/services/realtime/internal/modules/transport"
-	"github.com/NotReptile/RuCord/services/realtime/internal/modules/typing"
+	sharedhttp "github.com/NotReptile/Cirvo/libs/shared-go/httpx"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/deps"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/modules/presence"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/modules/signaling"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/modules/transport"
+	"github.com/NotReptile/Cirvo/services/realtime/internal/modules/typing"
 )
 
 type Module interface {

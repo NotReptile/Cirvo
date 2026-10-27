@@ -17,7 +17,7 @@ let currentTarget: HTMLElement | null = null;
 function ensureTooltip(): HTMLDivElement {
   if (tooltipEl) return tooltipEl;
   tooltipEl = document.createElement("div");
-  tooltipEl.id = "rucord-tooltip";
+  tooltipEl.id = "cirvo-tooltip";
   tooltipEl.setAttribute("role", "tooltip");
   tooltipEl.hidden = true;
   document.body.appendChild(tooltipEl);

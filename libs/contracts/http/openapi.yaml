@@ -4,7 +4,7 @@
 # См. docs/api/overview.md.
 openapi: 3.1.0
 info:
-  title: RuCord Core API
+  title: Cirvo Core API
   version: 0.1.0
 servers:
   - url: https://api.example.test

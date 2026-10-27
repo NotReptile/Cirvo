@@ -435,7 +435,7 @@ export function settingsSearchIndex(): SettingsSearchEntry[] {
     {
       tab: "voice",
       label: t("vs.denoise.title"),
-      keywords: ["denoiser", "rucord", "ns", "noise", "шум"],
+      keywords: ["denoiser", "cirvo", "ns", "noise", "шум"],
     },
     {
       tab: "voice",

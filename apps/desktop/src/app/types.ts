@@ -858,7 +858,7 @@ export interface SpeakingNode {
 // статичное значение и кнопку «Изменить».
 // I.1: SETTINGS_TABS — порядок и группировка табов в sidebar'е. Каждая
 // группа отрисовывается своим заголовком. Содержимое табов кроме
-// `profile` пока заглушки (см. I.2-I.8/I.11 в TASKS.md).
+// `profile` пока заглушки.
 export interface SettingsTabDef {
   id: SettingsTab;
   label: string;
