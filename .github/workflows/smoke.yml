@@ -94,7 +94,7 @@ jobs:
 
       - name: Cache MinIO binary
         id: minio_cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/minio-bin
           key: minio-${{ runner.os }}-${{ steps.minio_ref.outputs.sha }}
