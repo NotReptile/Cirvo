@@ -73,8 +73,9 @@ func (m *Manager) dropRoomIfEmpty(room *Room) {
 // остальным. Ключ в Room.tracks — session/trackID (трек-id уникален
 // в рамках паблишера, но не глобально).
 type publishedTrack struct {
-	owner uuid.UUID // sessionID паблишера
-	local *webrtc.TrackLocalStaticRTP
+	owner    uuid.UUID // sessionID паблишера
+	local    *webrtc.TrackLocalStaticRTP
+	keyframe *keyframeRequester // nil для аудио
 }
 
 type Room struct {
@@ -109,7 +110,7 @@ func (r *Room) addPeer(p *Peer) {
 	r.mu.Unlock()
 
 	for _, t := range existing {
-		p.addForward(t.local)
+		p.addForward(t.local, t.keyframe)
 	}
 	// Initial sub.offer шлём всегда — даже без треков (datachannel в sub-PC
 	// даёт валидный SDP и устанавливает ICE заранее, чтобы первый трек
@@ -118,14 +119,14 @@ func (r *Room) addPeer(p *Peer) {
 }
 
 // publish раздаёт новый трек всем остальным peer'ам комнаты.
-func (r *Room) publish(owner *Peer, local *webrtc.TrackLocalStaticRTP) {
+func (r *Room) publish(owner *Peer, local *webrtc.TrackLocalStaticRTP, keyframe *keyframeRequester) {
 	r.mu.Lock()
-	r.tracks[trackKey(owner.sessionID, local.ID())] = &publishedTrack{owner: owner.sessionID, local: local}
+	r.tracks[trackKey(owner.sessionID, local.ID())] = &publishedTrack{owner: owner.sessionID, local: local, keyframe: keyframe}
 	subscribers := r.othersLocked(owner.sessionID)
 	r.mu.Unlock()
 
 	for _, p := range subscribers {
-		p.addForward(local)
+		p.addForward(local, keyframe)
 		p.negotiateSub()
 	}
 }

@@ -12,10 +12,11 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// Сколько ждать keyframe-запросом: новый подписчик видит «замёрзшую»
-// картинку, пока паблишер не пришлёт I-frame. PLI шлём периодически,
-// пока видео-трек жив — просто и надёжно (как в pion/example sfu-ws).
-const pliInterval = 2 * time.Second
+// Страховочный PLI: основной путь — по запросу (PLI/FIR зрителя, новый
+// подписчик, см. keyframe.go). Периодический ключевой кадр при 1440p60 —
+// это всплеск в сотни КБ каждые N секунд, заметный как «дёргание», поэтому
+// интервал большой: он нужен лишь на случай потерянного запроса.
+const pliInterval = 5 * time.Second
 const negotiationTimeout = 10 * time.Second
 
 // SDPPayload / ICEPayload — JSON-формы сигналинга (зеркало клиента).
@@ -194,13 +195,20 @@ func (p *Peer) forwardTrack(remote *webrtc.TrackRemote) {
 	p.published = append(p.published, local)
 	p.mu.Unlock()
 
-	p.room.publish(p, local)
-	p.logger.Info("track published", "kind", remote.Kind().String(), "track", remote.ID())
-
+	// Для видео — общий throttled-запрос ключевого кадра у издателя; им
+	// пользуются и зрители (PLI/FIR), и страховочный таймер.
+	var keyframe *keyframeRequester
 	stopPLI := make(chan struct{})
 	if remote.Kind() == webrtc.RTPCodecTypeVideo {
-		go p.pliLoop(uint32(remote.SSRC()), stopPLI)
+		ssrc := uint32(remote.SSRC())
+		keyframe = newKeyframeRequester(minKeyframeInterval, func() error {
+			return p.pub.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: ssrc}})
+		})
+		go p.pliLoop(keyframe, stopPLI)
 	}
+
+	p.room.publish(p, local, keyframe)
+	p.logger.Info("track published", "kind", remote.Kind().String(), "track", remote.ID())
 
 	buf := make([]byte, 1500)
 	for {
@@ -229,10 +237,10 @@ func (p *Peer) forwardTrack(remote *webrtc.TrackRemote) {
 	p.logger.Info("track unpublished", "track", remote.ID())
 }
 
-// pliLoop периодически просит у паблишера keyframe — без этого новые
-// подписчики ждут плановый I-frame неопределённо долго (VP8/H264
-// шлют его редко при статичной картинке).
-func (p *Peer) pliLoop(ssrc uint32, stop <-chan struct{}) {
+// pliLoop — страховка: редкий периодический keyframe-запрос на случай,
+// если PLI зрителя потерялся (VP8/H264 при статичной картинке сами
+// ключевые кадры почти не шлют).
+func (p *Peer) pliLoop(kf *keyframeRequester, stop <-chan struct{}) {
 	ticker := time.NewTicker(pliInterval)
 	defer ticker.Stop()
 	for {
@@ -240,31 +248,39 @@ func (p *Peer) pliLoop(ssrc uint32, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			if err := p.pub.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: ssrc}}); err != nil {
-				return
-			}
+			kf.Request()
 		}
 	}
 }
 
 // addForward подключает чужой опубликованный трек к sub-PC этого peer'а.
 // Renegotiation НЕ делает — вызывающий батчит и зовёт negotiateSub().
-func (p *Peer) addForward(local *webrtc.TrackLocalStaticRTP) {
+func (p *Peer) addForward(local *webrtc.TrackLocalStaticRTP, keyframe *keyframeRequester) {
 	sender, err := p.sub.AddTrack(local)
 	if err != nil {
 		p.logger.Warn("forward add failed", "error", err)
 		return
 	}
-	// Дренируем входящий RTCP (receiver reports и т.п.) — иначе
-	// внутренние буферы pion копятся.
+	// Читаем входящий RTCP зрителя (иначе внутренние буферы pion копятся).
+	// PLI/FIR зрителя пробрасываем издателю: без этого зритель, потерявший
+	// опорный кадр, ждал бы страховочного таймера секунды, и картинка
+	// «застывала» или сыпалась до следующего ключевого кадра.
 	go func() {
-		buf := make([]byte, 1500)
 		for {
-			if _, _, err := sender.Read(buf); err != nil {
+			pkts, _, err := sender.ReadRTCP()
+			if err != nil {
 				return
+			}
+			for _, pkt := range pkts {
+				switch pkt.(type) {
+				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					keyframe.Request()
+				}
 			}
 		}
 	}()
+	// Новому зрителю нужен ключевой кадр сразу после подключения.
+	keyframe.Request()
 }
 
 func (p *Peer) removeForward(local *webrtc.TrackLocalStaticRTP) {
