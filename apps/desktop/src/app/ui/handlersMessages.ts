@@ -15,7 +15,6 @@ export function attachMessagesRegion(): void {
     "click",
     (_event, btn) => {
       uiContext.state.editingMessageId = btn.dataset.id ?? null;
-      uiContext.state.pickerForMessageId = null;
       render();
     },
     "delegate-484353",
@@ -50,10 +49,16 @@ export function attachMessagesRegion(): void {
     ".action-react",
     "click",
     (_event, btn) => {
-      const id = btn.dataset.id ?? null;
-      uiContext.state.pickerForMessageId =
-        uiContext.state.pickerForMessageId === id ? null : id;
-      render();
+      const messageId = btn.dataset.id;
+      if (!messageId) return;
+      // Один смайлик → полный пикер эмодзи (с полем «своя реакция»).
+      openEmojiPicker({
+        anchor: btn,
+        allowCustom: true,
+        onPick: (emoji) => {
+          void toggleReaction(messageId, emoji);
+        },
+      });
     },
     "delegate-485193",
   );
@@ -90,29 +95,9 @@ export function attachMessagesRegion(): void {
       const messageId = btn.dataset.reactToggle;
       const emoji = btn.dataset.emoji;
       if (!messageId || !emoji) return;
-      uiContext.state.pickerForMessageId = null;
       void toggleReaction(messageId, emoji);
     },
     "delegate-486083",
-  );
-
-  // Wave 2: «➕» в quick-picker'е реакций → полный emoji-picker.
-  delegate<HTMLButtonElement, "click">(
-    uiContext.rootEl,
-    ".picker-more",
-    "click",
-    (_event, btn) => {
-      const messageId = btn.dataset.reactMore;
-      if (!messageId) return;
-      openEmojiPicker({
-        anchor: btn,
-        onPick: (emoji) => {
-          uiContext.state.pickerForMessageId = null;
-          void toggleReaction(messageId, emoji);
-        },
-      });
-    },
-    "delegate-486504",
   );
 
   delegate<HTMLButtonElement, "click">(

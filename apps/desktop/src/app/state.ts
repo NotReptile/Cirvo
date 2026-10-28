@@ -100,8 +100,6 @@ export const SCREEN_SHARE_PRESETS: Record<
 
 const SCREEN_SHARE_QUALITY_LS = "cirvo:screenShareQuality";
 
-const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
-
 // J.6: persisting collapsed-categories state в localStorage. Per-категории
 // идентификатор — workspace-scoped UUID; кросс-workspace утечки не страшны.
 const COLLAPSED_CATEGORIES_KEY = "cirvo:collapsed-categories";
@@ -128,7 +126,6 @@ export function createInitialState(): AppState {
     modal: null,
     members: [],
     membersLoading: false,
-    pickerForMessageId: null,
     pinsPopupOpen: false,
     channelPins: [],
     channelPinsLoading: false,
@@ -691,9 +688,6 @@ export const uiContext = {
   },
   get SCREEN_SHARE_QUALITY_LS() {
     return SCREEN_SHARE_QUALITY_LS;
-  },
-  get QUICK_EMOJIS() {
-    return QUICK_EMOJIS;
   },
   get COLLAPSED_CATEGORIES_KEY() {
     return COLLAPSED_CATEGORIES_KEY;

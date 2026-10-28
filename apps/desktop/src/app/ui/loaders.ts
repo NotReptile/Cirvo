@@ -60,7 +60,6 @@ export async function selectChannel(id: string): Promise<void> {
   uiContext.state.windowStart = null;
   uiContext.state.messages = [];
   uiContext.state.editingMessageId = null;
-  uiContext.state.pickerForMessageId = null;
   uiContext.state.pinsPopupOpen = false;
   uiContext.state.voicePeek = null;
   uiContext.state.replyingTo = null;
@@ -1210,7 +1209,6 @@ export function tryEditLastOwnMessage(): boolean {
     if (m.kind && m.kind !== "user") continue;
     if (m.deletedAt) continue;
     uiContext.state.editingMessageId = m.id;
-    uiContext.state.pickerForMessageId = null;
     render();
     return true;
   }

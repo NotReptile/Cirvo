@@ -176,7 +176,6 @@ export function renderApp(
         invites: [],
         modal: null,
         members: [],
-        pickerForMessageId: null,
         pinsPopupOpen: false,
         channelPins: [],
         channelPinsLoading: false,

@@ -1339,15 +1339,25 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   gap: 4px;
   margin-top: 4px;
 }
+/* Чип реакции: плоский, без теней и градиентов. Текстовые реакции обрезаются
+   многоточием; полный текст виден в подсказке (data-tooltip). */
 .reaction-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  max-width: 100%;
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 2px 8px;
   font-size: 12px;
+  color: var(--text);
+}
+.reaction-chip > span:first-child {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .reaction-chip.mine {
   background: rgba(88, 101, 242, 0.25);
@@ -1355,31 +1365,6 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .reaction-chip .count { color: var(--text-mute); }
 .reaction-chip:hover { border-color: var(--accent); }
-
-.emoji-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 6px;
-  padding: 6px;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  align-items: center;
-}
-.picker-emoji {
-  padding: 2px 6px;
-  font-size: 16px;
-  background: transparent;
-  border: 1px solid transparent;
-}
-.picker-emoji:hover { background: var(--bg); border-color: var(--accent); }
-.picker-custom {
-  flex: 1;
-  min-width: 80px;
-  padding: 4px 6px;
-  font-size: 12px;
-}
 
 .modal-backdrop {
   position: fixed;
@@ -2806,6 +2791,42 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   text-align: center;
   color: var(--text-mute);
   font-size: 13px;
+}
+#rucord-emoji-picker .ep-card.has-custom { height: 432px; }
+#rucord-emoji-picker .ep-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#rucord-emoji-picker .ep-custom-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+#rucord-emoji-picker .ep-custom-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+#rucord-emoji-picker .ep-custom-btn:disabled { opacity: 0.4; cursor: not-allowed; border-color: var(--border); }
+#rucord-emoji-picker .ep-custom-error {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--danger, #f23f43);
+  min-height: 0;
 }
 
 /* Wave 2 — lightbox для изображений */

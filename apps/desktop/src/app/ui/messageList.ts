@@ -60,7 +60,6 @@ export function messageRowHtml(
     row.unread,
     row.grouped,
     uiContext.state.editingMessageId === message.id,
-    uiContext.state.pickerForMessageId === message.id,
     uiContext.state.dmMode,
     uiContext.state.blockedIds.has(message.authorId),
     uiContext.state.revealedBlocked.has(message.id),

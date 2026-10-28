@@ -622,7 +622,6 @@ export interface AppState {
   modal: ModalKind;
   members: Member[];
   membersLoading: boolean;
-  pickerForMessageId: string | null;
   // Pinned-messages popup в channel-header. channelPins ленится — грузится
   // при первом открытии и при events `message.pinned`/`unpinned`. open=true
   // показывает popup поверх message-list.
