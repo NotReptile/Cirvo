@@ -981,6 +981,8 @@ input[type="color"]:disabled { opacity: 0.4; cursor: not-allowed; }
   flex-direction: column;
   gap: 4px;
 }
+.voice-volume-group { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; }
+.voice-volume-group + .voice-volume-group { border-top: 1px solid var(--border); padding-top: 6px; }
 .voice-volume-row {
   display: flex;
   justify-content: space-between;

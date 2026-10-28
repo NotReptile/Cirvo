@@ -1,3 +1,4 @@
+import { remoteAudioRouter } from "../../call/remoteAudio";
 import { getVoiceSettings } from "../../call/voiceSettings";
 import { confirmDialog } from "../dialogs";
 import { bindEvent } from "../dom";
@@ -981,8 +982,11 @@ export function manualToggleMute(): void {
 // и сам микрофон, чтобы «глухой» юзер физически не говорил.
 export function toggleDeafen(): void {
   uiContext._deafened = !uiContext._deafened;
+  // Звук участников voice-канала идёт через remoteAudioRouter (глушим там,
+  // громкости пользователя сохраняются); <video data-voice-peer> без звука.
+  remoteAudioRouter.setOutput({ deafened: uiContext._deafened });
   for (const el of uiContext.rootEl.querySelectorAll<HTMLVideoElement>(
-    "video[data-voice-peer], video[data-call-remote]",
+    "video[data-call-remote]",
   )) {
     el.muted = uiContext._deafened;
   }

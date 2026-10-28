@@ -30,6 +30,14 @@ export interface VoiceParticipant {
   // MediaStreamTrack — нужен отдельный сигналинг.
   screenSharing?: boolean;
   cameraOn?: boolean;
+  // id аудио-трека системного звука демонстрации (если участник его шлёт).
+  // Нужен, чтобы отделить его от голоса: оба едут в одном стриме участника.
+  screenAudioTrackId?: string | null;
+}
+
+export interface RemoteAudioTracks {
+  voice: MediaStreamTrack | null;
+  screen: MediaStreamTrack | null;
 }
 
 export type VoiceState = "idle" | "joining" | "active" | "media-reconnecting" | "leaving";
@@ -85,6 +93,7 @@ interface RelayPayload {
 interface PeerStatePayload {
   screen_sharing?: boolean;
   camera_on?: boolean;
+  screen_audio_track_id?: string | null;
 }
 
 interface VoiceEventPayload {
@@ -102,7 +111,6 @@ interface PeerEntry {
   pc: RTCPeerConnection;
   callId: string;
   remoteStream: MediaStream;
-  remoteAudio: HTMLAudioElement;
   pendingCandidates: RTCIceCandidateInit[];
   // Perfect-negotiation flag — пока true, входящий offer мы игнорируем
   // (collision detected). Когда наш собственный offer отослан,
@@ -164,6 +172,19 @@ export class VoiceChannelManager {
   getRemoteStream(sessionId: string): MediaStream | null {
     if (this.sfu) return this.sfu.getRemoteStream(sessionId);
     return this.peers.get(sessionId)?.remoteStream ?? null;
+  }
+
+  // Разделяет аудио удалённого участника: голос и звук демонстрации. Звук
+  // демонстрации опознаём по id трека из voice.state (он приходит отдельно,
+  // а трек может появиться раньше состояния — тогда пока считаем голосом и
+  // исправляемся при следующем снимке).
+  getRemoteAudioTracks(sessionId: string): RemoteAudioTracks {
+    const stream = this.getRemoteStream(sessionId);
+    const screenId = this.snapshot.participants.find((p) => p.sessionId === sessionId)?.screenAudioTrackId ?? null;
+    const audio = (stream?.getAudioTracks() ?? []).filter((t) => t.readyState !== "ended");
+    const screen = screenId ? audio.find((t) => t.id === screenId) ?? null : null;
+    const voice = audio.find((t) => t !== screen) ?? null;
+    return { voice, screen };
   }
 
   constructor(
@@ -595,18 +616,11 @@ export class VoiceChannelManager {
   private createPeer(peerSessionId: string, callId: string, polite: boolean): PeerEntry {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers ?? [] });
     const remoteStream = new MediaStream();
-    const remoteAudio = document.createElement("audio");
-    remoteAudio.autoplay = true;
-    remoteAudio.dataset.voicePeer = peerSessionId;
-    remoteAudio.style.display = "none";
-    remoteAudio.srcObject = remoteStream;
-    document.body.appendChild(remoteAudio);
 
     const entry: PeerEntry = {
       pc,
       callId,
       remoteStream,
-      remoteAudio,
       pendingCandidates: [],
       makingOffer: false,
       polite
@@ -677,8 +691,6 @@ export class VoiceChannelManager {
     } catch {
       /* ignore */
     }
-    peer.remoteAudio.srcObject = null;
-    peer.remoteAudio.remove();
     this.peers.delete(sessionId);
   }
 
@@ -870,7 +882,8 @@ export class VoiceChannelManager {
         ? {
             ...x,
             screenSharing: !!p.state!.screen_sharing,
-            cameraOn: !!p.state!.camera_on
+            cameraOn: !!p.state!.camera_on,
+            screenAudioTrackId: p.state!.screen_audio_track_id ?? null
           }
         : x
     );
@@ -885,7 +898,8 @@ export class VoiceChannelManager {
         target_session_id: sessionId,
         state: {
           screen_sharing: this.snapshot.screenSharing,
-          camera_on: this.snapshot.cameraOn
+          camera_on: this.snapshot.cameraOn,
+          screen_audio_track_id: this.screenAudioTrack?.id ?? null
         }
       });
     } catch {

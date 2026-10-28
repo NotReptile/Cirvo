@@ -67,9 +67,9 @@ export class SfuSession {
   private pubPendingIce: RTCIceCandidateInit[] = [];
   private subPendingIce: RTCIceCandidateInit[] = [];
 
-  // remote-медиа по sessionId паблишера + скрытые <audio> для воспроизведения.
+  // remote-медиа по sessionId паблишера. Воспроизведение звука — в
+  // remoteAudioRouter (отдельно голос и звук демонстрации), не здесь.
   private remotes = new Map<string, MediaStream>();
-  private audioEls = new Map<string, HTMLAudioElement>();
 
   constructor(private readonly opts: SfuSessionOptions) {
     this.iceServers = opts.iceServers;
@@ -172,12 +172,6 @@ export class SfuSession {
   // авторитетный сигнал, что участник ушёл (надёжнее, чем track.onended).
   dropRemote(sessionId: string): void {
     this.remotes.delete(sessionId);
-    const el = this.audioEls.get(sessionId);
-    if (el) {
-      el.srcObject = null;
-      el.remove();
-      this.audioEls.delete(sessionId);
-    }
   }
 
   // ---- медиа-операции (зеркало действий менеджера над mesh-peers) -----------
@@ -262,11 +256,6 @@ export class SfuSession {
 
   private closeTransport(): void {
     this.resetting = true;
-    for (const el of this.audioEls.values()) {
-      el.srcObject = null;
-      el.remove();
-    }
-    this.audioEls.clear();
     this.remotes.clear();
     if (this.pub) {
       try {
@@ -486,7 +475,6 @@ export class SfuSession {
     if (!rs) {
       rs = new MediaStream();
       this.remotes.set(sessionId, rs);
-      this.attachAudio(sessionId, rs);
     }
     if (!rs.getTracks().some((t) => t.id === evt.track.id)) {
       rs.addTrack(evt.track);
@@ -499,16 +487,6 @@ export class SfuSession {
       this.opts.onRemoteChange();
     };
     this.opts.onRemoteChange();
-  }
-
-  private attachAudio(sessionId: string, stream: MediaStream): void {
-    const el = document.createElement("audio");
-    el.autoplay = true;
-    el.dataset.sfuPeer = sessionId;
-    el.style.display = "none";
-    el.srcObject = stream;
-    document.body.appendChild(el);
-    this.audioEls.set(sessionId, el);
   }
 
   private send(event: string, payload: unknown): void {

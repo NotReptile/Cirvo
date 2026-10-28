@@ -1,4 +1,6 @@
-import { applyOutputDevice, getOutputVolume } from "../../call/voiceSettings";
+import { participantVolumes } from "../../call/participantVolumes";
+import { remoteAudioRouter, type RemoteAudioSlot } from "../../call/remoteAudio";
+import { applyOutputDevice, getOutputDeviceId, getOutputVolume } from "../../call/voiceSettings";
 import { bindEvent } from "../dom";
 import { describeError } from "../errors";
 import { t } from "../i18n";
@@ -290,9 +292,9 @@ export function renderVoiceStrip(): string {
 // сериализуется — нужно ставить программно.
 export function attachVoiceVideoStreams(): void {
   const voiceLocal = uiContext.voiceMgr.getLocalStream();
-  // I.2: global output-volume и output-device применяются к каждому
-  // <video> с remote-стримом. Per-peer volume (state.voiceVolumes)
-  // умножается сверху — позволяет точечно приглушить шумного соседа.
+  // I.2: общая громкость вывода и устройство применяются к роутеру звука.
+  // Локальные громкости участника (голос и звук демонстрации, по userId)
+  // задаются слотами ниже.
   const globalOut = getOutputVolume();
   for (const el of uiContext.rootEl.querySelectorAll<HTMLVideoElement>(
     "video[data-voice-self]",
@@ -300,6 +302,8 @@ export function attachVoiceVideoStreams(): void {
     if (el.srcObject !== voiceLocal) el.srcObject = voiceLocal;
     el.closest(".voice-tile")?.classList.toggle("has-video", !!voiceLocal?.getVideoTracks().some((track) => track.readyState === "live"));
   }
+  // <video> удалённого участника показывает только картинку: звук идёт
+  // через remoteAudioRouter, иначе он играл бы дважды.
   for (const el of uiContext.rootEl.querySelectorAll<HTMLVideoElement>(
     "video[data-voice-peer]",
   )) {
@@ -307,19 +311,12 @@ export function attachVoiceVideoStreams(): void {
     if (!sid) continue;
     const stream = uiContext.voiceMgr.getRemoteStream(sid);
     if (el.srcObject !== stream) el.srcObject = stream;
-    el.muted = isDeafened();
-    el.volume = Math.min(
-      1,
-      (uiContext.state.voiceVolumes[sid] ?? 1) * globalOut,
-    );
-    void applyOutputDevice(el).catch((err) => {
-      uiContext.state.status = describeError(err);
-      queueRender("status");
-    });
+    el.muted = true;
     // Подстраховка аватар-заглушки: сигналинг cameraOn (voice.state) может
     // отстать от реального видеотрека — верим живому стриму.
     el.closest(".voice-tile")?.classList.toggle("has-video", !!stream?.getVideoTracks().some((track) => track.readyState === "live"));
   }
+  syncRemoteAudio(globalOut);
   const callLocal = uiContext.callMgr.getLocalStream();
   const callRemote = uiContext.callMgr.getRemoteStream();
   const overlay = uiContext.rootEl.querySelector<HTMLElement>(
@@ -407,32 +404,6 @@ export function attachVoiceTileFullscreen(): void {
         "bind-voice-fs",
       );
     }
-    // ПКМ на чужом тайле открывает volume-popup. На своём (self) и без
-    // данных peer'а — игнор.
-    bindEvent(
-      tile,
-      "contextmenu",
-      (ev) => {
-        if (tile.classList.contains("self")) return;
-        const video = tile.querySelector<HTMLVideoElement>(
-          "video[data-voice-peer]",
-        );
-        const sid = video?.dataset.voicePeer;
-        if (!sid) return;
-        ev.preventDefault();
-        const p = uiContext.state.voiceSnapshot?.participants.find(
-          (x) => x.sessionId === sid,
-        );
-        const label = p
-          ? p.displayName || p.username || sid.slice(0, 8)
-          : "Участник";
-        const x = Math.min(ev.clientX, window.innerWidth - 280);
-        const y = Math.min(ev.clientY, window.innerHeight - 200);
-        uiContext.state.voiceVolumeMenu = { key: sid, label, x, y };
-        render();
-      },
-      "bind-218292",
-    );
   }
   for (const btn of Array.from(
     uiContext.rootEl.querySelectorAll<HTMLButtonElement>("[data-voice-fs-exit]"),
@@ -447,37 +418,38 @@ export function attachVoiceTileFullscreen(): void {
       "bind-voice-fs-exit",
     );
   }
-  // Аналогично для 1-к-1 tile'а (call-video-tile с data-call-remote).
-  const callTiles =
-    uiContext.rootEl.querySelectorAll<HTMLDivElement>(".call-video-tile");
-  for (const tile of Array.from(callTiles)) {
-    if ((tile as HTMLElement & { _fsAttached?: boolean })._fsAttached) continue;
-    (tile as HTMLElement & { _fsAttached?: boolean })._fsAttached = true;
-    const video = tile.querySelector<HTMLVideoElement>(
-      "video[data-call-remote]",
-    );
-    if (!video) continue;
-    bindEvent(
-      tile,
-      "contextmenu",
-      (ev) => {
-        ev.preventDefault();
-        const peerName = uiContext.state.callSnapshot
-          ? describePeer(uiContext.state.callSnapshot.peerUserId)
-          : "Собеседник";
-        const x = Math.min(ev.clientX, window.innerWidth - 280);
-        const y = Math.min(ev.clientY, window.innerHeight - 200);
-        uiContext.state.voiceVolumeMenu = {
-          key: "call-remote",
-          label: peerName,
-          x,
-          y,
-        };
-        render();
-      },
-      "bind-219418",
-    );
+}
+
+// Звук удалённых участников голосового канала: отдельные узлы для голоса и
+// для звука демонстрации (см. remoteAudio.ts). Громкости берутся из
+// participantVolumes по userId, поэтому переживают пересборку DOM.
+function syncRemoteAudio(globalOut: number): void {
+  const snapshot = uiContext.state.voiceSnapshot;
+  const slots: RemoteAudioSlot[] = [];
+  for (const p of snapshot?.participants ?? []) {
+    if (snapshot && p.sessionId === snapshot.selfSessionId) continue;
+    const tracks = uiContext.voiceMgr.getRemoteAudioTracks(p.sessionId);
+    if (tracks.voice) {
+      slots.push({
+        id: `voice:${p.sessionId}`,
+        track: tracks.voice,
+        volume: participantVolumes.get(p.userId, "voice"),
+      });
+    }
+    if (tracks.screen) {
+      slots.push({
+        id: `screen:${p.sessionId}`,
+        track: tracks.screen,
+        volume: participantVolumes.get(p.userId, "screen"),
+      });
+    }
   }
+  remoteAudioRouter.setOutput({
+    volume: globalOut,
+    deafened: isDeafened(),
+    sinkId: getOutputDeviceId() ?? "",
+  });
+  remoteAudioRouter.sync(slots);
 }
 
 export async function uploadFiles(files: File[]): Promise<void> {

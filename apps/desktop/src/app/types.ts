@@ -144,6 +144,17 @@ export interface Attachment {
   url: string;
 }
 
+// Меню громкости (ПКМ на участнике). key — sessionId, либо "call-remote" для
+// 1-к-1 звонка. userId задан для участника voice-канала: голос и звук
+// демонстрации хранятся по нему.
+export interface VoiceVolumeMenuState {
+  key: string;
+  label: string;
+  x: number;
+  y: number;
+  userId: string | null;
+}
+
 export interface PendingUpload {
   id: string;
   contentType: string;
@@ -694,8 +705,10 @@ export interface AppState {
   // отсутствии ключа применяем 1 (default). Хранится в памяти, на
   // refresh сбрасывается — соответствует ожиданию Discord.
   voiceVolumes: Record<string, number>;
-  // Popup управления громкостью: ПКМ на чужом voice-tile.
-  voiceVolumeMenu: { key: string; label: string; x: number; y: number } | null;
+  // Popup управления громкостью: ПКМ на чужом voice-tile. key — sessionId
+  // (для "call-remote" — спец-ключ 1-к-1 звонка). userId задан для участника
+  // voice-канала: громкости голоса и звука демонстрации хранятся по нему.
+  voiceVolumeMenu: VoiceVolumeMenuState | null;
   // H.8: попап под avatar'ом в user-strip. Открывается на клик кнопки
   // статуса; содержит радиокнопки per-mode + поле customStatus.
   statusMenu: {

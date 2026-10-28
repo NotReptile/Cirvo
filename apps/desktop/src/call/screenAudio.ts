@@ -60,6 +60,86 @@ interface ActiveAudio {
   stop: () => Promise<void>;
 }
 
+// Лимит записей в очереди генератора. Cpal отдаёт кадры примерно каждые
+// 10–20 мс; при 16 неподтверждённых записях это ~0.3 с. Дальше очередь
+// растёт только задержкой: лучше сбросить кадр, чем копить отставание.
+const MAX_PENDING_CHUNKS = 16;
+
+export function decodePcmBase64(pcm: string): Float32Array<ArrayBuffer> {
+  const bin = atob(pcm);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Float32Array(bytes.buffer, 0, Math.floor(bytes.byteLength / 4));
+}
+
+export interface PcmChunk {
+  close(): void;
+}
+
+export interface PcmFeederOptions {
+  sampleRate: number;
+  channels: number;
+  write(chunk: PcmChunk): Promise<unknown>;
+  makeChunk(args: {
+    data: Float32Array<ArrayBuffer>;
+    frameCount: number;
+    sampleRate: number;
+    channels: number;
+    timestamp: number;
+  }): PcmChunk;
+  maxPending?: number;
+}
+
+// Превращает поток interleaved f32 в записи генератора. Чанк закрывается
+// только после того, как генератор его принял: закрытие сразу после write()
+// может обнулить кадр до того, как его заберёт трек (щелчки и провалы звука).
+export function createPcmFeeder(opts: PcmFeederOptions): {
+  push(samples: Float32Array<ArrayBuffer>, timestamp: number): boolean;
+  readonly dropped: number;
+} {
+  const maxPending = opts.maxPending ?? MAX_PENDING_CHUNKS;
+  let pending = 0;
+  let dropped = 0;
+  return {
+    push(samples, timestamp) {
+      const frameCount = Math.floor(samples.length / opts.channels);
+      if (frameCount === 0) return false;
+      if (pending >= maxPending) {
+        dropped += 1;
+        return false;
+      }
+      const data = samples.subarray(0, frameCount * opts.channels);
+      let chunk: PcmChunk;
+      try {
+        chunk = opts.makeChunk({
+          data,
+          frameCount,
+          sampleRate: opts.sampleRate,
+          channels: opts.channels,
+          timestamp,
+        });
+      } catch (err) {
+        console.warn("[screen-audio] chunk create failed", err);
+        return false;
+      }
+      pending += 1;
+      opts.write(chunk).then(
+        () => {},
+        () => {
+          /* трек закрыт */
+        },
+      ).finally(() => {
+        pending -= 1;
+        chunk.close();
+      });
+      return true;
+    },
+    get dropped() {
+      return dropped;
+    },
+  };
+}
+
 let active: ActiveAudio | null = null;
 
 export async function startScreenAudio(): Promise<MediaStreamTrack> {
@@ -83,28 +163,27 @@ export async function startScreenAudio(): Promise<MediaStreamTrack> {
   const trackGen = new TrackGen({ kind: "audio" });
   const writer = trackGen.writable.getWriter();
 
+  const feeder = createPcmFeeder({
+    sampleRate,
+    channels,
+    write: (chunk) => writer.write(chunk as unknown as AudioData),
+    makeChunk: ({ data, frameCount, sampleRate: sr, channels: ch, timestamp }) =>
+      new AudioData({
+        format: "f32",
+        sampleRate: sr,
+        numberOfFrames: frameCount,
+        numberOfChannels: ch,
+        timestamp,
+        data,
+      }),
+  });
+
   let stopped = false;
   const unlistenPromise = tauri.listen("screen-audio:pcm", (e: { payload: unknown }) => {
     if (stopped) return;
     const payload = e.payload as PcmPayload;
-    // base64 → Uint8Array → Float32Array (interleaved).
-    const bin = atob(payload.pcm);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const f32 = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
-    const frameCount = Math.floor(f32.length / channels);
-    if (frameCount === 0) return;
     try {
-      const audioData = new AudioData({
-        format: "f32",
-        sampleRate,
-        numberOfFrames: frameCount,
-        numberOfChannels: channels,
-        timestamp: payload.timestamp,
-        data: f32
-      });
-      void writer.write(audioData).catch(() => { /* track closed */ });
-      audioData.close();
+      feeder.push(decodePcmBase64(payload.pcm), payload.timestamp);
     } catch (err) {
       console.warn("[screen-audio] write failed", err);
     }

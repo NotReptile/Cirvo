@@ -32,8 +32,9 @@ export function refreshSpeakingIndicators(
       p.sessionId === uiContext.state.voiceSnapshot.selfSessionId
     )
       continue;
-    const stream = uiContext.voiceMgr.getRemoteStream(p.sessionId);
-    if (stream) targets.set(`peer:${p.sessionId}`, stream);
+    // Индикатор речи — только по голосу: звук демонстрации в нём не участвует.
+    const voice = uiContext.voiceMgr.getRemoteAudioTracks(p.sessionId).voice;
+    if (voice) targets.set(`peer:${p.sessionId}`, new MediaStream([voice]));
   }
   if (callRemote) targets.set("call-remote", callRemote);
 
