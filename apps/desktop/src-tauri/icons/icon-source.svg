@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <mask id="cut" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="white"/>
+      <path d="M 346 236 L 512 640 L 678 236" fill="none" stroke="black" stroke-width="172" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect width="1024" height="1024" rx="230" fill="#6d28d9"/>
+  <!-- C: почти замкнутое кольцо -->
+  <path d="M 811 486 A 300 300 0 1 0 705 742" fill="none" stroke="#ffffff" stroke-width="96" stroke-linecap="round" mask="url(#cut)"/>
+  <!-- V продета сквозь кольцо -->
+  <path d="M 346 236 L 512 640 L 678 236" fill="none" stroke="#22d3ee" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -7,15 +7,35 @@ import {
   setStoredServerUrl
 } from "./serverConfig";
 
+// Знак Cirvo: V продета сквозь кольцо C («Circle and Voice»). Исходник:
+// src-tauri/icons/icon-source.svg.
+const CIRVO_MARK = `
+  <svg class="onboarding-mark" viewBox="0 0 1024 1024" aria-hidden="true" focusable="false">
+    <defs>
+      <mask id="cm-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+        <rect width="1024" height="1024" fill="white"/>
+        <path d="M346 236 512 640 678 236" fill="none" stroke="black" stroke-width="172" stroke-linecap="round" stroke-linejoin="round"/>
+      </mask>
+    </defs>
+    <rect width="1024" height="1024" rx="230" fill="#6d28d9"/>
+    <path d="M811 486A300 300 0 1 0 705 742" fill="none" stroke="#fff" stroke-width="96" stroke-linecap="round" mask="url(#cm-cut)"/>
+    <path d="M346 236 512 640 678 236" fill="none" stroke="#22d3ee" stroke-width="96" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+
 export function renderOnboarding(container: HTMLElement, onDone: (url: string) => void): void {
   container.innerHTML = `
     <div class="onboarding-screen">
       <div class="onboarding-card">
-        <div class="onboarding-logo">Cirvo</div>
+        <div class="onboarding-brand">
+          ${CIRVO_MARK}
+          <div class="onboarding-brand-text">
+            <div class="onboarding-logo">Cirvo</div>
+            <div class="onboarding-tagline">Circle and Voice</div>
+          </div>
+        </div>
         <h1>Подключение к серверу</h1>
         <p class="onboarding-hint">
-          Введи адрес твоего self-host Cirvo сервера. Если ты ещё не поднял свой —
-          попроси у того, кто им владеет (это администратор сообщества).
+          Введи адрес своего Cirvo-сервера. Если своего нет, спроси его у администратора сообщества.
         </p>
         <form id="onboarding-form" class="onboarding-form" autocomplete="off">
           <label for="onboarding-url">Адрес сервера</label>
