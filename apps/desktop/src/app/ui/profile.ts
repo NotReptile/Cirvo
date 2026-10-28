@@ -67,14 +67,14 @@ export function renderUserProfilePopup(): string {
         <button class="user-profile-close" data-modal-close data-tooltip="Закрыть">✕</button>
         <div class="user-profile-avatar-row">
           <div class="user-profile-avatar-wrap">
-            ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 80, className: "user-profile-avatar", decoration: avatarDecoration })}
+            ${renderAvatar({ avatarMediaId, fallbackText: name, sizePx: 76, className: "user-profile-avatar", decoration: avatarDecoration })}
             ${presenceMode ? `<span class="user-profile-dot ${presenceDotClass(presenceMode)}"></span>` : ""}
           </div>
         </div>
         <div class="user-profile-card"${cardStyle}>
           <div class="user-profile-name"><span${nameGradientStyle(nameGradient)}>${escapeHtml(name)}</span>${badgeHtml(badgeEmoji, badgeLabel)}</div>
           ${username ? `<div class="user-profile-username">@${escapeHtml(username)}</div>` : ""}
-          ${isSelf ? `<button id="open-status" class="ghost user-profile-presence" aria-haspopup="menu"><span class="presence-dot ${presenceDotClass(presenceMode)}"></span>${presenceLabel(presenceMode)} <span aria-hidden="true">▾</span></button>` : `<div class="user-profile-presence"><span class="presence-dot ${presenceDotClass(presenceMode)}"></span>${presenceLabel(presenceMode)}</div>`}
+          ${isSelf ? `<button id="open-status" class="user-profile-status-select" aria-haspopup="menu" aria-label="Статус: ${escapeHtml(presenceLabel(presenceMode))}"><span class="presence-dot ${presenceDotClass(presenceMode)}"></span><span class="user-profile-status-label">${presenceLabel(presenceMode)}</span><span class="user-profile-status-chevron" aria-hidden="true"></span></button>` :`<div class="user-profile-presence"><span class="presence-dot ${presenceDotClass(presenceMode)}"></span>${presenceLabel(presenceMode)}</div>`}
           ${customStatus ? `<div class="user-profile-status">${escapeHtml(customStatus)}</div>` : ""}
           ${role ? `<div class="user-profile-role"><span class="role-badge role-${escapeHtml(role)}">${escapeHtml(({ owner: "Владелец", admin: "Администратор", moderator: "Модератор", member: "Участник" } as Record<string, string>)[role] ?? role)}</span></div>` : ""}
           ${bio ? `<div class="user-profile-bio">${renderBody(bio)}</div>` : ""}
