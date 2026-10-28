@@ -13,6 +13,16 @@ import { isDeafened } from "./loaders";
 import { renderAvatar, resolvePeerAvatarMediaId } from "./shell";
 import { resolveUserPresence } from "../presence";
 import { refreshSpeakingIndicators } from "./speaking";
+import {
+  applyFullscreenState,
+  getFullscreenSession,
+  getPinnedSession,
+  installFullscreenController,
+  planStreamLayout,
+  pruneLayoutState,
+  toggleTileFullscreen,
+  togglePinnedSession,
+} from "./voiceLayout";
 
 // Селект качества демонстрации экрана (рядом с кнопкой «Поделиться
 // экраном»). Применяется при следующем toggleScreenShare; если уже
@@ -65,6 +75,16 @@ export function renderVoiceChannelView(channel: Channel): string {
   // его tile становится primary (большой, сверху), остальные —
   // в горизонтальной полосе под ним. peer.screenSharing приходит
   // через `voice.state` (отдельный сигналинг, см. PeerStatePayload).
+  const isSharing = (p: (typeof participants)[number]): boolean =>
+    selfSessionId !== null && p.sessionId === selfSessionId
+      ? screenOn
+      : !!p.screenSharing;
+  pruneLayoutState(
+    participants.filter(isSharing).map((p) => p.sessionId),
+    participants.map((p) => p.sessionId),
+  );
+  const pinnedId = getPinnedSession();
+  const fullscreenId = getFullscreenSession();
   const renderTile = (
     p: (typeof participants)[number],
     extraClass = "",
@@ -86,7 +106,14 @@ export function renderVoiceChannelView(channel: Channel): string {
     const presence = resolveUserPresence(p.userId, member);
     const selfProfile = p.userId === uiContext.state.me?.id ? uiContext.state.me : null;
     const avatarMediaId = resolvePeerAvatarMediaId(p.userId);
-    const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${hasVideo ? " has-video" : ""}${extraClass ? " " + extraClass : ""}`;
+    const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${hasVideo ? " has-video" : ""}${extraClass ? " " + extraClass : ""}${fullscreenId === p.sessionId ? " fullscreen" : ""}${pinnedId === p.sessionId ? " pinned" : ""}`;
+    const pinLabel = pinnedId === p.sessionId ? "Открепить" : "Закрепить";
+    const tileButtons = sharing
+      ? `<div class="voice-tile-tools">
+          <button class="voice-tile-tool ghost" data-voice-pin="${escapeHtml(p.sessionId)}" aria-pressed="${pinnedId === p.sessionId}" data-tooltip="${pinLabel}" aria-label="${pinLabel}">${icon("pin", { size: 16 })}</button>
+          <button class="voice-tile-tool ghost" data-voice-fs="${escapeHtml(p.sessionId)}" data-tooltip="На весь экран" aria-label="На весь экран">${icon("maximize", { size: 16 })}</button>
+        </div>`
+      : "";
     return `<div class="${cls}" data-voice-tile="${escapeHtml(p.sessionId)}" data-voice-user="${escapeHtml(p.userId)}">
       <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
       <div class="voice-tile-placeholder">
@@ -104,13 +131,10 @@ export function renderVoiceChannelView(channel: Channel): string {
         ${isSelf && voice?.muted ? icon("mic-off", { size: 14 }) : ""}
         ${sharing ? `<span class="voice-tile-live">${t("voice.live")}</span>` : ""}
       </div>
+      ${tileButtons}
     </div>`;
   };
 
-  const sharer = participants.find((p) => {
-    const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
-    return isSelf ? screenOn : !!p.screenSharing;
-  });
 
   // K.4: пустой voice-канал — Discord-style hero-view с большим именем
   // канала, подзаголовком и primary-кнопкой по центру. Когда есть
@@ -154,15 +178,35 @@ export function renderVoiceChannelView(channel: Channel): string {
     `;
   }
 
-  const tiles = sharer
-    ? `<div class="voice-tiles screen-layout">
-        <div class="voice-primary">${renderTile(sharer, "primary")}</div>
-        <div class="voice-strip-tiles">${participants
-          .filter((p) => p.sessionId !== sharer.sessionId)
-          .map((p) => renderTile(p))
+  // Раскладка: 1 стрим — крупно; закреплённый — крупно + полоса миниатюр;
+  // 2+ стрима — сетка равных плиток (см. voiceLayout.ts).
+  const plan = planStreamLayout(
+    participants.map((p) => ({ sessionId: p.sessionId, sharing: isSharing(p) })),
+  );
+  const byId = (sid: string) => participants.find((p) => p.sessionId === sid)!;
+  const stripOf = (exclude: string[]) =>
+    participants
+      .filter((p) => !exclude.includes(p.sessionId))
+      .map((p) => renderTile(p))
+      .join("");
+  let tiles: string;
+  if (plan.mode === "single" || plan.mode === "pinned") {
+    tiles = `<div class="voice-tiles screen-layout">
+        <div class="voice-primary">${renderTile(byId(plan.primary), "primary")}</div>
+        <div class="voice-strip-tiles">${stripOf([plan.primary])}</div>
+      </div>`;
+  } else if (plan.mode === "multi") {
+    const rows = Math.ceil(plan.streams.length / plan.columns);
+    const rest = stripOf(plan.streams);
+    tiles = `<div class="voice-tiles screen-layout multi">
+        <div class="voice-stream-grid" style="--stream-cols:${plan.columns};--stream-rows:${rows}">${plan.streams
+          .map((sid) => renderTile(byId(sid), "stream"))
           .join("")}</div>
-      </div>`
-    : `<div class="voice-tiles" style="--voice-columns:${Math.max(1, Math.min(participants.length, 3))};--voice-columns-small:${Math.max(1, Math.min(participants.length, 2))}">${participants.map((p) => renderTile(p)).join("")}</div>`;
+        ${rest ? `<div class="voice-strip-tiles">${rest}</div>` : ""}
+      </div>`;
+  } else {
+    tiles = `<div class="voice-tiles" style="--voice-columns:${Math.max(1, Math.min(participants.length, 3))};--voice-columns-small:${Math.max(1, Math.min(participants.length, 2))}">${participants.map((p) => renderTile(p)).join("")}</div>`;
+  }
 
   const actions = joined
     ? `
@@ -182,7 +226,8 @@ export function renderVoiceChannelView(channel: Channel): string {
 
   return `
     ${header}
-    <div class="voice-room">
+    <div class="voice-room${fullscreenId && participants.some((p) => p.sessionId === fullscreenId) ? " tile-fs" : ""}">
+      <button class="voice-fs-exit ghost" data-voice-fs-exit aria-label="Выйти из полного экрана" data-tooltip="Выйти из полного экрана (Esc)">${icon("minimize", { size: 18 })}<span>Выйти</span></button>
       <div class="voice-room-body">
         ${tiles}
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
@@ -314,6 +359,8 @@ export function attachVoiceVideoStreams(): void {
 // position:fixed inset:24px), повторный клик возвращает в сетку. Один tile
 // в fullscreen за раз: при разворачивании снимаем класс с остальных.
 export function attachVoiceTileFullscreen(): void {
+  installFullscreenController();
+  applyFullscreenState();
   const tiles =
     uiContext.rootEl.querySelectorAll<HTMLDivElement>(".voice-tile");
   for (const tile of Array.from(tiles)) {
@@ -322,14 +369,44 @@ export function attachVoiceTileFullscreen(): void {
     bindEvent(
       tile,
       "dblclick",
-      () => {
-        const wasFs = tile.classList.contains("fullscreen");
-        for (const other of Array.from(tiles))
-          other.classList.remove("fullscreen");
-        if (!wasFs) tile.classList.add("fullscreen");
+      (ev) => {
+        // Двойной клик по кнопкам плитки не должен разворачивать её.
+        if ((ev.target as HTMLElement).closest("button, select")) return;
+        const sid = tile.dataset.voiceTile;
+        if (sid) toggleTileFullscreen(sid);
       },
       "bind-217942",
     );
+    for (const btn of Array.from(
+      tile.querySelectorAll<HTMLButtonElement>("[data-voice-pin]"),
+    )) {
+      bindEvent(
+        btn,
+        "click",
+        (ev) => {
+          ev.stopPropagation();
+          const sid = btn.dataset.voicePin;
+          if (!sid) return;
+          togglePinnedSession(sid);
+          render();
+        },
+        "bind-voice-pin",
+      );
+    }
+    for (const btn of Array.from(
+      tile.querySelectorAll<HTMLButtonElement>("[data-voice-fs]"),
+    )) {
+      bindEvent(
+        btn,
+        "click",
+        (ev) => {
+          ev.stopPropagation();
+          const sid = btn.dataset.voiceFs;
+          if (sid) toggleTileFullscreen(sid);
+        },
+        "bind-voice-fs",
+      );
+    }
     // ПКМ на чужом тайле открывает volume-popup. На своём (self) и без
     // данных peer'а — игнор.
     bindEvent(
@@ -355,6 +432,19 @@ export function attachVoiceTileFullscreen(): void {
         render();
       },
       "bind-218292",
+    );
+  }
+  for (const btn of Array.from(
+    uiContext.rootEl.querySelectorAll<HTMLButtonElement>("[data-voice-fs-exit]"),
+  )) {
+    bindEvent(
+      btn,
+      "click",
+      () => {
+        const sid = getFullscreenSession();
+        if (sid) toggleTileFullscreen(sid);
+      },
+      "bind-voice-fs-exit",
     );
   }
   // Аналогично для 1-к-1 tile'а (call-video-tile с data-call-remote).

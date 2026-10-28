@@ -6143,3 +6143,134 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .listbox-popup.listbox-portal.is-open { display: block; }
 .listbox-option.active { background: var(--bg-elev-2); outline: 1px solid var(--accent); outline-offset: -1px; }
 .listbox-trigger:disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* ===== Демонстрация экрана: раскладка, закрепление, полный экран ===== */
+/* Видео демонстрации вписывается в плитку целиком (letterbox), без обрезки. */
+.voice-tile.sharing .voice-tile-video,
+.voice-tile.primary .voice-tile-video,
+.call-video-tile video {
+  object-fit: contain;
+  background: #0f1115;
+}
+.voice-tile.sharing { box-shadow: none; border-color: var(--accent); }
+.voice-tile-placeholder { background: #1c1f26; }
+.call-video-tile { background: #0f1115; }
+
+/* 2+ стрима: сетка равных плиток, высота делится поровну. */
+.voice-tiles.screen-layout.multi { min-height: 0; }
+.voice-stream-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--stream-cols, 2), minmax(0, 1fr));
+  grid-template-rows: repeat(var(--stream-rows, 1), minmax(0, 1fr));
+  gap: 12px;
+}
+.voice-stream-grid .voice-tile.stream {
+  min-height: 0;
+  height: 100%;
+}
+@container (max-width: 520px) {
+  .voice-stream-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-rows: minmax(140px, 1fr); overflow-y: auto; }
+}
+/* Полоса миниатюр: плитки фиксированной высоты, без растягивания одной плитки на всю ширину. */
+.voice-strip-tiles {
+  display: flex;
+  gap: 8px;
+  max-height: none;
+  height: 100px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.voice-strip-tiles .voice-tile {
+  flex: 0 0 auto;
+  height: 100%;
+  aspect-ratio: 16 / 9;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Кнопки плитки (закрепить, на весь экран): видны при наведении. */
+.voice-tile-tools {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 120ms linear;
+}
+.voice-tile:hover .voice-tile-tools,
+.voice-tile:focus-within .voice-tile-tools,
+.voice-tile.pinned .voice-tile-tools { opacity: 1; }
+.voice-tile-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+.voice-tile-tool:hover { background: rgba(0, 0, 0, 0.85); }
+.voice-tile-tool[aria-pressed="true"] { background: var(--accent); }
+.voice-tile.pinned { border-color: var(--accent); }
+
+/* Полный экран: вся .voice-room поверх приложения, плитка занимает её целиком,
+   панель управления лежит поверх видео и прячется при бездействии мыши. */
+.voice-fs-exit { display: none; }
+.voice-room.tile-fs {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  padding: 0;
+  gap: 0;
+  background: #000;
+}
+.voice-room.tile-fs .voice-room-body { position: relative; flex: 1; }
+.voice-room.tile-fs .voice-tile.fullscreen {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  min-height: 0;
+  aspect-ratio: auto;
+  cursor: default;
+}
+.voice-room.tile-fs .voice-tile.fullscreen .voice-tile-video { object-fit: contain; }
+.voice-room.tile-fs .voice-room-actions {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 72;
+  background: rgba(24, 27, 34, 0.92);
+  transition: opacity 160ms linear;
+}
+.voice-room.tile-fs .voice-fs-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 72;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(24, 27, 34, 0.92);
+  color: #fff;
+  transition: opacity 160ms linear;
+}
+.voice-room.tile-fs.fs-idle .voice-room-actions,
+.voice-room.tile-fs.fs-idle .voice-fs-exit,
+.voice-room.tile-fs.fs-idle .voice-tile-tools {
+  opacity: 0;
+  pointer-events: none;
+}
+.voice-room.tile-fs.fs-idle { cursor: none; }
