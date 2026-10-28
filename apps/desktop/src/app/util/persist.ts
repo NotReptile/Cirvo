@@ -3,7 +3,14 @@ import type { ScreenShareQualityKey } from "../types";
 export function loadScreenShareQuality(): ScreenShareQualityKey {
   try {
     const v = localStorage.getItem("cirvo:screenShareQuality");
-    if (v && ["720p30", "1080p30", "1080p60", "1440p30"].includes(v))
+    if (v && [
+        "720p30",
+        "1080p30",
+        "1080p60",
+        "1440p30",
+        "1440p60",
+        "4k30",
+      ].includes(v))
       return v as ScreenShareQualityKey;
   } catch {
     /* ignore */

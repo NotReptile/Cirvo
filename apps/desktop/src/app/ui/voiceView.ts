@@ -36,7 +36,7 @@ export function renderScreenQualitySelect(): string {
   )
     .map(
       (k) =>
-        `<option value="${k}"${k === cur ? " selected" : ""}>${k}</option>`,
+        `<option value="${k}"${k === cur ? " selected" : ""}>${k === "4k30" ? "4K30" : k}</option>`,
     )
     .join("");
   return `<select class="screen-quality-select ghost" aria-label="${t("voice.quality")}">${opts}</select>`;

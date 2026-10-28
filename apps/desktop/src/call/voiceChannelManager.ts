@@ -1,6 +1,17 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
-import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
+import { buildAudioConstraints, buildVideoConstraints, getScreenShareOptions } from "./voiceSettings";
+import {
+  applyCodecPreference,
+  applyContentHint,
+  applySenderTuning,
+  resolveCodec,
+  resolveMode,
+  type ResolvedScreenShareCodec,
+  type ResolvedScreenShareMode,
+  type ScreenShareOptions,
+} from "./screenShareTuning";
+import { VideoStatsCollector, type VideoStatsSnapshot } from "./videoStats";
 import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
 import { wrapMicStream, type MicPipeline } from "./denoiser";
 import { wrapCameraTrack, type CameraPipeline } from "./videoEffects";
@@ -401,7 +412,7 @@ export class VoiceChannelManager {
   // камеру можно включить заново отдельной кнопкой. Слушаем
   // track.onended, чтобы авто-выключиться когда юзер нажал «Stop
   // sharing» в системной панели браузера.
-  async toggleScreenShare(quality?: ScreenShareQuality): Promise<boolean> {
+  async toggleScreenShare(quality?: ScreenShareQuality, options?: ScreenShareOptions): Promise<boolean> {
     if (this.snapshot.state !== "active") return false;
     if (!this.screenTrack) {
       let displayStream: MediaStream;
@@ -411,7 +422,7 @@ export class VoiceChannelManager {
         // (показывает Discord-like picker, убирает браузерную плашку
         // «сайт делает демонстрацию»). Fallback на getDisplayMedia —
         // браузерный picker. Подробнее в screenSharePicker.ts.
-        const result = await acquireScreenShareStream(quality);
+        const result = await acquireScreenShareStream(quality, options ?? getScreenShareOptions());
         displayStream = result.stream;
         acquireFromTauri = result.fromTauri;
       } catch (err) {
@@ -423,6 +434,15 @@ export class VoiceChannelManager {
       const track = displayStream.getVideoTracks()[0];
       if (!track) return false;
       this.screenTrack = track;
+      // Режим «плавность / чёткость» и кодек: contentHint нужно выставить до
+      // отправки первого кадра, иначе кодек стартует с настройками для текста.
+      const sendMode: ResolvedScreenShareMode = quality
+        ? resolveMode((options ?? getScreenShareOptions()).mode, quality)
+        : "balanced";
+      const sendCodec: ResolvedScreenShareCodec = quality
+        ? resolveCodec((options ?? getScreenShareOptions()).codec, quality)
+        : "default";
+      applyContentHint(track, sendMode);
       // K.5(c): подцепляем системный audio-track (если acquireScreenShareStream
       // вернул hasSystemAudio). Отдельный sender — не конфликтует с mic'ом.
       const audioTrack = displayStream.getAudioTracks()[0] ?? null;
@@ -453,7 +473,7 @@ export class VoiceChannelManager {
       }
       // hadCamera → screen занимает video-слот камеры (replaceTrack, без
       // renegotiation); иначе — новый video sender (addTrack).
-      await this.mediaReplaceOrAddVideo(track, hadCamera);
+      await this.mediaReplaceOrAddVideo(track, hadCamera, sendCodec);
       if (audioTrack) {
         if (this.localStream) this.localStream.addTrack(audioTrack);
         this.mediaAddTrack(audioTrack);
@@ -463,7 +483,7 @@ export class VoiceChannelManager {
       // динамики/игр мало. setParameters async, ошибки в каждом peer'е
       // игнорим — peer может уже быть закрыт.
       if (quality) {
-        await this.applyScreenShareEncoding(quality);
+        await this.applyScreenShareEncoding(quality, sendMode);
       }
       this.update({ screenSharing: true, cameraOn: false, error: null });
       this.broadcastState();
@@ -551,9 +571,13 @@ export class VoiceChannelManager {
     }
   }
 
-  private async mediaReplaceOrAddVideo(track: MediaStreamTrack, preferReplace: boolean): Promise<void> {
+  private async mediaReplaceOrAddVideo(
+    track: MediaStreamTrack,
+    preferReplace: boolean,
+    codec: ResolvedScreenShareCodec = "default"
+  ): Promise<void> {
     if (this.sfu) {
-      if (this.localStream) await this.sfu.replaceOrAddVideo(track, this.localStream, preferReplace);
+      if (this.localStream) await this.sfu.replaceOrAddVideo(track, this.localStream, preferReplace, codec);
       return;
     }
     for (const peer of this.peers.values()) {
@@ -569,7 +593,8 @@ export class VoiceChannelManager {
         }
       }
       try {
-        peer.pc.addTrack(track, this.localStream!);
+        const sender = peer.pc.addTrack(track, this.localStream!);
+        applyCodecPreference(peer.pc.getTransceivers().find((t) => t.sender === sender), codec);
       } catch {
         /* ignore */
       }
@@ -847,31 +872,45 @@ export class VoiceChannelManager {
 
   // Применить cap на video sender'ах ВРУЧНУЮ (без переоткрытия
    // displayStream'а). Если screenshare сейчас не активен — no-op.
-  async applyScreenShareQuality(quality: ScreenShareQuality): Promise<void> {
+  async applyScreenShareQuality(quality: ScreenShareQuality, options?: ScreenShareOptions): Promise<void> {
     if (!this.screenTrack) return;
-    await this.applyScreenShareEncoding(quality);
+    const mode = resolveMode((options ?? getScreenShareOptions()).mode, quality);
+    applyContentHint(this.screenTrack, mode);
+    await this.applyScreenShareEncoding(quality, mode);
   }
 
-  private async applyScreenShareEncoding(quality: ScreenShareQuality): Promise<void> {
+  private async applyScreenShareEncoding(
+    quality: ScreenShareQuality,
+    mode: ResolvedScreenShareMode
+  ): Promise<void> {
     if (this.sfu) {
-      await this.sfu.applyVideoEncoding(quality);
+      await this.sfu.applyVideoEncoding(quality, mode);
       return;
     }
-    for (const peer of this.peers.values()) {
-      const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
-      if (!sender) continue;
-      try {
-        const params = sender.getParameters();
-        if (!params.encodings || params.encodings.length === 0) {
-          params.encodings = [{}];
-        }
-        params.encodings[0].maxBitrate = quality.maxBitrate;
-        params.encodings[0].maxFramerate = quality.frameRate;
-        await sender.setParameters(params);
-      } catch {
-        /* ignore — peer мог закрыться, либо браузер не поддерживает поле */
-      }
+    // Параметры sender'ов в mesh независимы, ждём их параллельно: ошибка
+    // одного (peer закрылся, поле не поддержано) не должна задерживать остальных.
+    await Promise.all(
+      [...this.peers.values()].map(async (peer) => {
+        const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
+        if (sender) await applySenderTuning(sender, quality, mode);
+      })
+    );
+  }
+
+  // Статистика видео для диагностики плавности (настройки → голос).
+  // Собирает исходящий поток демонстрации и входящие видеопотоки.
+  private readonly videoStats = new VideoStatsCollector();
+
+  async collectVideoStats(): Promise<VideoStatsSnapshot> {
+    const pcs: Array<{ pc: RTCPeerConnection; role: "pub" | "sub" | "mesh" }> = [];
+    if (this.sfu) {
+      const { pub, sub } = this.sfu.getPeerConnections();
+      if (pub) pcs.push({ pc: pub, role: "pub" });
+      if (sub) pcs.push({ pc: sub, role: "sub" });
+    } else {
+      for (const peer of this.peers.values()) pcs.push({ pc: peer.pc, role: "mesh" });
     }
+    return this.videoStats.collect(pcs);
   }
 
   private handleState(p: RelayPayload): void {

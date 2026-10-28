@@ -1,36 +1,33 @@
 // K.5/K.9: enumerate screen-источников (мониторы + окна) и захват кадров
-// через `xcap`. JS-сторона периодически вызывает `screen_capture_frame`
-// и собирает MediaStream из возвращённых JPEG-байтов через
-// MediaStreamTrackGenerator. Это даёт собственный picker (K.5) и убирает
-// браузерную плашку «сайт делает демонстрацию вашего экрана» (K.9) —
-// для WebView2 это просто обычный video-track, не screen-share.
+// через `xcap`. JS-сторона вызывает `screen_capture_frame` и собирает
+// MediaStream из возвращённых JPEG-байтов через MediaStreamTrackGenerator.
+// Это даёт собственный picker (K.5) и убирает браузерную плашку «сайт делает
+// демонстрацию вашего экрана» (K.9).
 //
-// K.5(b) — background-thread caching pipeline. Раньше каждый JS-invoke
-// делал свежий xcap::Monitor::all() + capture_image() + JPEG-encode
-// синхронно в потоке invoke-handler'а: ~50-80мс per frame на 1080p,
-// блокировал invoke-thread, и Monitor::all() сканирует все мониторы
-// заново при каждом запросе. Теперь старт capture-сессии (`ensure_session`)
-// запускает выделенный поток, который захватывает + JPEG-encode'ит
-// кадры в `Mutex<Option<CachedFrame>>`. JS-invoke просто читает кэш —
-// мгновенно. Сессия живёт пока есть активность (last_read обновляется
-// при каждом screen_capture_frame); после 5s простоя поток сам выходит,
-// освобождая монитор.
+// Устройство (после оптимизации плавности):
+//  * Старт сессии запускает выделенный поток: он один раз находит источник
+//    (раньше `Monitor::all()` / `Window::all()` сканировались на КАЖДЫЙ кадр),
+//    захватывает, кодирует JPEG и кладёт последний кадр в слот с номером.
+//  * Поток выдерживает целевой FPS по дедлайну: время захвата и кодирования
+//    вычитается из паузы, а не прибавляется к ней (раньше фактический FPS был
+//    заметно ниже 15 и не зависел от выбранного пресета).
+//  * `screen_capture_frame` ждёт на Condvar следующий кадр (не отдаёт один и
+//    тот же кадр дважды) и возвращает сырые JPEG-байты бинарным ответом IPC:
+//    без base64 (+33% объёма) и без разбора JSON на стороне WebView.
+//  * Сессия живёт, пока есть чтение; после 5 с простоя поток выходит.
 //
-// xcap на Windows внутри использует DXGI Desktop Duplication — это уже
-// GPU-accelerated capture. То что мы хотели от K.5(b) hw-accel:
-// (1) не дёргать capture per JS-frame, (2) не блокировать invoke-thread.
-// Обе цели закрыты этой архитектурой. Полная замена на windows-capture
-// crate (raw WGC API) могла бы дать ещё выигрыш на GPU-side encoding,
-// но требует отдельной интеграции — оставлено как возможный шаг.
+// Потолок производительности этого пути — CPU-кодирование JPEG и копирование
+// через IPC; для настоящих 60 FPS клиент использует getDisplayMedia (см.
+// screenSharePicker.ts), а этот путь остаётся совместимым вариантом.
 
-use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use image::codecs::jpeg::JpegEncoder;
 use image::{ImageBuffer, Rgba};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Serialize)]
@@ -43,36 +40,77 @@ pub struct SourceInfo {
     pub thumbnail: String, // base64 JPEG, ~320px
 }
 
-#[derive(Serialize)]
-pub struct CapturedFrame {
-    pub width: u32,
-    pub height: u32,
-    pub jpeg: String, // base64
+// Последний готовый кадр: монотонный номер + JPEG-байты.
+struct FrameSlot {
+    seq: u64,
+    jpeg: Arc<Vec<u8>>,
 }
 
-#[derive(Clone)]
-struct CachedFrame {
-    width: u32,
-    height: u32,
-    jpeg: String,
+struct Shared {
+    frame: Mutex<Option<FrameSlot>>,
+    ready: Condvar,
 }
 
 struct Session {
     stop: Arc<AtomicBool>,
-    latest: Arc<Mutex<Option<CachedFrame>>>,
+    // Поток завершился (окно закрыли, монитор пропал) — читателю вернётся
+    // ошибка, а не бесконечные пустые ответы.
+    dead: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     last_read: Arc<Mutex<Instant>>,
-    quality: Arc<Mutex<u8>>,
+    quality: Arc<AtomicU8>,
+    fps: Arc<AtomicU32>,
+    served_seq: AtomicU64,
 }
 
 // Глобальный реестр живых capture-сессий. Ключ — `monitor:<id>` / `window:<id>`.
-// OnceLock ленивая инициализация, потокобезопасная.
-fn sessions() -> &'static Mutex<HashMap<String, Session>> {
-    static SESSIONS: OnceLock<Mutex<HashMap<String, Session>>> = OnceLock::new();
+fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<Session>>>> = OnceLock::new();
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
-const CAPTURE_INTERVAL: Duration = Duration::from_millis(66); // ~15 fps
+// Сколько вызов `screen_capture_frame` ждёт новый кадр, прежде чем вернуть
+// пустой ответ (JS просто повторит запрос; нужно, чтобы остановка не висела).
+const FRAME_WAIT: Duration = Duration::from_millis(250);
+
+enum Source {
+    Monitor(xcap::Monitor),
+    Window(xcap::Window),
+}
+
+impl Source {
+    fn resolve(id: &str) -> Result<Source, String> {
+        let (kind, raw_id) = id.split_once(':').ok_or_else(|| "invalid id".to_string())?;
+        match kind {
+            "monitor" => xcap::Monitor::all()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|m| m.id().to_string() == raw_id)
+                .map(Source::Monitor)
+                .ok_or_else(|| "monitor not found".to_string()),
+            "window" => xcap::Window::all()
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .find(|w| w.id().to_string() == raw_id)
+                .map(Source::Window)
+                .ok_or_else(|| "window not found".to_string()),
+            _ => Err("unknown kind".to_string()),
+        }
+    }
+
+    fn capture(&self) -> Result<ImageBuffer<Rgba<u8>, Vec<u8>>, String> {
+        let img = match self {
+            Source::Monitor(m) => m.capture_image(),
+            Source::Window(w) => w.capture_image(),
+        }
+        .map_err(|e| e.to_string())?;
+        if img.width() == 0 || img.height() == 0 {
+            return Err("capture returned empty buffer".to_string());
+        }
+        Ok(img)
+    }
+}
 
 #[tauri::command]
 pub fn screen_list_sources() -> Result<Vec<SourceInfo>, String> {
@@ -126,153 +164,157 @@ pub fn screen_list_sources() -> Result<Vec<SourceInfo>, String> {
     Ok(out)
 }
 
+// Возвращает сырые JPEG-байты (ArrayBuffer на стороне JS). Пустой ответ
+// означает «нового кадра пока нет» — вызывающий просто повторяет запрос.
+// Команда асинхронная и ждёт в blocking-пуле, чтобы не занимать главный
+// поток окна.
 #[tauri::command]
-pub fn screen_capture_frame(id: String, quality: Option<u8>) -> Result<CapturedFrame, String> {
+pub async fn screen_capture_frame(
+    id: String,
+    quality: Option<u8>,
+    fps: Option<u32>,
+) -> Result<tauri::ipc::Response, String> {
     let q = quality.unwrap_or(70).clamp(20, 95);
+    let fps = fps.unwrap_or(15).clamp(1, 60);
+    let bytes = tauri::async_runtime::spawn_blocking(move || next_frame(&id, q, fps))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
 
-    // Если сессии нет — стартуем фоном и параллельно делаем синхронный кадр,
-    // чтобы caller сразу получил что-то отрисовать (иначе придётся ждать
-    // первый tick capture-thread'а ~66мс).
-    ensure_session(&id, q)?;
+fn next_frame(id: &str, quality: u8, fps: u32) -> Result<Vec<u8>, String> {
+    let session = ensure_session(id, quality, fps)?;
+    if let Ok(mut t) = session.last_read.lock() {
+        *t = Instant::now();
+    }
+    // Качество и FPS подхватываются потоком на следующем кадре.
+    session.quality.store(quality, Ordering::Relaxed);
+    session.fps.store(fps, Ordering::Relaxed);
 
-    // Обновим last_read под session-lock; quality тоже передадим — поток
-    // подберёт новое значение на следующем tick'е.
-    {
-        let map = sessions().lock().map_err(|_| "session lock poisoned".to_string())?;
-        if let Some(s) = map.get(&id) {
-            if let Ok(mut t) = s.last_read.lock() {
-                *t = Instant::now();
-            }
-            if let Ok(mut qg) = s.quality.lock() {
-                *qg = q;
-            }
-            if let Ok(latest) = s.latest.lock() {
-                if let Some(f) = latest.as_ref() {
-                    return Ok(CapturedFrame {
-                        width: f.width,
-                        height: f.height,
-                        jpeg: f.jpeg.clone(),
-                    });
-                }
+    let served = session.served_seq.load(Ordering::Relaxed);
+    let mut guard = session
+        .shared
+        .frame
+        .lock()
+        .map_err(|_| "frame lock poisoned".to_string())?;
+    let deadline = Instant::now() + FRAME_WAIT;
+    loop {
+        if let Some(slot) = guard.as_ref() {
+            if slot.seq > served {
+                session.served_seq.store(slot.seq, Ordering::Relaxed);
+                return Ok(slot.jpeg.as_ref().clone());
             }
         }
+        if session.dead.load(Ordering::Relaxed) {
+            return Err("capture source is gone".to_string());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(Vec::new());
+        }
+        let (g, _) = session
+            .shared
+            .ready
+            .wait_timeout(guard, deadline - now)
+            .map_err(|_| "frame lock poisoned".to_string())?;
+        guard = g;
     }
-
-    // Кэш ещё пуст (поток не успел отдать первый кадр) — делаем синхронный
-    // capture как fallback. На холодном старте gives caller что-то показать
-    // моментально.
-    capture_once(&id, q)
 }
 
-fn ensure_session(id: &str, quality: u8) -> Result<(), String> {
-    let mut map = sessions().lock().map_err(|_| "session lock poisoned".to_string())?;
-    if map.contains_key(id) {
-        return Ok(());
+fn ensure_session(id: &str, quality: u8, fps: u32) -> Result<Arc<Session>, String> {
+    let mut map = sessions()
+        .lock()
+        .map_err(|_| "session lock poisoned".to_string())?;
+    if let Some(s) = map.get(id) {
+        // Мёртвую сессию (источник пропал) не переиспользуем: пусть следующий
+        // вызов честно попробует найти источник заново.
+        if !s.dead.load(Ordering::Relaxed) && !s.stop.load(Ordering::Relaxed) {
+            return Ok(s.clone());
+        }
+        map.remove(id);
     }
-    let stop = Arc::new(AtomicBool::new(false));
-    let latest = Arc::new(Mutex::new(None::<CachedFrame>));
-    let last_read = Arc::new(Mutex::new(Instant::now()));
-    let q_holder = Arc::new(Mutex::new(quality));
-
-    let id_owned = id.to_string();
-    let stop_t = stop.clone();
-    let latest_t = latest.clone();
-    let last_read_t = last_read.clone();
-    let q_holder_t = q_holder.clone();
-
-    std::thread::spawn(move || {
-        capture_loop(id_owned, stop_t, latest_t, last_read_t, q_holder_t);
+    let session = Arc::new(Session {
+        stop: Arc::new(AtomicBool::new(false)),
+        dead: Arc::new(AtomicBool::new(false)),
+        shared: Arc::new(Shared {
+            frame: Mutex::new(None),
+            ready: Condvar::new(),
+        }),
+        last_read: Arc::new(Mutex::new(Instant::now())),
+        quality: Arc::new(AtomicU8::new(quality)),
+        fps: Arc::new(AtomicU32::new(fps)),
+        served_seq: AtomicU64::new(0),
     });
-
-    map.insert(
-        id.to_string(),
-        Session {
-            stop,
-            latest,
-            last_read,
-            quality: q_holder,
-        },
-    );
-    Ok(())
+    let worker = session.clone();
+    let id_owned = id.to_string();
+    std::thread::spawn(move || {
+        capture_loop(&id_owned, &worker);
+        worker.dead.store(true, Ordering::Relaxed);
+        // Разбудить читателя, чтобы он увидел `dead`.
+        worker.shared.ready.notify_all();
+        if let Ok(mut map) = sessions().lock() {
+            if map.get(&id_owned).map(|s| Arc::ptr_eq(s, &worker)).unwrap_or(false) {
+                map.remove(&id_owned);
+            }
+        }
+    });
+    map.insert(id.to_string(), session.clone());
+    Ok(session)
 }
 
-fn capture_loop(
-    id: String,
-    stop: Arc<AtomicBool>,
-    latest: Arc<Mutex<Option<CachedFrame>>>,
-    last_read: Arc<Mutex<Instant>>,
-    quality: Arc<Mutex<u8>>,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        // Idle-timeout: если давно никто не читал — выходим.
-        if let Ok(t) = last_read.lock() {
+fn capture_loop(id: &str, session: &Session) {
+    let mut source = match Source::resolve(id) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let mut seq: u64 = 0;
+    let mut failures = 0u32;
+    while !session.stop.load(Ordering::Relaxed) {
+        if let Ok(t) = session.last_read.lock() {
             if t.elapsed() > SESSION_IDLE_TIMEOUT {
-                drop(t);
                 break;
             }
         }
-        let q = quality.lock().map(|g| *g).unwrap_or(70);
-        match capture_once(&id, q) {
-            Ok(frame) => {
-                if let Ok(mut slot) = latest.lock() {
-                    *slot = Some(CachedFrame {
-                        width: frame.width,
-                        height: frame.height,
-                        jpeg: frame.jpeg,
-                    });
+        let started = Instant::now();
+        let fps = session.fps.load(Ordering::Relaxed).clamp(1, 60);
+        let quality = session.quality.load(Ordering::Relaxed);
+        match source.capture() {
+            Ok(img) => {
+                failures = 0;
+                let jpeg = encode_jpeg_bytes(&img, quality);
+                if !jpeg.is_empty() {
+                    seq += 1;
+                    if let Ok(mut slot) = session.shared.frame.lock() {
+                        *slot = Some(FrameSlot {
+                            seq,
+                            jpeg: Arc::new(jpeg),
+                        });
+                    }
+                    session.shared.ready.notify_all();
                 }
             }
             Err(_) => {
-                // Окно/монитор пропали — выходим, освобождаем слот.
-                break;
-            }
-        }
-        std::thread::sleep(CAPTURE_INTERVAL);
-    }
-    // Удаляем себя из реестра. Snipe-condition с ensure_session защищена
-    // через map-lock: если кто-то параллельно зашёл и нашёл нашу запись —
-    // он обновит last_read и решит, что мы живы; но мы выйдем. Тогда при
-    // следующем screen_capture_frame ensure_session создаст новую сессию.
-    if let Ok(mut map) = sessions().lock() {
-        map.remove(&id);
-    }
-}
-
-fn capture_once(id: &str, quality: u8) -> Result<CapturedFrame, String> {
-    let (kind, raw_id) = id.split_once(':').ok_or_else(|| "invalid id".to_string())?;
-    if kind == "monitor" {
-        let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
-        for m in monitors.iter() {
-            if m.id().to_string() == raw_id {
-                let img = m.capture_image().map_err(|e| e.to_string())?;
-                let (w, h) = (img.width(), img.height());
-                return Ok(CapturedFrame {
-                    width: w,
-                    height: h,
-                    jpeg: encode_jpeg(&img, quality),
-                });
-            }
-        }
-        Err("monitor not found".to_string())
-    } else if kind == "window" {
-        let windows = xcap::Window::all().map_err(|e| e.to_string())?;
-        for w in windows.iter() {
-            if w.id().to_string() == raw_id {
-                let img = w.capture_image().map_err(|e| e.to_string())?;
-                let (ww, hh) = (img.width(), img.height());
-                if ww == 0 || hh == 0 {
-                    return Err("window capture returned empty buffer".to_string());
+                // Дескриптор мог устареть (смена режима экрана, окно пересоздано):
+                // пробуем найти источник заново, и только после нескольких
+                // неудач считаем, что он пропал.
+                failures += 1;
+                if failures > 5 {
+                    break;
                 }
-                return Ok(CapturedFrame {
-                    width: ww,
-                    height: hh,
-                    jpeg: encode_jpeg(&img, quality),
-                });
+                match Source::resolve(id) {
+                    Ok(s) => source = s,
+                    Err(_) => break,
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
             }
         }
-        Err("window not found".to_string())
-    } else {
-        Err("unknown kind".to_string())
+        // Дедлайн-пейсинг: из паузы вычитаем время, потраченное на кадр.
+        let interval = Duration::from_micros(1_000_000 / fps as u64);
+        let spent = started.elapsed();
+        if spent < interval {
+            std::thread::sleep(interval - spent);
+        }
     }
 }
 
@@ -283,28 +325,49 @@ pub fn screen_capture_stop_all() -> Result<(), String> {
     if let Ok(map) = sessions().lock() {
         for s in map.values() {
             s.stop.store(true, Ordering::Relaxed);
+            s.shared.ready.notify_all();
         }
     }
     Ok(())
 }
 
-fn encode_jpeg(img: &ImageBuffer<Rgba<u8>, Vec<u8>>, quality: u8) -> String {
+// JPEG-энкодер image не принимает Rgba8, поэтому альфа отбрасывается
+// явно. Буфер заранее выделяется под нужный размер и заполняется
+// одним проходом по пикселям (без push по байту).
+fn encode_jpeg_bytes(img: &ImageBuffer<Rgba<u8>, Vec<u8>>, quality: u8) -> Vec<u8> {
     let (w, h) = (img.width(), img.height());
     let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
-    for px in img.pixels() {
-        rgb.push(px[0]);
-        rgb.push(px[1]);
-        rgb.push(px[2]);
+    for px in img.as_raw().chunks_exact(4) {
+        rgb.extend_from_slice(&px[..3]);
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity((w as usize) * (h as usize) / 8);
     let mut encoder = JpegEncoder::new_with_quality(&mut out, quality);
     if encoder
         .encode(&rgb, w, h, image::ExtendedColorType::Rgb8)
         .is_err()
     {
-        return String::new();
+        return Vec::new();
     }
-    B64.encode(&out)
+    out
+}
+
+fn encode_jpeg(img: &ImageBuffer<Rgba<u8>, Vec<u8>>, quality: u8) -> String {
+    B64.encode(encode_jpeg_bytes(img, quality))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encodes_rgba_to_valid_jpeg() {
+        let img = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_pixel(64, 48, Rgba([10, 200, 30, 255]));
+        let jpeg = encode_jpeg_bytes(&img, 70);
+        assert!(jpeg.len() > 100);
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "JPEG должен начинаться с SOI");
+        let decoded = image::load_from_memory_with_format(&jpeg, image::ImageFormat::Jpeg);
+        assert!(decoded.is_ok());
+    }
 }
 
 // Простая bilinear-уменьшалка для thumbnail'ов. Возвращает base64-JPEG ~max_dim x max_dim aspect-preserving.

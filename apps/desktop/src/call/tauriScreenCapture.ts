@@ -1,5 +1,5 @@
-// K.5/K.9: своя screen-share pipeline через Tauri commands. Polling 15fps
-// через `invoke("screen_capture_frame")`, base64 JPEG → Blob → ImageBitmap
+// K.5/K.9: своя screen-share pipeline через Tauri commands. Запрос кадров
+// через `invoke("screen_capture_frame")`, JPEG (ArrayBuffer) → Blob → ImageBitmap
 // → VideoFrame → MediaStreamTrackGenerator → MediaStream. Браузер не видит
 // это как getDisplayMedia — баннер «сайт делает демонстрацию» не появляется
 // (K.9).
@@ -8,10 +8,10 @@
 // ошибка Tauri-команды → `isAvailable() === false`, caller использует
 // старый `getDisplayMedia` как fallback.
 //
-// Performance: 15 fps, JPEG quality 60-70, max ~1080p. CPU ~5-10% одного
-// ядра на Windows. Latency end-to-end ~150ms (capture+encode+invoke+
-// decode+display). Достаточно для разговорного screen-share, для геймплея
-// нужен HW-accelerated WGC — отдельный пункт.
+// Performance: JPEG-кодирование на CPU и копирование через IPC ограничивают
+// путь примерно 15-25 кадрами/с на 1080p (оценка по устройству, замеров на
+// живом стриме нет). Для 60 FPS клиент использует getDisplayMedia, см.
+// screenSharePicker.ts. Кадры идут бинарным ответом IPC, а не base64.
 
 export interface ScreenSource {
   id: string;
@@ -20,12 +20,6 @@ export interface ScreenSource {
   width: number;
   height: number;
   thumbnail: string; // base64 JPEG, без префикса data:
-}
-
-interface CapturedFrame {
-  width: number;
-  height: number;
-  jpeg: string;
 }
 
 // Лениво ищем @tauri-apps/api invoke. На web-сборке его нет.
@@ -94,57 +88,71 @@ export async function startCapture(sourceId: string, fps = 15, quality = 65): Pr
   const stream = new MediaStream([trackGen]);
 
   let stopped = false;
-  let frameNum = 0;
+  let presenting = false;
   const startTs = performance.now();
 
-  // Polling-loop. Между кадрами выдерживаем 1000/fps мс; если предыдущий
-  // invoke ещё не вернулся — пропускаем тик (не накапливаем backlog).
-  const tick = async (): Promise<void> => {
-    if (stopped) return;
-    try {
-      const frame = (await invoke("screen_capture_frame", { id: sourceId, quality })) as CapturedFrame;
-      if (stopped) return;
-      // base64 → ArrayBuffer → ImageBitmap → VideoFrame.
-      const bin = atob(frame.jpeg);
-      const buf = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-      const blob = new Blob([buf.buffer as ArrayBuffer], { type: "image/jpeg" });
-      const bitmap = await createImageBitmap(blob);
-      if (stopped) {
-        bitmap.close();
-        return;
-      }
-      const timestamp = Math.round((performance.now() - startTs) * 1000); // µs
-      const vf = new VideoFrame(bitmap, { timestamp });
-      try {
-        await writer.write(vf);
-      } finally {
-        vf.close();
-        bitmap.close();
-      }
-      frameNum++;
-    } catch (err) {
-      // Окно закрыли / монитор отключили → останавливаем capture, чтобы
-      // не спамить ошибками. Caller увидит, что stream завершился.
-      console.warn("[screen-capture] frame error", err);
-      stopped = true;
-      try { await writer.close(); } catch { /* already closed */ }
-      trackGen.stop();
-      active = null;
+  // Показ кадра: JPEG → ImageBitmap → VideoFrame → трек. Идёт параллельно
+  // со следующим запросом кадра в Rust (конвейер): пока предыдущий кадр
+  // декодируется, уже готовится следующий. Если декодирование не успевает,
+  // лишние кадры отбрасываются (всегда показываем самый свежий), а не
+  // копятся в очереди и не раздувают задержку.
+  const present = async (jpeg: ArrayBuffer): Promise<void> => {
+    const bitmap = await createImageBitmap(new Blob([jpeg], { type: "image/jpeg" }));
+    if (stopped) {
+      bitmap.close();
       return;
     }
-    if (!stopped) {
-      setTimeout(tick, Math.max(1, Math.floor(1000 / fps)));
+    const timestamp = Math.round((performance.now() - startTs) * 1000); // µs
+    const vf = new VideoFrame(bitmap, { timestamp });
+    try {
+      await writer.write(vf);
+    } finally {
+      vf.close();
+      bitmap.close();
     }
   };
 
-  void tick();
+  const fail = async (err: unknown): Promise<void> => {
+    // Окно закрыли / монитор отключили → останавливаем capture, чтобы
+    // не спамить ошибками. Caller увидит, что stream завершился.
+    console.warn("[screen-capture] frame error", err);
+    stopped = true;
+    try { await writer.close(); } catch { /* already closed */ }
+    trackGen.stop();
+    active = null;
+  };
+
+  // Rust сам выдерживает FPS и отдаёт новый кадр, как только он готов
+  // (пустой ответ = «кадра пока нет», просто спрашиваем снова), поэтому
+  // таймеров на стороне JS нет: они только добавляли бы задержку.
+  const loop = async (): Promise<void> => {
+    while (!stopped) {
+      let buf: ArrayBuffer;
+      try {
+        buf = (await invoke("screen_capture_frame", { id: sourceId, quality, fps })) as ArrayBuffer;
+      } catch (err) {
+        if (!stopped) await fail(err);
+        return;
+      }
+      if (stopped) return;
+      if (!(buf instanceof ArrayBuffer) || buf.byteLength === 0) continue;
+      if (presenting) continue; // декодер занят — этот кадр устарел
+      presenting = true;
+      void present(buf)
+        .catch((err) => { if (!stopped) void fail(err); })
+        .finally(() => { presenting = false; });
+    }
+  };
+
+  void loop();
 
   const stop = (): void => {
     stopped = true;
     try { void writer.close(); } catch { /* ignore */ }
     trackGen.stop();
     if (active && active.stream === stream) active = null;
+    // Capture-поток в Rust иначе жил бы ещё 5 с простоя.
+    void invoke("screen_capture_stop_all").catch(() => { /* не критично */ });
   };
 
   active = { stream, stop };

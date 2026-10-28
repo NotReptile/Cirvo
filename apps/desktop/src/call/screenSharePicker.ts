@@ -16,6 +16,11 @@ import {
   type ScreenSource
 } from "./tauriScreenCapture";
 import {
+  DEFAULT_SCREEN_SHARE_OPTIONS,
+  shouldUseNativeCapture,
+  type ScreenShareOptions
+} from "./screenShareTuning";
+import {
   isAudioAvailable as isScreenAudioAvailable,
   startScreenAudio,
   stopScreenAudio
@@ -43,46 +48,85 @@ interface PickerChoice {
   includeAudio: boolean;
 }
 
-export async function acquireScreenShareStream(quality?: ScreenShareQuality): Promise<AcquireResult> {
-  if (await isTauriCaptureAvailable()) {
-    let sources: ScreenSource[];
+// Собственный захват Tauri отдаёт JPEG-кадры через IPC: на 1080p он
+// упирается в кодирование JPEG и копирование, реальные ~15–25 FPS и лишние
+// 100+ мс задержки, поэтому для 60 FPS и разрешений выше 1080p в режиме
+// «авто» используем нативный getDisplayMedia (аппаратный захват WebView2).
+// Если нативный путь не поддержан рантаймом, откатываемся на захват Tauri.
+export async function acquireScreenShareStream(
+  quality?: ScreenShareQuality,
+  options: ScreenShareOptions = DEFAULT_SCREEN_SHARE_OPTIONS
+): Promise<AcquireResult> {
+  if (!(await isTauriCaptureAvailable())) return acquireDisplayMedia(quality);
+  if (shouldUseNativeCapture(options.capture, quality)) {
+    const startedAt = performance.now();
     try {
-      sources = await listSources();
-    } catch (err) {
-      console.warn("[screen-share] Tauri listSources failed, fallback to getDisplayMedia", err);
-      return acquireDisplayMedia(quality);
-    }
-    if (sources.length === 0) {
-      return acquireDisplayMedia(quality);
-    }
-    const audioAvailable = await isScreenAudioAvailable();
-    const picked = await showPicker(sources, audioAvailable);
-    if (!picked) {
-      throw new Error("screen share cancelled");
-    }
-    // K.5(a): quality preset → fps + JPEG quality. Resolution = native размер
-    // источника (нельзя апскейлить экран без encoder-side), но frameRate
-    // и JPEG-качество можно подстроить под выбранный пресет:
-    //   SD (≤540p) — quality 50, низкая нагрузка
-    //   HD (≤720p) — quality 60
-    //   FHD (≤1080p) — quality 70 (default)
-    //   4K (>1080p) — quality 80, для статичных скринов
-    const fps = quality?.frameRate ?? 15;
-    const jpegQuality = quality ? presetToJpegQuality(quality.height) : 65;
-    const stream = await startCapture(picked.source.id, fps, jpegQuality);
-    let hasSystemAudio = false;
-    if (picked.includeAudio) {
-      try {
-        const audioTrack = await startScreenAudio();
-        stream.addTrack(audioTrack);
-        hasSystemAudio = true;
-      } catch (err) {
-        console.warn("[screen-share] system audio failed, продолжаем без него", err);
+      const result = await acquireDisplayMedia(quality);
+      if (!result.hasSystemAudio && (await isScreenAudioAvailable())) {
+        try {
+          result.stream.addTrack(await startScreenAudio());
+          return { ...result, hasSystemAudio: true };
+        } catch (err) {
+          console.warn("[screen-share] system audio failed, продолжаем без него", err);
+        }
       }
+      return result;
+    } catch (err) {
+      if (options.capture === "native" || !isCaptureUnsupported(err, performance.now() - startedAt)) {
+        throw err;
+      }
+      console.warn("[screen-share] getDisplayMedia unavailable, fallback to Tauri capture", err);
     }
-    return { stream, fromTauri: true, hasSystemAudio };
   }
-  return acquireDisplayMedia(quality);
+  return acquireTauriCapture(quality);
+}
+
+// Ошибка «захват не поддержан», а не «пользователь отказался»: человек не
+// успеет закрыть системный выбор источника быстрее ~400 мс, поэтому
+// мгновенный NotAllowedError означает, что рантайм вообще не даёт захват.
+function isCaptureUnsupported(err: unknown, elapsedMs: number): boolean {
+  const name = err instanceof DOMException || err instanceof Error ? err.name : "";
+  if (name === "NotSupportedError" || name === "TypeError" || name === "NotFoundError") return true;
+  return name === "NotAllowedError" && elapsedMs < 400;
+}
+
+async function acquireTauriCapture(quality?: ScreenShareQuality): Promise<AcquireResult> {
+  let sources: ScreenSource[];
+  try {
+    sources = await listSources();
+  } catch (err) {
+    console.warn("[screen-share] Tauri listSources failed, fallback to getDisplayMedia", err);
+    return acquireDisplayMedia(quality);
+  }
+  if (sources.length === 0) {
+    return acquireDisplayMedia(quality);
+  }
+  const audioAvailable = await isScreenAudioAvailable();
+  const picked = await showPicker(sources, audioAvailable);
+  if (!picked) {
+    throw new Error("screen share cancelled");
+  }
+  // K.5(a): quality preset → fps + JPEG quality. Resolution = native размер
+  // источника (в sender'е он приводится к пресету через scaleResolutionDownBy),
+  // frameRate и JPEG-качество подстраиваются под выбранный пресет:
+  //   SD (≤540p) — quality 50, низкая нагрузка
+  //   HD (≤720p) — quality 60
+  //   FHD (≤1080p) — quality 70 (default)
+  //   4K (>1080p) — quality 80, для статичных скринов
+  const fps = quality?.frameRate ?? 15;
+  const jpegQuality = quality ? presetToJpegQuality(quality.height) : 65;
+  const stream = await startCapture(picked.source.id, fps, jpegQuality);
+  let hasSystemAudio = false;
+  if (picked.includeAudio) {
+    try {
+      const audioTrack = await startScreenAudio();
+      stream.addTrack(audioTrack);
+      hasSystemAudio = true;
+    } catch (err) {
+      console.warn("[screen-share] system audio failed, продолжаем без него", err);
+    }
+  }
+  return { stream, fromTauri: true, hasSystemAudio };
 }
 
 // K.5(c): caller обязан звать это в свой stopScreenShare-flow если
@@ -99,11 +143,15 @@ function presetToJpegQuality(height: number): number {
 }
 
 async function acquireDisplayMedia(quality?: ScreenShareQuality): Promise<AcquireResult> {
-  const videoConstraints: MediaTrackConstraints = quality
+  // frameRate: ideal просит нужный FPS, max не даёт драйверу захвата
+  // выдавать лишнее (на 144 Гц мониторе иначе кодер получал бы 144 кадра/с).
+  // cursor: курсор рисуется в кадре, а не отдельным слоем.
+  const videoConstraints: MediaTrackConstraints & { cursor?: string } = quality
     ? {
-        width: { ideal: quality.width },
-        height: { ideal: quality.height },
-        frameRate: { ideal: quality.frameRate }
+        width: { ideal: quality.width, max: quality.width },
+        height: { ideal: quality.height, max: quality.height },
+        frameRate: { ideal: quality.frameRate, max: quality.frameRate },
+        cursor: "always"
       }
     : {};
   const stream = await navigator.mediaDevices.getDisplayMedia({ video: videoConstraints });

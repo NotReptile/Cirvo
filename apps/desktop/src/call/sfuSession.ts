@@ -14,6 +14,12 @@
 // клиент, на sub-PC — только сервер. Perfect-negotiation не нужен.
 
 import type { ScreenShareQuality } from "./voiceChannelManager";
+import {
+  applyCodecPreference,
+  applySenderTuning,
+  type ResolvedScreenShareCodec,
+  type ResolvedScreenShareMode,
+} from "./screenShareTuning";
 import { resolveSfuWsUrl } from "./sfuUrl";
 
 interface SfuSessionOptions {
@@ -210,7 +216,12 @@ export class SfuSession {
   // replaceOrAddVideo: если уже есть video-sender (камера/экран сменяют
   // друг друга на одном «слоте») — replaceTrack без renegotiation; иначе
   // addTrack (renegotiation через negotiationneeded).
-  async replaceOrAddVideo(track: MediaStreamTrack, stream: MediaStream, preferReplace: boolean): Promise<void> {
+  async replaceOrAddVideo(
+    track: MediaStreamTrack,
+    stream: MediaStream,
+    preferReplace: boolean,
+    codec: ResolvedScreenShareCodec = "default"
+  ): Promise<void> {
     if (!this.pub) return;
     if (preferReplace) {
       const sender = this.pub.getSenders().find((s) => s.track?.kind === "video");
@@ -223,24 +234,23 @@ export class SfuSession {
         return;
       }
     }
-    this.pub.addTrack(track, stream);
+    const sender = this.pub.addTrack(track, stream);
+    // Предпочтительный кодек действует на ближайшее согласование; остальные
+    // кодеки остаются в списке запасными.
+    applyCodecPreference(this.pub.getTransceivers().find((t) => t.sender === sender), codec);
   }
 
-  async applyVideoEncoding(quality: ScreenShareQuality): Promise<void> {
+  async applyVideoEncoding(quality: ScreenShareQuality, mode: ResolvedScreenShareMode): Promise<void> {
     if (!this.pub) return;
     const sender = this.pub.getSenders().find((s) => s.track?.kind === "video");
     if (!sender) return;
-    try {
-      const params = sender.getParameters();
-      if (!params.encodings || params.encodings.length === 0) {
-        params.encodings = [{}];
-      }
-      params.encodings[0].maxBitrate = quality.maxBitrate;
-      params.encodings[0].maxFramerate = quality.frameRate;
-      await sender.setParameters(params);
-    } catch {
-      /* ignore — браузер может не поддерживать поле */
-    }
+    await applySenderTuning(sender, quality, mode);
+  }
+
+  // Для диагностики (getStats): publisher-PC шлёт наши потоки, subscriber-PC
+  // принимает чужие.
+  getPeerConnections(): { pub: RTCPeerConnection | null; sub: RTCPeerConnection | null } {
+    return { pub: this.pub, sub: this.sub };
   }
 
   stop(): void {

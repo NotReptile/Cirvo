@@ -5,6 +5,14 @@
 // только через build*Constraints — иначе настройки не применятся в новых
 // звонках.
 
+import {
+  sanitizeScreenShareOptions,
+  type ScreenCaptureMethod,
+  type ScreenShareCodec,
+  type ScreenShareMode,
+  type ScreenShareOptions,
+} from "./screenShareTuning";
+
 export type CameraResolution = "360p" | "720p" | "1080p";
 
 // I.3: режимы шумоподавления. `off` — никакого NS; `browser` — нативный
@@ -40,6 +48,11 @@ export interface VoiceSettings {
   // микропаузах. 0 = моментально.
   pushToTalk: boolean;
   pttReleaseDelay: number; // 0..2000 ms
+  // Демонстрация экрана: приоритет плавность/чёткость, кодек отправки и
+  // способ захвата. Подробности и значения — в screenShareTuning.ts.
+  screenShareMode: ScreenShareMode;
+  screenShareCodec: ScreenShareCodec;
+  screenCaptureMethod: ScreenCaptureMethod;
 }
 
 const LS_KEY = "cirvo:voice-settings";
@@ -57,8 +70,22 @@ const DEFAULTS: VoiceSettings = {
   denoiserIntensity: 50,
   cameraEffect: "none",
   pushToTalk: false,
-  pttReleaseDelay: 200
+  pttReleaseDelay: 200,
+  screenShareMode: "auto",
+  screenShareCodec: "auto",
+  screenCaptureMethod: "auto"
 };
+
+// Значения из localStorage могли прийти от старой/битой версии — приводим
+// новые поля к допустимым.
+function normalize(s: VoiceSettings): VoiceSettings {
+  const o = sanitizeScreenShareOptions({
+    mode: s.screenShareMode,
+    codec: s.screenShareCodec,
+    capture: s.screenCaptureMethod
+  });
+  return { ...s, screenShareMode: o.mode, screenShareCodec: o.codec, screenCaptureMethod: o.capture };
+}
 
 const RESOLUTION_PROFILES: Record<CameraResolution, { width: number; height: number }> = {
   "360p": { width: 640, height: 360 },
@@ -75,7 +102,7 @@ function read(): VoiceSettings {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<VoiceSettings>;
-      cache = { ...DEFAULTS, ...parsed };
+      cache = normalize({ ...DEFAULTS, ...parsed });
       return cache;
     }
   } catch {
@@ -97,6 +124,11 @@ function write(next: VoiceSettings): void {
 
 export function getVoiceSettings(): VoiceSettings {
   return read();
+}
+
+export function getScreenShareOptions(): ScreenShareOptions {
+  const s = read();
+  return { mode: s.screenShareMode, codec: s.screenShareCodec, capture: s.screenCaptureMethod };
 }
 
 export function updateVoiceSettings(patch: Partial<VoiceSettings>): VoiceSettings {

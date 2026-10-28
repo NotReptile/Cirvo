@@ -798,7 +798,12 @@ export interface ProfileEditState {
 }
 
 export type ScreenShareQualityKey =
-  "720p30" | "1080p30" | "1080p60" | "1440p30";
+  | "720p30"
+  | "1080p30"
+  | "1080p60"
+  | "1440p30"
+  | "1440p60"
+  | "4k30";
 
 export interface VoicePeekParticipant {
   userId: string;
