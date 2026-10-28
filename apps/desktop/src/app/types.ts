@@ -20,6 +20,8 @@ export interface Me {
   presenceMode?: PresenceMode;
   customStatus?: string;
   updatedAt?: string;
+  // idle выставлен таймером неактивности (а не вручную): вернуть «В сети» при вводе.
+  autoIdle?: boolean;
   // I.6: расширенный профиль
   bio?: string;
   bannerColor?: string;

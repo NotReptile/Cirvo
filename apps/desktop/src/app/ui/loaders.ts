@@ -2,7 +2,7 @@ import { getVoiceSettings } from "../../call/voiceSettings";
 import { confirmDialog } from "../dialogs";
 import { bindEvent } from "../dom";
 import { describeError } from "../errors";
-import { applyPresenceSnapshot, presenceRevision, syncPresenceSurfaces } from "../presence";
+import { applyPresenceSnapshot, decideAutomaticStatus, presenceRevision, syncPresenceSurfaces } from "../presence";
 import { requestNotificationPermission, showDesktopNotification } from "../tauriNotifications";
 import {
   dispatchKeyDown as dispatchHotkeyDown,
@@ -33,6 +33,7 @@ import type {
   ForumPost,
   FriendItem,
   Invite,
+  Me,
   Member,
   Message,
   NotifLevel,
@@ -866,19 +867,48 @@ let statusWrites: Promise<void> = Promise.resolve();
 let statusVersion = 0;
 let externalStatusVersion = 0;
 
-export function applySelfPresenceUpdate(p: { userId: string; mode: PresenceMode; customStatus?: string; updatedAt?: string; sessionId?: string }): void {
+// Серверная запись статуса (с любого устройства) — источник правды. Флаг
+// autoIdle переносится целиком: idle, выставленный другим устройством
+// автоматически, тоже должен возвращаться в «В сети» при активности здесь.
+export function applySelfPresenceUpdate(p: { userId: string; mode: PresenceMode; customStatus?: string; updatedAt?: string; sessionId?: string; autoIdle?: boolean }): void {
   const me = uiContext.state.me;
   if (!me || me.id !== p.userId || p.mode === "offline") return;
   if (p.updatedAt && me.updatedAt && Date.parse(p.updatedAt) < Date.parse(me.updatedAt)) return;
   if (p.sessionId !== uiContext.httpClient.getTokens()?.sessionId) {
     statusVersion++;
     externalStatusVersion++;
-    uiContext.idleAutoSet = false;
+    // Другое устройство написало «В сети» — юзер активен; этот таймер не должен
+    // сразу уводить статус обратно в idle.
+    if (p.mode === "online") uiContext.idleLastActivity = Date.now();
   }
   me.presenceMode = p.mode;
   me.customStatus = p.customStatus ?? "";
+  me.autoIdle = Boolean(p.autoIdle);
+  uiContext.idleAutoSet = Boolean(p.autoIdle);
   if (p.updatedAt) me.updatedAt = p.updatedAt;
   syncPresenceSurfaces(me.id);
+}
+
+// После переподключения сокета перечитываем собственный статус: события,
+// пропущенные за время обрыва, иначе так и останутся в локальном state.
+export async function refreshSelfPresence(): Promise<void> {
+  const userId = uiContext.state.me?.id;
+  if (!userId) return;
+  let fresh: Me;
+  try {
+    fresh = await uiContext.httpClient.get<Me>("/api/v1/users/me");
+  } catch {
+    return;
+  }
+  if (uiContext.state.me?.id !== userId || !fresh.updatedAt) return;
+  applySelfPresenceUpdate({
+    userId,
+    mode: fresh.presenceMode ?? "online",
+    customStatus: fresh.customStatus,
+    updatedAt: fresh.updatedAt,
+    autoIdle: fresh.autoIdle,
+  });
+  render(new Set(["presence"]));
 }
 
 export async function saveStatus(
@@ -902,21 +932,27 @@ export async function saveStatus(
       presenceMode?: PresenceMode;
       customStatus?: string;
       updatedAt?: string;
-    }>("/api/v1/users/me/status", { mode, customStatus, ...(automatic ? { expectedMode, expectedUpdatedAt } : {}) });
+      autoIdle?: boolean;
+    }>("/api/v1/users/me/status", { mode, customStatus, ...(automatic ? { automatic: true, expectedMode, expectedUpdatedAt } : {}) });
     if (uiContext.state.me?.id === userId && external === externalStatusVersion) {
       uiContext.state.me.presenceMode =
         (updated.presenceMode as PresenceMode | undefined) ?? mode;
       uiContext.state.me.customStatus = updated.customStatus ?? "";
       if (updated.updatedAt) uiContext.state.me.updatedAt = updated.updatedAt;
+      uiContext.state.me.autoIdle = Boolean(updated.autoIdle);
       syncPresenceSurfaces(userId);
       if (version === statusVersion) {
-        uiContext.idleAutoSet = automatic && mode === "idle" && uiContext.state.me.presenceMode === "idle";
+        // Сервер отвечает правдой: если предусловие не сошлось, он вернёт текущее
+        // состояние, и флаг покажет, нужно ли ещё раз вернуть «В сети».
+        uiContext.idleAutoSet = Boolean(updated.autoIdle);
         uiContext.state.statusMenu = null;
         render(new Set(["presence"]));
       }
     }
    } catch (err) {
-    if (version === statusVersion) { uiContext.idleAutoSet = false; uiContext.state.status = describeError(err); render(new Set(["presence", "status"])); }
+    // Не удалось вернуть «В сети»: сервер, скорее всего, всё ещё в idle.
+    // Оставляем флаг, чтобы таймер повторил попытку, пока юзер активен.
+    if (version === statusVersion) { uiContext.idleAutoSet = automatic && mode === "online"; uiContext.state.status = describeError(err); render(new Set(["presence", "status"])); }
    }
   };
   statusWrites = statusWrites.then(write, write);
@@ -1270,32 +1306,42 @@ export function markServerRead(): void {
 export function startIdleAutoDetect(): void {
   if (uiContext.idleListenersAttached) return;
   uiContext.idleListenersAttached = true;
-  const onActivity = () => {
-    uiContext.idleLastActivity = Date.now();
-    // Если мы сами выставили idle ранее — возвращаем online на любой ввод.
-    if (uiContext.idleAutoSet && uiContext.state.me) {
+  // Решение принимает decideAutomaticStatus по состоянию, а не по одному
+  // локальному флагу: так возврат из idle работает и после перезапуска,
+  // и после обрыва сети (флаг сохраняется до успешной записи).
+  const applyAutomatic = (active: boolean) => {
+    const me = uiContext.state.me;
+    if (!me || !me.updatedAt) return;
+    const action = decideAutomaticStatus({
+      presenceMode: me.presenceMode ?? "online",
+      autoIdle: uiContext.idleAutoSet,
+      active,
+    });
+    if (action === "online") {
       uiContext.idleAutoSet = false;
-      void saveStatus("online", uiContext.state.me.customStatus ?? "", true);
+      void saveStatus("online", me.customStatus ?? "", true);
+    } else if (action === "idle") {
+      uiContext.idleAutoSet = true;
+      void saveStatus("idle", me.customStatus ?? "", true);
     }
   };
+  const onActivity = () => {
+    uiContext.idleLastActivity = Date.now();
+    applyAutomatic(true);
+  };
+  // Колесо мыши и возврат фокуса тоже активность: чтение ленты колесом не должно
+  // уводить статус в idle.
   bindEvent(window, "mousemove", onActivity, "bind-82894", { passive: true });
   bindEvent(window, "mousedown", onActivity, "bind-82965", { passive: true });
+  bindEvent(window, "wheel", onActivity, "bind-idle-wheel", { passive: true });
   bindEvent(window, "keydown", onActivity, "bind-83036", { passive: true });
   bindEvent(window, "touchstart", onActivity, "bind-83105", { passive: true });
   bindEvent(window, "focus", onActivity, "bind-83177");
 
   if (uiContext.idleTimer) clearInterval(uiContext.idleTimer);
   uiContext.idleTimer = setInterval(() => {
-    const me = uiContext.state.me;
-    if (!me) return;
-    if (uiContext.idleAutoSet || !me.updatedAt) return;
-    // Только переход online → idle. dnd/invisible/idle (выставлен вручную)
-    // не трогаем, чтобы не перетереть осознанный выбор.
-    if (me.presenceMode !== "online") return;
-    if (Date.now() - uiContext.idleLastActivity < uiContext.IDLE_THRESHOLD_MS)
-      return;
-    uiContext.idleAutoSet = true;
-    void saveStatus("idle", me.customStatus ?? "", true);
+    const active = Date.now() - uiContext.idleLastActivity < uiContext.IDLE_THRESHOLD_MS;
+    applyAutomatic(active);
   }, uiContext.IDLE_CHECK_INTERVAL_MS);
 }
 

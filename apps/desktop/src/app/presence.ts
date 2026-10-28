@@ -32,8 +32,24 @@ export function applyPresenceSnapshot<T extends PresenceFields>(userId: string, 
 export function applyPresenceEvent(userId: string, fields: PresenceFields, updatedAt?: string): void {
   const old = updates.get(userId)?.updatedAt;
   if (updatedAt && old && Date.parse(updatedAt) < Date.parse(old)) return;
-  updates.set(userId, { value: resolvePresence(fields), revision: ++revision, updatedAt });
+  // Событие без updatedAt не должно стирать известную метку времени: иначе
+  // следующее устаревшее событие пройдёт проверку порядка и откатит статус.
+  updates.set(userId, { value: resolvePresence(fields), revision: ++revision, updatedAt: updatedAt ?? old });
   syncPresenceSurfaces(userId);
+}
+
+export type AutomaticStatusAction = "idle" | "online" | "none";
+
+// Решение таймера неактивности (см. startIdleAutoDetect).
+//   autoIdle = true: idle выставлен автоматически (этим или другим устройством,
+//     флаг приходит с сервера). Вернуть «В сети» при активности, даже если
+//     перезапуск/переподключение потеряли локальное состояние.
+//   autoIdle = false: переходим в idle только из «В сети» и только при неактивности.
+//     Ручные dnd/invisible/idle не трогаем.
+export function decideAutomaticStatus(input: { presenceMode: PresenceMode; autoIdle: boolean; active: boolean }): AutomaticStatusAction {
+  if (input.autoIdle) return input.active && input.presenceMode === "idle" ? "online" : "none";
+  if (input.active) return "none";
+  return input.presenceMode === "online" ? "idle" : "none";
 }
 
 export function syncPresenceSurfaces(userId: string): void {

@@ -30,6 +30,7 @@ import {
   loadNotifPrefs,
   loadNotifications,
   loadUnread,
+  refreshSelfPresence,
   selectChannel,
   startIdleAutoDetect,
 } from "./loaders";
@@ -136,6 +137,11 @@ export function renderApp(
     syncConnectionBanner();
   });
   realtime.onConnectionStateChange((s) => gate.push(s));
+  // После переподключения статус мог измениться без нас (другое устройство,
+  // пропущенные события): сверяем себя с сервером.
+  realtime.onConnectionStateChange((s) => {
+    if (s === "connected" && uiContext.state.me) void refreshSelfPresence();
+  });
   const nudgeReconnect = () => {
     if (document.visibilityState !== "hidden") realtime.reconnectNow();
   };
@@ -221,6 +227,8 @@ export async function bootstrapSession(): Promise<void> {
     void loadDMs();
     void loadFriends();
     void loadNotifPrefs();
+    // Флаг автоматического idle переживает перезапуск: сервер хранит его вместе с режимом.
+    uiContext.idleAutoSet = Boolean(uiContext.state.me.autoIdle);
     startIdleAutoDetect();
     void initUpdateCheck();
     uiContext.state.status = "";
