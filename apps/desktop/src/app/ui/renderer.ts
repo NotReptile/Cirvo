@@ -81,6 +81,29 @@ export function renderUserStrip(): string {
     </div></footer>`;
 }
 
+// Точечное обновление плашки соединения без полного render(): иначе смена
+// состояния сокета перестраивает интерфейс и сбрасывает полноэкранный режим
+// плитки стрима, открытые настройки и введённый текст.
+export function syncConnectionBanner(): void {
+  const root = uiContext.rootEl;
+  if (!root) return;
+  const existing = root.querySelector(":scope > .conn-banner");
+  const show =
+    uiContext.connState === "reconnecting" &&
+    !!uiContext.state.me &&
+    !!root.querySelector(".shell");
+  if (!show) {
+    existing?.remove();
+    return;
+  }
+  if (existing) return;
+  const banner = document.createElement("div");
+  banner.className = "conn-banner";
+  banner.setAttribute("role", "status");
+  banner.innerHTML = `<span class="conn-banner-spinner"></span>\n        ${t("conn.reconnecting")}\n      `;
+  root.prepend(banner);
+}
+
 export function render(
   regions: ReadonlySet<RenderRegion> = new Set(["all"]),
 ): void {

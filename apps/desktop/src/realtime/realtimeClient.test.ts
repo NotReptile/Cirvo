@@ -77,6 +77,28 @@ describe("RealtimeClient cursor", () => {
     client.disconnect();
   });
 
+  it("шлёт keepalive ping и логирует причину закрытия", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const client = new RealtimeClient("wss://example.test/ws", async () => "t");
+      client.setAccessToken(tokenFor("user-hb"));
+      await vi.advanceTimersByTimeAsync(0);
+      const ws = FakeWebSocket.instances[0];
+      ws.open();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(ws.sent.map((s) => JSON.parse(s).event)).toEqual(["ping"]);
+      (ws.onclose as unknown as (e: object) => void)({ code: 1006, reason: "", wasClean: false });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("code=1006"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(ws.sent).toHaveLength(1);
+      client.disconnect();
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("uses a one-time ticket when available", async () => {
     const client = new RealtimeClient("wss://example.test/ws", async () => "ticket-value");
     client.setAccessToken(tokenFor("user-b"));

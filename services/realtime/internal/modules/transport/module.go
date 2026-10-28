@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	readDeadline    = 60 * time.Second
 	pingInterval    = 25 * time.Second
 	writeDeadline   = 10 * time.Second
 	maxReadBytes    = 1 << 16
@@ -233,9 +232,11 @@ func (m *Module) readLoop(ctx context.Context, cancel context.CancelFunc, wsConn
 			return
 		default:
 		}
-		readCtx, readCancel := context.WithTimeout(ctx, readDeadline)
-		msgType, data, err := wsConn.Read(readCtx)
-		readCancel()
+		// Таймаута на Read нет намеренно: Read обрабатывает pong внутри себя и
+		// не возвращается, пока нет data-кадра, поэтому дедлайн закрывал бы
+		// простаивающее соединение каждые 60 с, хотя pong приходит исправно.
+		// Мёртвый пир обнаруживается по неудачному Ping в writeLoop.
+		msgType, data, err := wsConn.Read(ctx)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				m.logger.Debug("read loop ended", "error", err)
