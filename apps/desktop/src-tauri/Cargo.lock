@@ -620,6 +620,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "cirvo-desktop"
+version = "0.3.2"
+dependencies = [
+ "base64 0.23.1",
+ "cpal",
+ "image",
+ "keyring",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "webview2-com",
+ "windows-core 0.62.2",
+ "xcap",
+]
+
+[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3845,28 +3867,6 @@ name = "rgb"
 version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47b34b781b31e5d73e9fbc8689c70551fd1ade9a19e3e28cfec8580a79290cc4"
-
-[[package]]
-name = "cirvo-desktop"
-version = "0.3.1"
-dependencies = [
- "base64 0.23.1",
- "cpal",
- "image",
- "keyring",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "webview2-com",
- "windows-core 0.62.2",
- "xcap",
-]
 
 [[package]]
 name = "rustc-hash"
