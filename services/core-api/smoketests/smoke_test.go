@@ -96,7 +96,7 @@ func TestMain(m *testing.M) {
 			Redis:       redisClient,
 			JWT:         jwt,
 			Publisher:   realtimebus.NewPublisher(redisClient, db),
-			ObjectStore: objectStore,
+			ObjectStore: objectstore.NewReady(objectStore),
 			Limiter:     ratelimit.New(redisClient.Client),
 			Settings:    serversettings.NewProvider(db),
 			CORS:        sharedhttp.CORS([]string{"http://localhost"}),

@@ -20,7 +20,7 @@ type Container struct {
 	Redis       *redisstore.Client
 	JWT         *jwtauth.Issuer
 	Publisher   *realtimebus.Publisher
-	ObjectStore *objectstore.Client
+	ObjectStore *objectstore.Lazy
 	Limiter     *ratelimit.Limiter
 	Settings    *serversettings.Provider
 	CORS        func(http.Handler) http.Handler

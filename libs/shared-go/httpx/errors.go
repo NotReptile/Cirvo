@@ -37,5 +37,7 @@ const (
 	// пароля, GET /users/me и logout (app.Authenticator.Middleware).
 	CodePasswordChangeRequired = "password_change_required"
 	CodeInternal               = "internal_error"
-	CodeMessageAlreadyExists   = "message_already_processed"
+	// Зависимость (например, объектное хранилище) временно недоступна.
+	CodeUnavailable          = "service_unavailable"
+	CodeMessageAlreadyExists = "message_already_processed"
 )

@@ -43,13 +43,13 @@ var safeFilenameRE = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 type Module struct {
 	db       *postgres.Pool
-	store    *objectstore.Client
+	store    *objectstore.Lazy
 	limiter  *ratelimit.Limiter
 	settings *serversettings.Provider
 	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, store *objectstore.Client, limiter *ratelimit.Limiter, settings *serversettings.Provider, logger *slog.Logger) *Module {
+func NewModule(db *postgres.Pool, store *objectstore.Lazy, limiter *ratelimit.Limiter, settings *serversettings.Provider, logger *slog.Logger) *Module {
 	return &Module{db: db, store: store, limiter: limiter, settings: settings, logger: logger}
 }
 
@@ -68,6 +68,23 @@ func userIDKey(r *http.Request) string {
 	return uid.String()
 }
 
+// requireStore возвращает готовый клиент хранилища, при необходимости пробуя
+// подключиться. Если не вышло, сам отвечает клиенту и возвращает ok=false.
+func (m *Module) requireStore(w http.ResponseWriter, r *http.Request) (*objectstore.Client, bool) {
+	store, err := m.store.Get(r.Context())
+	if err == nil {
+		return store, true
+	}
+	if errors.Is(err, objectstore.ErrNotConfigured) {
+		sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeInternal,
+			"хранилище файлов не настроено на сервере")
+		return nil, false
+	}
+	sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeUnavailable,
+		"хранилище файлов временно недоступно, повтори позже")
+	return nil, false
+}
+
 type mediaView struct {
 	ID          string    `json:"id"`
 	ContentType string    `json:"contentType"`
@@ -78,8 +95,8 @@ type mediaView struct {
 }
 
 func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
-	if m.store == nil {
-		sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeInternal, "object storage is not configured")
+	store, ok := m.requireStore(w, r)
+	if !ok {
 		return
 	}
 	userID := authctx.MustUserID(r.Context())
@@ -139,7 +156,7 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 	safeName := safeFilename(header.Filename)
 	objectKey := fmt.Sprintf("media/%s/%s", mediaID.String(), safeName)
 
-	if err := m.store.Put(r.Context(), objectKey, file, header.Size, contentType); err != nil {
+	if err := store.Put(r.Context(), objectKey, file, header.Size, contentType); err != nil {
 		m.logger.Warn("upload to object store failed", slog.String("error", err.Error()))
 		sharedhttp.WriteError(w, r, http.StatusBadGateway, sharedhttp.CodeInternal, "could not store object")
 		return
@@ -147,7 +164,7 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := m.db.Begin(r.Context())
 	if err != nil {
-		_ = m.store.Remove(context.Background(), objectKey)
+		_ = store.Remove(context.Background(), objectKey)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "database error")
 		return
 	}
@@ -157,10 +174,10 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 	_, err = tx.Exec(r.Context(),
 		`insert into media_objects (id, object_key, bucket, content_type, size_bytes, original_filename, uploaded_by_user_id, created_at)
 		 values ($1, $2, $3, $4, $5, nullif($6, ''), $7, $8)`,
-		mediaID, objectKey, m.store.Bucket(), contentType, header.Size, header.Filename, userID, now,
+		mediaID, objectKey, store.Bucket(), contentType, header.Size, header.Filename, userID, now,
 	)
 	if err != nil {
-		_ = m.store.Remove(context.Background(), objectKey)
+		_ = store.Remove(context.Background(), objectKey)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not record media")
 		return
 	}
@@ -172,7 +189,7 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 		uploadID, objectKey, contentType, header.Size, userID, now, mediaID,
 	)
 	if err != nil {
-		_ = m.store.Remove(context.Background(), objectKey)
+		_ = store.Remove(context.Background(), objectKey)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "could not record upload session")
 		return
 	}
@@ -191,7 +208,7 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		_ = m.store.Remove(context.Background(), objectKey)
+		_ = store.Remove(context.Background(), objectKey)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "commit failed")
 		return
 	}
@@ -207,8 +224,8 @@ func (m *Module) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Module) handleDownload(w http.ResponseWriter, r *http.Request) {
-	if m.store == nil {
-		sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeInternal, "object storage is not configured")
+	store, ok := m.requireStore(w, r)
+	if !ok {
 		return
 	}
 	userID := authctx.MustUserID(r.Context())
@@ -246,7 +263,7 @@ func (m *Module) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reader, err := m.store.Get(r.Context(), objectKey)
+	reader, err := store.Get(r.Context(), objectKey)
 	if err != nil {
 		m.logger.Warn("media fetch failed", slog.String("error", err.Error()))
 		sharedhttp.WriteError(w, r, http.StatusBadGateway, sharedhttp.CodeInternal, "object store unavailable")
@@ -265,8 +282,8 @@ func (m *Module) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Module) handleThumbnail(w http.ResponseWriter, r *http.Request) {
-	if m.store == nil {
-		sharedhttp.WriteError(w, r, http.StatusServiceUnavailable, sharedhttp.CodeInternal, "object storage is not configured")
+	store, ok := m.requireStore(w, r)
+	if !ok {
 		return
 	}
 	userID := authctx.MustUserID(r.Context())
@@ -312,7 +329,7 @@ func (m *Module) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		sizeHint = 0
 	}
 
-	reader, err := m.store.Get(r.Context(), objectKey)
+	reader, err := store.Get(r.Context(), objectKey)
 	if err != nil {
 		m.logger.Warn("thumbnail fetch failed", slog.String("error", err.Error()))
 		sharedhttp.WriteError(w, r, http.StatusBadGateway, sharedhttp.CodeInternal, "object store unavailable")

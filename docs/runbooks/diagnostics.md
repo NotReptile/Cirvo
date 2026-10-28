@@ -60,7 +60,32 @@ Invoke-WebRequest https://DOMAIN/readyz -UseBasicParsing
 | Из домашней сети домен не открывается, снаружи открывается | Роутер не умеет hairpin NAT | Split-DNS: имя сервера в LAN → LAN-адрес |
 | Чат работает, голос не соединяется | Закрыт UDP `50000` или `3478`, либо неверный `CIRVO_SFU_PUBLIC_IP` | Проверить проброс портов и значение IP |
 | Голос работает в LAN, снаружи нет | `CIRVO_SFU_PUBLIC_IP` указывает на LAN-адрес | Указать внешний IP |
+| «Хранилище файлов временно недоступно» при вложении или вставке скриншота | `core-api` не может подключиться к MinIO | См. раздел «Хранилище файлов» ниже |
 | Ошибка сертификата при `CIRVO_TLS_EMAIL=internal` | Корневой сертификат Caddy не установлен в Windows | См. [windows-client.md](windows-client.md), раздел «Самоподписанный сертификат» |
+
+### Хранилище файлов (MinIO)
+
+`core-api` подключается к MinIO лениво и повторяет попытки сам (пауза растёт до
+30 секунд), поэтому порядок запуска контейнеров не важен и перезапуск после
+восстановления MinIO не нужен. Признаки проблемы:
+
+- клиент пишет «Хранилище файлов временно недоступно»; API отвечает
+  `503` с кодом `service_unavailable`;
+- `curl -s https://DOMAIN/readyz` возвращает `"storage":"unavailable"`
+  (`ready`: всё в порядке, `not_configured`: не заданы `MINIO_*`);
+- в логах `core-api` одна строка `object storage unavailable, will retry in background`
+  с причиной, а после восстановления `object storage connected`.
+
+```bash
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env ps minio
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env logs --tail=100 minio
+docker compose -f deploy/single-node/docker-compose.yml --env-file deploy/.env logs core-api | grep "object storage"
+```
+
+Если `minio` не `healthy`, смотри его логи (место на диске, права на том,
+неверные учётные данные) и подними его: `up -d minio`. Если `storage` равен
+`not_configured`, задай `MINIO_*` в `deploy/.env` по `deploy/.env.example` и
+пересоздай `core-api`.
 
 ## 5. Группы отказов
 

@@ -22,11 +22,11 @@ import (
 type Module struct {
 	db       *postgres.Pool
 	settings *serversettings.Provider
-	store    *objectstore.Client
+	store    *objectstore.Lazy
 	logger   *slog.Logger
 }
 
-func NewModule(db *postgres.Pool, settings *serversettings.Provider, store *objectstore.Client, logger *slog.Logger) *Module {
+func NewModule(db *postgres.Pool, settings *serversettings.Provider, store *objectstore.Lazy, logger *slog.Logger) *Module {
 	return &Module{db: db, settings: settings, store: store, logger: logger}
 }
 

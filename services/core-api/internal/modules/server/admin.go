@@ -397,7 +397,12 @@ func (m *Module) handleRetentionRun(w http.ResponseWriter, r *http.Request) {
 		TargetType: "server",
 		TargetID:   "retention",
 	})
-	stats, err := retention.Sweep(r.Context(), m.logger, m.db, m.store, settings)
+	// Без хранилища sweep всё равно работает (blob'ы останутся orphan'ами).
+	store, storeErr := m.store.Get(r.Context())
+	if storeErr != nil {
+		store = nil
+	}
+	stats, err := retention.Sweep(r.Context(), m.logger, m.db, store, settings)
 	if err != nil {
 		m.logger.Error("retention sweep failed", "error", err)
 		sharedhttp.WriteError(w, r, http.StatusInternalServerError, sharedhttp.CodeInternal, "sweep failed")

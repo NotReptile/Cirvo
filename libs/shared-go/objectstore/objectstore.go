@@ -12,6 +12,9 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
+// ErrNotConfigured: учётные данные MinIO не заданы, повторные попытки бессмысленны.
+var ErrNotConfigured = errors.New("object storage is not configured")
+
 // Client wraps a configured MinIO client tied to a single bucket.
 type Client struct {
 	mc     *minio.Client
@@ -29,7 +32,7 @@ func ConnectFromEnv(ctx context.Context) (*Client, error) {
 	access := firstNonEmpty(os.Getenv("MINIO_ACCESS_KEY"), os.Getenv("MINIO_ROOT_USER"))
 	secret := firstNonEmpty(os.Getenv("MINIO_SECRET_KEY"), os.Getenv("MINIO_ROOT_PASSWORD"))
 	if access == "" || secret == "" {
-		return nil, errors.New("MINIO_ACCESS_KEY/MINIO_SECRET_KEY (or MINIO_ROOT_USER/MINIO_ROOT_PASSWORD) must be set")
+		return nil, fmt.Errorf("%w: MINIO_ACCESS_KEY/MINIO_SECRET_KEY (or MINIO_ROOT_USER/MINIO_ROOT_PASSWORD) must be set", ErrNotConfigured)
 	}
 	bucket := strings.TrimSpace(os.Getenv("MINIO_BUCKET"))
 	if bucket == "" {

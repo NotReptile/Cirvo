@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { describeError } from "./errors";
 
 describe("describeError", () => {
+  it("объясняет недоступное и ненастроенное хранилище файлов", () => {
+    expect(describeError({ status: 503, code: "service_unavailable", message: "x" })).toBe(
+      "Хранилище файлов временно недоступно. Повтори через минуту.",
+    );
+    expect(describeError({ status: 503, code: "internal_error", message: "object storage is not configured" })).toBe(
+      "Загрузка файлов не настроена на сервере. Сообщи администратору.",
+    );
+  });
+
   it("ошибка сервера: сообщение и код", () => {
     expect(describeError({ status: 409, code: "conflict", message: "email or username already taken" })).toBe(
       "email or username already taken (conflict)"
