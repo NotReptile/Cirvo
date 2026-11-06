@@ -33,6 +33,7 @@ test.beforeEach(async ({ page }) => {
       isActive: () => s.voiceSnapshot?.state === "active",
       getLocalStream: () => null,
       getRemoteStream: () => remote,
+      getRemoteAudioTracks: () => ({ voice: remote.getAudioTracks()[0] ?? null, screen: null }),
       toggleMute: () => update({ muted: !s.voiceSnapshot.muted }),
       setMute: (muted: boolean) => update({ muted }),
       setPttGate: () => {},
