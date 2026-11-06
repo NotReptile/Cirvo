@@ -58,11 +58,10 @@ func main() {
 
 	publisher := realtimebus.NewPublisher(redisClient, db)
 
-	objectStore, err := objectstore.ConnectFromEnv(rootCtx)
-	if err != nil {
-		logger.Warn("object storage init failed, file uploads disabled", "error", err)
-		objectStore = nil
-	}
+	// Хранилище подключается лениво и в фоне: если MinIO ещё не поднялся,
+	// core-api стартует и догоняет подключение сам, без перезапуска.
+	objectStore := objectstore.NewLazy(logger)
+	go objectStore.Run(rootCtx)
 
 	if err := bootstrap.Run(rootCtx, db, logger, bootstrap.LoadFromEnv()); err != nil {
 		logger.Error("bootstrap admin failed", "error", err)

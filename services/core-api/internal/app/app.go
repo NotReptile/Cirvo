@@ -74,7 +74,7 @@ func NewServer(serviceName, version string, container deps.Container) *Server {
 		ice.NewModule(),
 		ticketmod.NewModule(container.DB, sharedticket.New(container.Redis.Client)),
 		servermod.NewModule(container.DB, container.Settings, container.ObjectStore, container.Logger),
-		system.NewModule(),
+		system.NewModule(container.ObjectStore),
 	)
 
 	return server

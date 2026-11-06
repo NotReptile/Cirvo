@@ -17,6 +17,10 @@ import { requestRender as render } from "../runtime";
 import { uiContext } from "../state";
 import { escapeHtml } from "../util/html";
 import { applyPttModeToActiveSessions, updatePttIndicator } from "./loaders";
+import {
+  attachScreenShareSettingsHandlers,
+  renderScreenShareSettingsBlock,
+} from "./settingsScreenShare";
 
 let micGeneration = 0;
 let camGeneration = 0;
@@ -191,6 +195,8 @@ export function renderSettingsVoiceTab(): string {
       </div>
       <video id="vs-cam-preview" class="vs-cam-preview" autoplay muted playsinline ${camTesting ? "" : "hidden"}></video>
     </div>
+
+    ${renderScreenShareSettingsBlock()}
 
     <div class="settings-section">
       <h3>${t("vs.ptt.title")}</h3>
@@ -409,6 +415,7 @@ export function attachSettingsVoiceHandlers(): void {
   )
     return;
 
+  attachScreenShareSettingsHandlers();
   bindEvent(uiContext.rootEl.querySelector("#vs-refresh-devices"), "click", refreshSettingsDevices, "vs-refresh");
   bindEvent(uiContext.rootEl.querySelector("#vs-device-permission"), "click", () => { void revealVoiceDeviceNames(); }, "vs-permission");
 

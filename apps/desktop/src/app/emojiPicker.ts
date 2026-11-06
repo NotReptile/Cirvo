@@ -4,12 +4,25 @@
 // нужен для MVP и раздул бы бандл. Поиск — по русским ключевым словам.
 // Recently-used — localStorage, до 24 штук, рисуется первой секцией.
 
+/** Максимум символов «своей реакции» (код-поинты). Совпадает с серверной проверкой. */
+export const CUSTOM_REACTION_MAX = 24;
+
+/** Проверка «своей реакции»: обрезка пробелов, длина в код-поинтах, без управляющих символов. */
+export function checkCustomReaction(raw: string): { value: string; length: number; ok: boolean } {
+  const value = raw.trim();
+  const length = [...value].length;
+  const hasControl = /[\u0000-\u001f\u007f]/.test(value);
+  return { value, length, ok: length > 0 && length <= CUSTOM_REACTION_MAX && !hasControl };
+}
+
 export interface EmojiPickerOpts {
   /** Элемент, рядом с которым позиционируется popup (обычно кнопка). */
   anchor: HTMLElement;
   onPick: (emoji: string) => void;
   /** Закрывать ли popup после выбора (по умолчанию true). */
   closeOnPick?: boolean;
+  /** Показать поле «своя реакция» (короткий текст вместо эмодзи). */
+  allowCustom?: boolean;
 }
 
 type EmojiEntry = [string, string]; // [emoji, ключевые слова для поиска]
@@ -221,20 +234,29 @@ export function openEmojiPicker(opts: EmojiPickerOpts): void {
     return;
   }
   const root = ensureContainer();
+  const customHtml = opts.allowCustom
+    ? `<form class="ep-custom" autocomplete="off">
+         <input class="ep-custom-input" type="text" maxlength="${CUSTOM_REACTION_MAX * 2}" placeholder="Своя реакция, до ${CUSTOM_REACTION_MAX} символов" aria-label="Своя реакция" />
+         <button class="ep-custom-btn" type="submit" disabled>Добавить</button>
+         <div class="ep-custom-error" aria-live="polite"></div>
+       </form>`
+    : "";
   root.innerHTML = `
     <div class="ep-card" role="dialog" aria-label="Выбор эмодзи">
       <input class="ep-search" type="text" placeholder="Поиск эмодзи…" />
       <div class="ep-body"></div>
+      ${customHtml}
     </div>
   `;
   const card = root.querySelector<HTMLDivElement>(".ep-card")!;
+  card.classList.toggle("has-custom", !!opts.allowCustom);
   const search = root.querySelector<HTMLInputElement>(".ep-search")!;
   const body = root.querySelector<HTMLDivElement>(".ep-body")!;
 
   // Позиционирование: над якорем, клампим в окно.
   const rect = opts.anchor.getBoundingClientRect();
   const cardW = 332;
-  const cardH = 384;
+  const cardH = opts.allowCustom ? 432 : 384;
   let left = Math.min(Math.max(8, rect.left), window.innerWidth - cardW - 8);
   let top = rect.top - cardH - 8;
   if (top < 8) top = Math.min(rect.bottom + 8, window.innerHeight - cardH - 8);
@@ -288,6 +310,33 @@ export function openEmojiPicker(opts: EmojiPickerOpts): void {
     opts.onPick(btn.dataset.emoji);
     if (opts.closeOnPick !== false) closeEmojiPicker();
   });
+
+  const customForm = root.querySelector<HTMLFormElement>(".ep-custom");
+  if (customForm) {
+    const input = customForm.querySelector<HTMLInputElement>(".ep-custom-input")!;
+    const submit = customForm.querySelector<HTMLButtonElement>(".ep-custom-btn")!;
+    const errorEl = customForm.querySelector<HTMLDivElement>(".ep-custom-error")!;
+    const syncCustom = () => {
+      const checked = checkCustomReaction(input.value);
+      submit.disabled = checked.length === 0;
+      errorEl.textContent =
+        checked.length > CUSTOM_REACTION_MAX
+          ? `Не больше ${CUSTOM_REACTION_MAX} символов (сейчас ${checked.length})`
+          : "";
+    };
+    input.addEventListener("input", syncCustom);
+    customForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const checked = checkCustomReaction(input.value);
+      if (!checked.ok) {
+        syncCustom();
+        return;
+      }
+      // Свой текст в «недавние» не пишем: там только эмодзи.
+      opts.onPick(checked.value);
+      if (opts.closeOnPick !== false) closeEmojiPicker();
+    });
+  }
 
   outsideHandler = (ev) => {
     const t = ev.target as HTMLElement;

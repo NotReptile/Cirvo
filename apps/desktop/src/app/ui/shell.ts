@@ -1,3 +1,4 @@
+import { participantVolumes } from "../../call/participantVolumes";
 import { bindEvent } from "../dom";
 import { t } from "../i18n";
 import { queueRender, requestRender as render } from "../runtime";
@@ -108,31 +109,48 @@ export function installNativeGuards(): void {
   );
 }
 
+// Меню громкости ПКМ на участнике: «Голос» и «Звук стрима» (0–200%),
+// у 1-к-1 звонка — один регулятор. Значения по userId, см. participantVolumes.
 export function renderVoiceVolumeMenu(): string {
   const menu = uiContext.state.voiceVolumeMenu;
   if (!menu) return "";
-  const current = Math.round(
-    (uiContext.state.voiceVolumes[menu.key] ?? 1) * 100,
-  );
+  const row = (kind: string, label: string, value: number, hint = ""): string => {
+    const pct = Math.round(value * 100);
+    return `
+      <div class="voice-volume-group">
+        <div class="voice-volume-row">
+          <span class="voice-volume-label">${label}</span>
+          <span class="voice-volume-value">${pct}%</span>
+        </div>
+        <input type="range" min="0" max="200" step="1" value="${pct}"
+          class="voice-volume-slider" data-volume-kind="${kind}" aria-label="${label}" />
+        ${hint ? `<div class="voice-volume-hint">${hint}</div>` : ""}
+      </div>`;
+  };
+  let body: string;
+  if (menu.userId) {
+    const p = uiContext.state.voiceSnapshot?.participants.find((x) => x.sessionId === menu.key);
+    const sharing = !!p?.screenSharing;
+    const hasScreenAudio = !!uiContext.voiceMgr.getRemoteAudioTracks(menu.key).screen;
+    body =
+      row("voice", "Голос", participantVolumes.get(menu.userId, "voice")) +
+      (sharing
+        ? row(
+            "screen",
+            "Звук стрима",
+            participantVolumes.get(menu.userId, "screen"),
+            hasScreenAudio ? "" : "В демонстрации нет звука",
+          )
+        : "");
+  } else {
+    body = row("call", "Громкость", uiContext.state.voiceVolumes[menu.key] ?? 1);
+  }
   return `
     <div class="channel-menu-backdrop" data-voice-volume-close></div>
     <div class="voice-volume-menu" style="left:${menu.x}px;top:${menu.y}px;" role="menu">
       <div class="channel-menu-header">${escapeHtml(menu.label)}</div>
-      <label class="voice-volume-row">
-        <span class="voice-volume-label">Громкость</span>
-        <span class="voice-volume-value">${current}%</span>
-      </label>
-      <input
-        id="voice-volume-slider"
-        type="range"
-        min="0"
-        max="200"
-        step="1"
-        value="${current}"
-        class="voice-volume-slider"
-      />
-      <div class="voice-volume-hint">Перетащи или нажми Reset чтобы вернуть 100%</div>
-      <button class="channel-menu-item" data-voice-volume-reset>Reset до 100%</button>
+      ${body}
+      <button class="channel-menu-item" data-voice-volume-reset>Сбросить</button>
     </div>
   `;
 }

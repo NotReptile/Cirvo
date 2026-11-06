@@ -239,7 +239,6 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
   const canPin = uiContext.state.dmMode || canModerate;
   const isEditing = uiContext.state.editingMessageId === m.id;
   const reactions = Object.entries(m.reactions ?? {});
-  const pickerOpen = uiContext.state.pickerForMessageId === m.id;
 
   const authorName = describePeer(m.authorId);
   const authorMember = membersById().get(m.authorId);
@@ -348,17 +347,6 @@ export function renderMessage(m: Message, grouped: boolean = false): string {
               `,
                 )
                 .join("")}
-            </div>`
-          : ""
-      }
-      ${
-        pickerOpen
-          ? `<div class="emoji-picker">
-              ${uiContext.QUICK_EMOJIS.map(
-                (e) =>
-                  `<button class="ghost picker-emoji" data-react-toggle="${m.id}" data-emoji="${escapeHtml(e)}">${e}</button>`,
-              ).join("")}
-              <button class="ghost picker-emoji picker-more" data-react-more="${m.id}" data-tooltip="Все эмодзи">➕</button>
             </div>`
           : ""
       }

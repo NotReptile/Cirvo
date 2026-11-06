@@ -6,16 +6,22 @@ import {
   normalizeServerUrl,
   setStoredServerUrl
 } from "./serverConfig";
+import { CIRVO_MARK, CIRVO_TAGLINE } from "./brand";
 
 export function renderOnboarding(container: HTMLElement, onDone: (url: string) => void): void {
   container.innerHTML = `
     <div class="onboarding-screen">
       <div class="onboarding-card">
-        <div class="onboarding-logo">Cirvo</div>
+        <div class="brand-lockup">
+          ${CIRVO_MARK}
+          <div class="brand-text">
+            <div class="brand-name">Cirvo</div>
+            <div class="brand-tagline">${CIRVO_TAGLINE}</div>
+          </div>
+        </div>
         <h1>Подключение к серверу</h1>
         <p class="onboarding-hint">
-          Введи адрес твоего self-host Cirvo сервера. Если ты ещё не поднял свой —
-          попроси у того, кто им владеет (это администратор сообщества).
+          Введи адрес своего Cirvo-сервера. Если своего нет, спроси его у администратора сообщества.
         </p>
         <form id="onboarding-form" class="onboarding-form" autocomplete="off">
           <label for="onboarding-url">Адрес сервера</label>

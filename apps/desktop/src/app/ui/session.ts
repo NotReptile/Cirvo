@@ -30,10 +30,12 @@ import {
   loadNotifPrefs,
   loadNotifications,
   loadUnread,
+  refreshSelfPresence,
   selectChannel,
   startIdleAutoDetect,
 } from "./loaders";
-import { render } from "./renderer";
+import { render, syncConnectionBanner } from "./renderer";
+import { createConnectionGate } from "../../realtime/connectionGrace";
 import { installNativeGuards, loadWsRoles } from "./shell";
 import { attachVoiceVideoStreams } from "./voiceView";
 import { loadWorkspaceCapabilities, workspaceCapabilities, channelCapabilities } from "./capabilities";
@@ -127,10 +129,24 @@ export function renderApp(
   realtime.subscribe(handleRealtimeEvent);
   // Индикатор соединения. Realtime v2 сам присылает replay либо
   // sync.required; полный REST-resync запускается только во втором случае.
-  realtime.onConnectionStateChange((s) => {
-    uiContext.connState = s;
-    render();
+  // Плашка появляется только если обрыв длится дольше grace-периода, и
+  // обновляется точечно: полный render() сбрасывал бы полноэкранный режим
+  // стрима, открытые настройки и текст в поле ввода.
+  const gate = createConnectionGate((visible) => {
+    uiContext.connState = visible ? "reconnecting" : "connected";
+    syncConnectionBanner();
   });
+  realtime.onConnectionStateChange((s) => gate.push(s));
+  // После переподключения статус мог измениться без нас (другое устройство,
+  // пропущенные события): сверяем себя с сервером.
+  realtime.onConnectionStateChange((s) => {
+    if (s === "connected" && uiContext.state.me) void refreshSelfPresence();
+  });
+  const nudgeReconnect = () => {
+    if (document.visibilityState !== "hidden") realtime.reconnectNow();
+  };
+  window.addEventListener("online", nudgeReconnect);
+  document.addEventListener("visibilitychange", nudgeReconnect);
   callManager.subscribe((snap) => {
     const next = snap.state === "idle" ? null : snap;
     const changed =
@@ -166,7 +182,6 @@ export function renderApp(
         invites: [],
         modal: null,
         members: [],
-        pickerForMessageId: null,
         pinsPopupOpen: false,
         channelPins: [],
         channelPinsLoading: false,
@@ -212,6 +227,8 @@ export async function bootstrapSession(): Promise<void> {
     void loadDMs();
     void loadFriends();
     void loadNotifPrefs();
+    // Флаг автоматического idle переживает перезапуск: сервер хранит его вместе с режимом.
+    uiContext.idleAutoSet = Boolean(uiContext.state.me.autoIdle);
     startIdleAutoDetect();
     void initUpdateCheck();
     uiContext.state.status = "";

@@ -119,6 +119,7 @@ export function handleRealtimeEvent(event: RealtimeEvent): void {
       customStatus?: string;
       sessionId?: string;
       updatedAt?: string;
+      autoIdle?: boolean;
     };
     if (!p?.userId || !["online", "idle", "dnd", "offline", "invisible"].includes(p.mode)) return;
     if (event.event === "presence.self.updated") applySelfPresenceUpdate(p);

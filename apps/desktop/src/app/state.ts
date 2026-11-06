@@ -77,30 +77,43 @@ export const SCREEN_SHARE_PRESETS: Record<
   ScreenShareQualityKey,
   ScreenShareQuality
 > = {
-  "720p30": { width: 1280, height: 720, frameRate: 30, maxBitrate: 2_500_000 },
+  // Битрейты выбраны под экранный контент в H.264/VP8 (потолок, а не цель:
+  // кодек берёт столько, сколько нужно картинке): статичный интерфейс
+  // обходится малым, перетаскивание окон и игры упираются в потолок.
+  "720p30": { width: 1280, height: 720, frameRate: 30, maxBitrate: 3_000_000 },
   "1080p30": {
     width: 1920,
     height: 1080,
     frameRate: 30,
-    maxBitrate: 5_000_000,
+    maxBitrate: 6_000_000,
   },
   "1080p60": {
     width: 1920,
     height: 1080,
     frameRate: 60,
-    maxBitrate: 8_000_000,
+    maxBitrate: 10_000_000,
   },
   "1440p30": {
     width: 2560,
     height: 1440,
     frameRate: 30,
-    maxBitrate: 10_000_000,
+    maxBitrate: 12_000_000,
+  },
+  "1440p60": {
+    width: 2560,
+    height: 1440,
+    frameRate: 60,
+    maxBitrate: 18_000_000,
+  },
+  "4k30": {
+    width: 3840,
+    height: 2160,
+    frameRate: 30,
+    maxBitrate: 20_000_000,
   },
 };
 
 const SCREEN_SHARE_QUALITY_LS = "cirvo:screenShareQuality";
-
-const QUICK_EMOJIS = ["👍", "❤️", "😄", "🎉", "🔥", "🤔", "👀", "🙏"];
 
 // J.6: persisting collapsed-categories state в localStorage. Per-категории
 // идентификатор — workspace-scoped UUID; кросс-workspace утечки не страшны.
@@ -128,7 +141,6 @@ export function createInitialState(): AppState {
     modal: null,
     members: [],
     membersLoading: false,
-    pickerForMessageId: null,
     pinsPopupOpen: false,
     channelPins: [],
     channelPinsLoading: false,
@@ -691,9 +703,6 @@ export const uiContext = {
   },
   get SCREEN_SHARE_QUALITY_LS() {
     return SCREEN_SHARE_QUALITY_LS;
-  },
-  get QUICK_EMOJIS() {
-    return QUICK_EMOJIS;
   },
   get COLLAPSED_CATEGORIES_KEY() {
     return COLLAPSED_CATEGORIES_KEY;

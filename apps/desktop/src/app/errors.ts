@@ -15,6 +15,9 @@ function describeDeviceError(err: DOMException): string {
   }
 }
 
+const STORAGE_UNAVAILABLE = "Хранилище файлов временно недоступно. Повтори через минуту.";
+const STORAGE_NOT_CONFIGURED = "Загрузка файлов не настроена на сервере. Сообщи администратору.";
+
 export function describeError(err: unknown): string {
   // DOMException тоже имеет поля code и message, но code у него числовой
   // (NotAllowedError даёт 0), поэтому проверять его нужно раньше ответа сервера.
@@ -24,6 +27,12 @@ export function describeError(err: unknown): string {
   if (typeof err === "object" && err !== null) {
     const e = err as { status?: unknown; code?: unknown; message?: unknown };
     if (typeof e.code === "string" && typeof e.message === "string") {
+      // Хранилище файлов: понятный текст вместо сырого ответа сервера
+      // (старые серверы отвечают "object storage is not configured").
+      if (e.code === "service_unavailable") return STORAGE_UNAVAILABLE;
+      if (e.message.startsWith("object storage is not configured") || e.message.startsWith("хранилище файлов не настроено")) {
+        return STORAGE_NOT_CONFIGURED;
+      }
       // status 0: ответа не было (нет связи, таймаут). Код ошибки пользователю не нужен.
       if (e.status === 0) return e.message;
       return `${e.message} (${e.code})`;

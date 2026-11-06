@@ -6,13 +6,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,10 +33,13 @@ import (
 )
 
 const (
-	defaultLimit       = 50
-	maxLimit           = 200
-	maxBodyChars       = 8000
-	maxEmojiLen        = 64
+	defaultLimit = 50
+	maxLimit     = 200
+	maxBodyChars = 8000
+	// Реакция: эмодзи или короткий текст. 24 символа (руны) — лимит клиента;
+	// 96 байт = 24 руны × 4 байта (худший случай для 4-байтовых эмодзи).
+	maxReactionRunes   = 24
+	maxReactionBytes   = 96
 	replySnippetMaxLen = 120
 	maxMentionsPerMsg  = 20
 )
@@ -1033,9 +1036,9 @@ func (m *Module) handleAddReaction(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid message id")
 		return
 	}
-	emoji, ok := decodeEmoji(r.PathValue("emoji"))
+	emoji, ok := parseReaction(r.PathValue("emoji"))
 	if !ok {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid emoji")
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid reaction")
 		return
 	}
 
@@ -1083,9 +1086,9 @@ func (m *Module) handleRemoveReaction(w http.ResponseWriter, r *http.Request) {
 		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid message id")
 		return
 	}
-	emoji, ok := decodeEmoji(r.PathValue("emoji"))
+	emoji, ok := parseReaction(r.PathValue("emoji"))
 	if !ok {
-		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid emoji")
+		sharedhttp.WriteError(w, r, http.StatusBadRequest, sharedhttp.CodeValidationFailed, "invalid reaction")
 		return
 	}
 
@@ -1992,19 +1995,23 @@ func parseUUID(r *http.Request, name string) (uuid.UUID, bool) {
 	return id, true
 }
 
-func decodeEmoji(raw string) (string, bool) {
-	if raw == "" {
+// parseReaction валидирует значение реакции (эмодзи или свой текст).
+// raw — уже декодированное значение path-параметра: net/http распаковывает
+// {emoji} сам, повторный url.PathUnescape ломал бы текст вроде «100%».
+func parseReaction(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" || len(value) > maxReactionBytes {
 		return "", false
 	}
-	decoded, err := url.PathUnescape(raw)
-	if err != nil {
+	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > maxReactionRunes {
 		return "", false
 	}
-	decoded = strings.TrimSpace(decoded)
-	if decoded == "" || len(decoded) > maxEmojiLen {
-		return "", false
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", false
+		}
 	}
-	return decoded, true
+	return value, true
 }
 
 // The UUID tie-breaker prevents equal timestamps from losing messages between pages.

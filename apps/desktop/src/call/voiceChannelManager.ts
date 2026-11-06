@@ -1,6 +1,17 @@
 import type { HttpClient } from "../network/httpClient";
 import type { RealtimeClient, RealtimeEvent } from "../realtime/realtimeClient";
-import { buildAudioConstraints, buildVideoConstraints } from "./voiceSettings";
+import { buildAudioConstraints, buildVideoConstraints, getScreenShareOptions } from "./voiceSettings";
+import {
+  applyCodecPreference,
+  applyContentHint,
+  applySenderTuning,
+  resolveCodec,
+  resolveMode,
+  type ResolvedScreenShareCodec,
+  type ResolvedScreenShareMode,
+  type ScreenShareOptions,
+} from "./screenShareTuning";
+import { VideoStatsCollector, type VideoStatsSnapshot } from "./videoStats";
 import { acquireScreenShareStream, releaseScreenAudio } from "./screenSharePicker";
 import { wrapMicStream, type MicPipeline } from "./denoiser";
 import { wrapCameraTrack, type CameraPipeline } from "./videoEffects";
@@ -30,6 +41,14 @@ export interface VoiceParticipant {
   // MediaStreamTrack — нужен отдельный сигналинг.
   screenSharing?: boolean;
   cameraOn?: boolean;
+  // id аудио-трека системного звука демонстрации (если участник его шлёт).
+  // Нужен, чтобы отделить его от голоса: оба едут в одном стриме участника.
+  screenAudioTrackId?: string | null;
+}
+
+export interface RemoteAudioTracks {
+  voice: MediaStreamTrack | null;
+  screen: MediaStreamTrack | null;
 }
 
 export type VoiceState = "idle" | "joining" | "active" | "media-reconnecting" | "leaving";
@@ -85,6 +104,7 @@ interface RelayPayload {
 interface PeerStatePayload {
   screen_sharing?: boolean;
   camera_on?: boolean;
+  screen_audio_track_id?: string | null;
 }
 
 interface VoiceEventPayload {
@@ -102,7 +122,6 @@ interface PeerEntry {
   pc: RTCPeerConnection;
   callId: string;
   remoteStream: MediaStream;
-  remoteAudio: HTMLAudioElement;
   pendingCandidates: RTCIceCandidateInit[];
   // Perfect-negotiation flag — пока true, входящий offer мы игнорируем
   // (collision detected). Когда наш собственный offer отослан,
@@ -164,6 +183,19 @@ export class VoiceChannelManager {
   getRemoteStream(sessionId: string): MediaStream | null {
     if (this.sfu) return this.sfu.getRemoteStream(sessionId);
     return this.peers.get(sessionId)?.remoteStream ?? null;
+  }
+
+  // Разделяет аудио удалённого участника: голос и звук демонстрации. Звук
+  // демонстрации опознаём по id трека из voice.state (он приходит отдельно,
+  // а трек может появиться раньше состояния — тогда пока считаем голосом и
+  // исправляемся при следующем снимке).
+  getRemoteAudioTracks(sessionId: string): RemoteAudioTracks {
+    const stream = this.getRemoteStream(sessionId);
+    const screenId = this.snapshot.participants.find((p) => p.sessionId === sessionId)?.screenAudioTrackId ?? null;
+    const audio = (stream?.getAudioTracks() ?? []).filter((t) => t.readyState !== "ended");
+    const screen = screenId ? audio.find((t) => t.id === screenId) ?? null : null;
+    const voice = audio.find((t) => t !== screen) ?? null;
+    return { voice, screen };
   }
 
   constructor(
@@ -380,7 +412,7 @@ export class VoiceChannelManager {
   // камеру можно включить заново отдельной кнопкой. Слушаем
   // track.onended, чтобы авто-выключиться когда юзер нажал «Stop
   // sharing» в системной панели браузера.
-  async toggleScreenShare(quality?: ScreenShareQuality): Promise<boolean> {
+  async toggleScreenShare(quality?: ScreenShareQuality, options?: ScreenShareOptions): Promise<boolean> {
     if (this.snapshot.state !== "active") return false;
     if (!this.screenTrack) {
       let displayStream: MediaStream;
@@ -390,7 +422,7 @@ export class VoiceChannelManager {
         // (показывает Discord-like picker, убирает браузерную плашку
         // «сайт делает демонстрацию»). Fallback на getDisplayMedia —
         // браузерный picker. Подробнее в screenSharePicker.ts.
-        const result = await acquireScreenShareStream(quality);
+        const result = await acquireScreenShareStream(quality, options ?? getScreenShareOptions());
         displayStream = result.stream;
         acquireFromTauri = result.fromTauri;
       } catch (err) {
@@ -402,6 +434,15 @@ export class VoiceChannelManager {
       const track = displayStream.getVideoTracks()[0];
       if (!track) return false;
       this.screenTrack = track;
+      // Режим «плавность / чёткость» и кодек: contentHint нужно выставить до
+      // отправки первого кадра, иначе кодек стартует с настройками для текста.
+      const sendMode: ResolvedScreenShareMode = quality
+        ? resolveMode((options ?? getScreenShareOptions()).mode, quality)
+        : "balanced";
+      const sendCodec: ResolvedScreenShareCodec = quality
+        ? resolveCodec((options ?? getScreenShareOptions()).codec, quality)
+        : "default";
+      applyContentHint(track, sendMode);
       // K.5(c): подцепляем системный audio-track (если acquireScreenShareStream
       // вернул hasSystemAudio). Отдельный sender — не конфликтует с mic'ом.
       const audioTrack = displayStream.getAudioTracks()[0] ?? null;
@@ -432,7 +473,7 @@ export class VoiceChannelManager {
       }
       // hadCamera → screen занимает video-слот камеры (replaceTrack, без
       // renegotiation); иначе — новый video sender (addTrack).
-      await this.mediaReplaceOrAddVideo(track, hadCamera);
+      await this.mediaReplaceOrAddVideo(track, hadCamera, sendCodec);
       if (audioTrack) {
         if (this.localStream) this.localStream.addTrack(audioTrack);
         this.mediaAddTrack(audioTrack);
@@ -442,7 +483,7 @@ export class VoiceChannelManager {
       // динамики/игр мало. setParameters async, ошибки в каждом peer'е
       // игнорим — peer может уже быть закрыт.
       if (quality) {
-        await this.applyScreenShareEncoding(quality);
+        await this.applyScreenShareEncoding(quality, sendMode);
       }
       this.update({ screenSharing: true, cameraOn: false, error: null });
       this.broadcastState();
@@ -530,9 +571,13 @@ export class VoiceChannelManager {
     }
   }
 
-  private async mediaReplaceOrAddVideo(track: MediaStreamTrack, preferReplace: boolean): Promise<void> {
+  private async mediaReplaceOrAddVideo(
+    track: MediaStreamTrack,
+    preferReplace: boolean,
+    codec: ResolvedScreenShareCodec = "default"
+  ): Promise<void> {
     if (this.sfu) {
-      if (this.localStream) await this.sfu.replaceOrAddVideo(track, this.localStream, preferReplace);
+      if (this.localStream) await this.sfu.replaceOrAddVideo(track, this.localStream, preferReplace, codec);
       return;
     }
     for (const peer of this.peers.values()) {
@@ -548,7 +593,8 @@ export class VoiceChannelManager {
         }
       }
       try {
-        peer.pc.addTrack(track, this.localStream!);
+        const sender = peer.pc.addTrack(track, this.localStream!);
+        applyCodecPreference(peer.pc.getTransceivers().find((t) => t.sender === sender), codec);
       } catch {
         /* ignore */
       }
@@ -595,18 +641,11 @@ export class VoiceChannelManager {
   private createPeer(peerSessionId: string, callId: string, polite: boolean): PeerEntry {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers ?? [] });
     const remoteStream = new MediaStream();
-    const remoteAudio = document.createElement("audio");
-    remoteAudio.autoplay = true;
-    remoteAudio.dataset.voicePeer = peerSessionId;
-    remoteAudio.style.display = "none";
-    remoteAudio.srcObject = remoteStream;
-    document.body.appendChild(remoteAudio);
 
     const entry: PeerEntry = {
       pc,
       callId,
       remoteStream,
-      remoteAudio,
       pendingCandidates: [],
       makingOffer: false,
       polite
@@ -677,8 +716,6 @@ export class VoiceChannelManager {
     } catch {
       /* ignore */
     }
-    peer.remoteAudio.srcObject = null;
-    peer.remoteAudio.remove();
     this.peers.delete(sessionId);
   }
 
@@ -835,31 +872,45 @@ export class VoiceChannelManager {
 
   // Применить cap на video sender'ах ВРУЧНУЮ (без переоткрытия
    // displayStream'а). Если screenshare сейчас не активен — no-op.
-  async applyScreenShareQuality(quality: ScreenShareQuality): Promise<void> {
+  async applyScreenShareQuality(quality: ScreenShareQuality, options?: ScreenShareOptions): Promise<void> {
     if (!this.screenTrack) return;
-    await this.applyScreenShareEncoding(quality);
+    const mode = resolveMode((options ?? getScreenShareOptions()).mode, quality);
+    applyContentHint(this.screenTrack, mode);
+    await this.applyScreenShareEncoding(quality, mode);
   }
 
-  private async applyScreenShareEncoding(quality: ScreenShareQuality): Promise<void> {
+  private async applyScreenShareEncoding(
+    quality: ScreenShareQuality,
+    mode: ResolvedScreenShareMode
+  ): Promise<void> {
     if (this.sfu) {
-      await this.sfu.applyVideoEncoding(quality);
+      await this.sfu.applyVideoEncoding(quality, mode);
       return;
     }
-    for (const peer of this.peers.values()) {
-      const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
-      if (!sender) continue;
-      try {
-        const params = sender.getParameters();
-        if (!params.encodings || params.encodings.length === 0) {
-          params.encodings = [{}];
-        }
-        params.encodings[0].maxBitrate = quality.maxBitrate;
-        params.encodings[0].maxFramerate = quality.frameRate;
-        await sender.setParameters(params);
-      } catch {
-        /* ignore — peer мог закрыться, либо браузер не поддерживает поле */
-      }
+    // Параметры sender'ов в mesh независимы, ждём их параллельно: ошибка
+    // одного (peer закрылся, поле не поддержано) не должна задерживать остальных.
+    await Promise.all(
+      [...this.peers.values()].map(async (peer) => {
+        const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video");
+        if (sender) await applySenderTuning(sender, quality, mode);
+      })
+    );
+  }
+
+  // Статистика видео для диагностики плавности (настройки → голос).
+  // Собирает исходящий поток демонстрации и входящие видеопотоки.
+  private readonly videoStats = new VideoStatsCollector();
+
+  async collectVideoStats(): Promise<VideoStatsSnapshot> {
+    const pcs: Array<{ pc: RTCPeerConnection; role: "pub" | "sub" | "mesh" }> = [];
+    if (this.sfu) {
+      const { pub, sub } = this.sfu.getPeerConnections();
+      if (pub) pcs.push({ pc: pub, role: "pub" });
+      if (sub) pcs.push({ pc: sub, role: "sub" });
+    } else {
+      for (const peer of this.peers.values()) pcs.push({ pc: peer.pc, role: "mesh" });
     }
+    return this.videoStats.collect(pcs);
   }
 
   private handleState(p: RelayPayload): void {
@@ -870,7 +921,8 @@ export class VoiceChannelManager {
         ? {
             ...x,
             screenSharing: !!p.state!.screen_sharing,
-            cameraOn: !!p.state!.camera_on
+            cameraOn: !!p.state!.camera_on,
+            screenAudioTrackId: p.state!.screen_audio_track_id ?? null
           }
         : x
     );
@@ -885,7 +937,8 @@ export class VoiceChannelManager {
         target_session_id: sessionId,
         state: {
           screen_sharing: this.snapshot.screenSharing,
-          camera_on: this.snapshot.cameraOn
+          camera_on: this.snapshot.cameraOn,
+          screen_audio_track_id: this.screenAudioTrack?.id ?? null
         }
       });
     } catch {

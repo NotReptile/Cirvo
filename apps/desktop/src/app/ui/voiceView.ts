@@ -1,4 +1,6 @@
-import { applyOutputDevice, getOutputVolume } from "../../call/voiceSettings";
+import { participantVolumes } from "../../call/participantVolumes";
+import { remoteAudioRouter, type RemoteAudioSlot } from "../../call/remoteAudio";
+import { applyOutputDevice, getOutputDeviceId, getOutputVolume } from "../../call/voiceSettings";
 import { bindEvent } from "../dom";
 import { describeError } from "../errors";
 import { t } from "../i18n";
@@ -13,6 +15,16 @@ import { isDeafened } from "./loaders";
 import { renderAvatar, resolvePeerAvatarMediaId } from "./shell";
 import { resolveUserPresence } from "../presence";
 import { refreshSpeakingIndicators } from "./speaking";
+import {
+  applyFullscreenState,
+  getFullscreenSession,
+  getPinnedSession,
+  installFullscreenController,
+  planStreamLayout,
+  pruneLayoutState,
+  toggleTileFullscreen,
+  togglePinnedSession,
+} from "./voiceLayout";
 
 // Селект качества демонстрации экрана (рядом с кнопкой «Поделиться
 // экраном»). Применяется при следующем toggleScreenShare; если уже
@@ -24,7 +36,7 @@ export function renderScreenQualitySelect(): string {
   )
     .map(
       (k) =>
-        `<option value="${k}"${k === cur ? " selected" : ""}>${k}</option>`,
+        `<option value="${k}"${k === cur ? " selected" : ""}>${k === "4k30" ? "4K30" : k}</option>`,
     )
     .join("");
   return `<select class="screen-quality-select ghost" aria-label="${t("voice.quality")}">${opts}</select>`;
@@ -65,6 +77,16 @@ export function renderVoiceChannelView(channel: Channel): string {
   // его tile становится primary (большой, сверху), остальные —
   // в горизонтальной полосе под ним. peer.screenSharing приходит
   // через `voice.state` (отдельный сигналинг, см. PeerStatePayload).
+  const isSharing = (p: (typeof participants)[number]): boolean =>
+    selfSessionId !== null && p.sessionId === selfSessionId
+      ? screenOn
+      : !!p.screenSharing;
+  pruneLayoutState(
+    participants.filter(isSharing).map((p) => p.sessionId),
+    participants.map((p) => p.sessionId),
+  );
+  const pinnedId = getPinnedSession();
+  const fullscreenId = getFullscreenSession();
   const renderTile = (
     p: (typeof participants)[number],
     extraClass = "",
@@ -86,7 +108,14 @@ export function renderVoiceChannelView(channel: Channel): string {
     const presence = resolveUserPresence(p.userId, member);
     const selfProfile = p.userId === uiContext.state.me?.id ? uiContext.state.me : null;
     const avatarMediaId = resolvePeerAvatarMediaId(p.userId);
-    const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${hasVideo ? " has-video" : ""}${extraClass ? " " + extraClass : ""}`;
+    const cls = `voice-tile${isSelf ? " self" : ""}${sharing ? " sharing" : ""}${hasVideo ? " has-video" : ""}${extraClass ? " " + extraClass : ""}${fullscreenId === p.sessionId ? " fullscreen" : ""}${pinnedId === p.sessionId ? " pinned" : ""}`;
+    const pinLabel = pinnedId === p.sessionId ? "Открепить" : "Закрепить";
+    const tileButtons = sharing
+      ? `<div class="voice-tile-tools">
+          <button class="voice-tile-tool ghost" data-voice-pin="${escapeHtml(p.sessionId)}" aria-pressed="${pinnedId === p.sessionId}" data-tooltip="${pinLabel}" aria-label="${pinLabel}">${icon("pin", { size: 16 })}</button>
+          <button class="voice-tile-tool ghost" data-voice-fs="${escapeHtml(p.sessionId)}" data-tooltip="На весь экран" aria-label="На весь экран">${icon("maximize", { size: 16 })}</button>
+        </div>`
+      : "";
     return `<div class="${cls}" data-voice-tile="${escapeHtml(p.sessionId)}" data-voice-user="${escapeHtml(p.userId)}">
       <video class="voice-tile-video" ${tag} autoplay playsinline ${isSelf ? "muted" : ""}></video>
       <div class="voice-tile-placeholder">
@@ -104,13 +133,10 @@ export function renderVoiceChannelView(channel: Channel): string {
         ${isSelf && voice?.muted ? icon("mic-off", { size: 14 }) : ""}
         ${sharing ? `<span class="voice-tile-live">${t("voice.live")}</span>` : ""}
       </div>
+      ${tileButtons}
     </div>`;
   };
 
-  const sharer = participants.find((p) => {
-    const isSelf = selfSessionId !== null && p.sessionId === selfSessionId;
-    return isSelf ? screenOn : !!p.screenSharing;
-  });
 
   // K.4: пустой voice-канал — Discord-style hero-view с большим именем
   // канала, подзаголовком и primary-кнопкой по центру. Когда есть
@@ -154,15 +180,35 @@ export function renderVoiceChannelView(channel: Channel): string {
     `;
   }
 
-  const tiles = sharer
-    ? `<div class="voice-tiles screen-layout">
-        <div class="voice-primary">${renderTile(sharer, "primary")}</div>
-        <div class="voice-strip-tiles">${participants
-          .filter((p) => p.sessionId !== sharer.sessionId)
-          .map((p) => renderTile(p))
+  // Раскладка: 1 стрим — крупно; закреплённый — крупно + полоса миниатюр;
+  // 2+ стрима — сетка равных плиток (см. voiceLayout.ts).
+  const plan = planStreamLayout(
+    participants.map((p) => ({ sessionId: p.sessionId, sharing: isSharing(p) })),
+  );
+  const byId = (sid: string) => participants.find((p) => p.sessionId === sid)!;
+  const stripOf = (exclude: string[]) =>
+    participants
+      .filter((p) => !exclude.includes(p.sessionId))
+      .map((p) => renderTile(p))
+      .join("");
+  let tiles: string;
+  if (plan.mode === "single" || plan.mode === "pinned") {
+    tiles = `<div class="voice-tiles screen-layout">
+        <div class="voice-primary">${renderTile(byId(plan.primary), "primary")}</div>
+        <div class="voice-strip-tiles">${stripOf([plan.primary])}</div>
+      </div>`;
+  } else if (plan.mode === "multi") {
+    const rows = Math.ceil(plan.streams.length / plan.columns);
+    const rest = stripOf(plan.streams);
+    tiles = `<div class="voice-tiles screen-layout multi">
+        <div class="voice-stream-grid" style="--stream-cols:${plan.columns};--stream-rows:${rows}">${plan.streams
+          .map((sid) => renderTile(byId(sid), "stream"))
           .join("")}</div>
-      </div>`
-    : `<div class="voice-tiles" style="--voice-columns:${Math.max(1, Math.min(participants.length, 3))};--voice-columns-small:${Math.max(1, Math.min(participants.length, 2))}">${participants.map((p) => renderTile(p)).join("")}</div>`;
+        ${rest ? `<div class="voice-strip-tiles">${rest}</div>` : ""}
+      </div>`;
+  } else {
+    tiles = `<div class="voice-tiles" style="--voice-columns:${Math.max(1, Math.min(participants.length, 3))};--voice-columns-small:${Math.max(1, Math.min(participants.length, 2))}">${participants.map((p) => renderTile(p)).join("")}</div>`;
+  }
 
   const actions = joined
     ? `
@@ -182,7 +228,8 @@ export function renderVoiceChannelView(channel: Channel): string {
 
   return `
     ${header}
-    <div class="voice-room">
+    <div class="voice-room${fullscreenId && participants.some((p) => p.sessionId === fullscreenId) ? " tile-fs" : ""}">
+      <button class="voice-fs-exit ghost" data-voice-fs-exit aria-label="Выйти из полного экрана" data-tooltip="Выйти из полного экрана (Esc)">${icon("minimize", { size: 18 })}<span>Выйти</span></button>
       <div class="voice-room-body">
         ${tiles}
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
@@ -245,9 +292,9 @@ export function renderVoiceStrip(): string {
 // сериализуется — нужно ставить программно.
 export function attachVoiceVideoStreams(): void {
   const voiceLocal = uiContext.voiceMgr.getLocalStream();
-  // I.2: global output-volume и output-device применяются к каждому
-  // <video> с remote-стримом. Per-peer volume (state.voiceVolumes)
-  // умножается сверху — позволяет точечно приглушить шумного соседа.
+  // I.2: общая громкость вывода и устройство применяются к роутеру звука.
+  // Локальные громкости участника (голос и звук демонстрации, по userId)
+  // задаются слотами ниже.
   const globalOut = getOutputVolume();
   for (const el of uiContext.rootEl.querySelectorAll<HTMLVideoElement>(
     "video[data-voice-self]",
@@ -255,6 +302,8 @@ export function attachVoiceVideoStreams(): void {
     if (el.srcObject !== voiceLocal) el.srcObject = voiceLocal;
     el.closest(".voice-tile")?.classList.toggle("has-video", !!voiceLocal?.getVideoTracks().some((track) => track.readyState === "live"));
   }
+  // <video> удалённого участника показывает только картинку: звук идёт
+  // через remoteAudioRouter, иначе он играл бы дважды.
   for (const el of uiContext.rootEl.querySelectorAll<HTMLVideoElement>(
     "video[data-voice-peer]",
   )) {
@@ -262,19 +311,12 @@ export function attachVoiceVideoStreams(): void {
     if (!sid) continue;
     const stream = uiContext.voiceMgr.getRemoteStream(sid);
     if (el.srcObject !== stream) el.srcObject = stream;
-    el.muted = isDeafened();
-    el.volume = Math.min(
-      1,
-      (uiContext.state.voiceVolumes[sid] ?? 1) * globalOut,
-    );
-    void applyOutputDevice(el).catch((err) => {
-      uiContext.state.status = describeError(err);
-      queueRender("status");
-    });
+    el.muted = true;
     // Подстраховка аватар-заглушки: сигналинг cameraOn (voice.state) может
     // отстать от реального видеотрека — верим живому стриму.
     el.closest(".voice-tile")?.classList.toggle("has-video", !!stream?.getVideoTracks().some((track) => track.readyState === "live"));
   }
+  syncRemoteAudio(globalOut);
   const callLocal = uiContext.callMgr.getLocalStream();
   const callRemote = uiContext.callMgr.getRemoteStream();
   const overlay = uiContext.rootEl.querySelector<HTMLElement>(
@@ -314,6 +356,8 @@ export function attachVoiceVideoStreams(): void {
 // position:fixed inset:24px), повторный клик возвращает в сетку. Один tile
 // в fullscreen за раз: при разворачивании снимаем класс с остальных.
 export function attachVoiceTileFullscreen(): void {
+  installFullscreenController();
+  applyFullscreenState();
   const tiles =
     uiContext.rootEl.querySelectorAll<HTMLDivElement>(".voice-tile");
   for (const tile of Array.from(tiles)) {
@@ -322,72 +366,90 @@ export function attachVoiceTileFullscreen(): void {
     bindEvent(
       tile,
       "dblclick",
-      () => {
-        const wasFs = tile.classList.contains("fullscreen");
-        for (const other of Array.from(tiles))
-          other.classList.remove("fullscreen");
-        if (!wasFs) tile.classList.add("fullscreen");
+      (ev) => {
+        // Двойной клик по кнопкам плитки не должен разворачивать её.
+        if ((ev.target as HTMLElement).closest("button, select")) return;
+        const sid = tile.dataset.voiceTile;
+        if (sid) toggleTileFullscreen(sid);
       },
       "bind-217942",
     );
-    // ПКМ на чужом тайле открывает volume-popup. На своём (self) и без
-    // данных peer'а — игнор.
+    for (const btn of Array.from(
+      tile.querySelectorAll<HTMLButtonElement>("[data-voice-pin]"),
+    )) {
+      bindEvent(
+        btn,
+        "click",
+        (ev) => {
+          ev.stopPropagation();
+          const sid = btn.dataset.voicePin;
+          if (!sid) return;
+          togglePinnedSession(sid);
+          render();
+        },
+        "bind-voice-pin",
+      );
+    }
+    for (const btn of Array.from(
+      tile.querySelectorAll<HTMLButtonElement>("[data-voice-fs]"),
+    )) {
+      bindEvent(
+        btn,
+        "click",
+        (ev) => {
+          ev.stopPropagation();
+          const sid = btn.dataset.voiceFs;
+          if (sid) toggleTileFullscreen(sid);
+        },
+        "bind-voice-fs",
+      );
+    }
+  }
+  for (const btn of Array.from(
+    uiContext.rootEl.querySelectorAll<HTMLButtonElement>("[data-voice-fs-exit]"),
+  )) {
     bindEvent(
-      tile,
-      "contextmenu",
-      (ev) => {
-        if (tile.classList.contains("self")) return;
-        const video = tile.querySelector<HTMLVideoElement>(
-          "video[data-voice-peer]",
-        );
-        const sid = video?.dataset.voicePeer;
-        if (!sid) return;
-        ev.preventDefault();
-        const p = uiContext.state.voiceSnapshot?.participants.find(
-          (x) => x.sessionId === sid,
-        );
-        const label = p
-          ? p.displayName || p.username || sid.slice(0, 8)
-          : "Участник";
-        const x = Math.min(ev.clientX, window.innerWidth - 280);
-        const y = Math.min(ev.clientY, window.innerHeight - 200);
-        uiContext.state.voiceVolumeMenu = { key: sid, label, x, y };
-        render();
+      btn,
+      "click",
+      () => {
+        const sid = getFullscreenSession();
+        if (sid) toggleTileFullscreen(sid);
       },
-      "bind-218292",
+      "bind-voice-fs-exit",
     );
   }
-  // Аналогично для 1-к-1 tile'а (call-video-tile с data-call-remote).
-  const callTiles =
-    uiContext.rootEl.querySelectorAll<HTMLDivElement>(".call-video-tile");
-  for (const tile of Array.from(callTiles)) {
-    if ((tile as HTMLElement & { _fsAttached?: boolean })._fsAttached) continue;
-    (tile as HTMLElement & { _fsAttached?: boolean })._fsAttached = true;
-    const video = tile.querySelector<HTMLVideoElement>(
-      "video[data-call-remote]",
-    );
-    if (!video) continue;
-    bindEvent(
-      tile,
-      "contextmenu",
-      (ev) => {
-        ev.preventDefault();
-        const peerName = uiContext.state.callSnapshot
-          ? describePeer(uiContext.state.callSnapshot.peerUserId)
-          : "Собеседник";
-        const x = Math.min(ev.clientX, window.innerWidth - 280);
-        const y = Math.min(ev.clientY, window.innerHeight - 200);
-        uiContext.state.voiceVolumeMenu = {
-          key: "call-remote",
-          label: peerName,
-          x,
-          y,
-        };
-        render();
-      },
-      "bind-219418",
-    );
+}
+
+// Звук удалённых участников голосового канала: отдельные узлы для голоса и
+// для звука демонстрации (см. remoteAudio.ts). Громкости берутся из
+// participantVolumes по userId, поэтому переживают пересборку DOM.
+function syncRemoteAudio(globalOut: number): void {
+  const snapshot = uiContext.state.voiceSnapshot;
+  const slots: RemoteAudioSlot[] = [];
+  for (const p of snapshot?.participants ?? []) {
+    if (snapshot && p.sessionId === snapshot.selfSessionId) continue;
+    const tracks = uiContext.voiceMgr.getRemoteAudioTracks(p.sessionId);
+    if (tracks.voice) {
+      slots.push({
+        id: `voice:${p.sessionId}`,
+        track: tracks.voice,
+        volume: participantVolumes.get(p.userId, "voice"),
+      });
+    }
+    if (tracks.screen) {
+      slots.push({
+        id: `screen:${p.sessionId}`,
+        track: tracks.screen,
+        volume: participantVolumes.get(p.userId, "screen"),
+      });
+    }
   }
+  remoteAudioRouter.setOutput({
+    volume: globalOut,
+    deafened: isDeafened(),
+    sinkId: getOutputDeviceId() ?? "",
+  });
+  remoteAudioRouter.sync(slots);
 }
 
 export async function uploadFiles(files: File[]): Promise<void> {

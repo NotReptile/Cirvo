@@ -9,7 +9,9 @@ export interface RealtimeEvent {
   payload: unknown;
 }
 
-type Listener = (event: RealtimeEvent) => void;
+const HEARTBEAT_INTERVAL_MS = 20_000;
+
+type Listener =(event: RealtimeEvent) => void;
 
 // Wave 0: состояние WS-соединения для индикатора в UI и resync-логики.
 // "offline" — нет токена / manual disconnect; "connecting" — первое
@@ -35,6 +37,7 @@ export class RealtimeClient {
   private connectGeneration = 0;
   private syncPending = false;
   private pendingEvents: RealtimeEvent[] = [];
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     readonly endpoint: string,
@@ -161,6 +164,7 @@ export class RealtimeClient {
     this.socket = socket;
     socket.onopen = () => {
       this.reconnectAttempts = 0;
+      this.startHeartbeat(socket);
       this.setConnState("connected");
     };
     socket.onmessage = (event) => {
@@ -192,8 +196,15 @@ export class RealtimeClient {
       }
       this.notify(parsed);
     };
-    socket.onclose = () => {
-      this.socket = null;
+    socket.onclose = (closeEvent?: { code?: number; reason?: string; wasClean?: boolean }) => {
+      this.stopHeartbeat();
+      if (this.socket === socket) this.socket = null;
+      if (!this.manualClose) {
+        // Причина обрыва нужна для диагностики ложных «Соединение потеряно».
+        console.warn(
+          `[realtime] соединение закрыто: code=${closeEvent?.code ?? "?"} reason="${closeEvent?.reason ?? ""}" clean=${closeEvent?.wasClean ?? "?"}`,
+        );
+      }
       if (this.manualClose || !this.accessToken) {
         this.setConnState("offline");
         return;
@@ -203,6 +214,38 @@ export class RealtimeClient {
     socket.onerror = () => {
       socket.close();
     };
+  }
+
+  // Прикладной keepalive: браузерный WebSocket не шлёт данных сам, а прокси и
+  // серверные таймауты чтения считают такое соединение простаивающим.
+  private startHeartbeat(socket: WebSocket): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+      try {
+        socket.send(JSON.stringify({ event: "ping", payload: {} }));
+      } catch {
+        // onclose отработает переподключение.
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  // Вернулась сеть / окно снова видно: не ждём backoff, пробуем сразу.
+  reconnectNow(): void {
+    if (!this.accessToken || this.manualClose) return;
+    if (this.connState === "connected" || this.connecting) return;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    void this.connect();
   }
 
   private scheduleReconnect(): void {
@@ -227,6 +270,7 @@ export class RealtimeClient {
     this.manualClose = true;
     this.connectGeneration += 1;
     this.connecting = false;
+    this.stopHeartbeat();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;

@@ -163,5 +163,5 @@ async function refreshInvalidatedPermissions(): Promise<void> {
 function clearSelectedChannel(): void {
   uiContext.state.selectedChannelId = null; uiContext.state.messages = [];
   uiContext.state.editingMessageId = null; uiContext.state.replyingTo = null;
-  uiContext.state.pendingUploads = []; uiContext.state.pickerForMessageId = null;
+  uiContext.state.pendingUploads = [];
 }

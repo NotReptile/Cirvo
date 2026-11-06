@@ -14,6 +14,12 @@
 // клиент, на sub-PC — только сервер. Perfect-negotiation не нужен.
 
 import type { ScreenShareQuality } from "./voiceChannelManager";
+import {
+  applyCodecPreference,
+  applySenderTuning,
+  type ResolvedScreenShareCodec,
+  type ResolvedScreenShareMode,
+} from "./screenShareTuning";
 import { resolveSfuWsUrl } from "./sfuUrl";
 
 interface SfuSessionOptions {
@@ -67,9 +73,9 @@ export class SfuSession {
   private pubPendingIce: RTCIceCandidateInit[] = [];
   private subPendingIce: RTCIceCandidateInit[] = [];
 
-  // remote-медиа по sessionId паблишера + скрытые <audio> для воспроизведения.
+  // remote-медиа по sessionId паблишера. Воспроизведение звука — в
+  // remoteAudioRouter (отдельно голос и звук демонстрации), не здесь.
   private remotes = new Map<string, MediaStream>();
-  private audioEls = new Map<string, HTMLAudioElement>();
 
   constructor(private readonly opts: SfuSessionOptions) {
     this.iceServers = opts.iceServers;
@@ -172,12 +178,6 @@ export class SfuSession {
   // авторитетный сигнал, что участник ушёл (надёжнее, чем track.onended).
   dropRemote(sessionId: string): void {
     this.remotes.delete(sessionId);
-    const el = this.audioEls.get(sessionId);
-    if (el) {
-      el.srcObject = null;
-      el.remove();
-      this.audioEls.delete(sessionId);
-    }
   }
 
   // ---- медиа-операции (зеркало действий менеджера над mesh-peers) -----------
@@ -216,7 +216,12 @@ export class SfuSession {
   // replaceOrAddVideo: если уже есть video-sender (камера/экран сменяют
   // друг друга на одном «слоте») — replaceTrack без renegotiation; иначе
   // addTrack (renegotiation через negotiationneeded).
-  async replaceOrAddVideo(track: MediaStreamTrack, stream: MediaStream, preferReplace: boolean): Promise<void> {
+  async replaceOrAddVideo(
+    track: MediaStreamTrack,
+    stream: MediaStream,
+    preferReplace: boolean,
+    codec: ResolvedScreenShareCodec = "default"
+  ): Promise<void> {
     if (!this.pub) return;
     if (preferReplace) {
       const sender = this.pub.getSenders().find((s) => s.track?.kind === "video");
@@ -229,24 +234,23 @@ export class SfuSession {
         return;
       }
     }
-    this.pub.addTrack(track, stream);
+    const sender = this.pub.addTrack(track, stream);
+    // Предпочтительный кодек действует на ближайшее согласование; остальные
+    // кодеки остаются в списке запасными.
+    applyCodecPreference(this.pub.getTransceivers().find((t) => t.sender === sender), codec);
   }
 
-  async applyVideoEncoding(quality: ScreenShareQuality): Promise<void> {
+  async applyVideoEncoding(quality: ScreenShareQuality, mode: ResolvedScreenShareMode): Promise<void> {
     if (!this.pub) return;
     const sender = this.pub.getSenders().find((s) => s.track?.kind === "video");
     if (!sender) return;
-    try {
-      const params = sender.getParameters();
-      if (!params.encodings || params.encodings.length === 0) {
-        params.encodings = [{}];
-      }
-      params.encodings[0].maxBitrate = quality.maxBitrate;
-      params.encodings[0].maxFramerate = quality.frameRate;
-      await sender.setParameters(params);
-    } catch {
-      /* ignore — браузер может не поддерживать поле */
-    }
+    await applySenderTuning(sender, quality, mode);
+  }
+
+  // Для диагностики (getStats): publisher-PC шлёт наши потоки, subscriber-PC
+  // принимает чужие.
+  getPeerConnections(): { pub: RTCPeerConnection | null; sub: RTCPeerConnection | null } {
+    return { pub: this.pub, sub: this.sub };
   }
 
   stop(): void {
@@ -262,11 +266,6 @@ export class SfuSession {
 
   private closeTransport(): void {
     this.resetting = true;
-    for (const el of this.audioEls.values()) {
-      el.srcObject = null;
-      el.remove();
-    }
-    this.audioEls.clear();
     this.remotes.clear();
     if (this.pub) {
       try {
@@ -486,7 +485,6 @@ export class SfuSession {
     if (!rs) {
       rs = new MediaStream();
       this.remotes.set(sessionId, rs);
-      this.attachAudio(sessionId, rs);
     }
     if (!rs.getTracks().some((t) => t.id === evt.track.id)) {
       rs.addTrack(evt.track);
@@ -499,16 +497,6 @@ export class SfuSession {
       this.opts.onRemoteChange();
     };
     this.opts.onRemoteChange();
-  }
-
-  private attachAudio(sessionId: string, stream: MediaStream): void {
-    const el = document.createElement("audio");
-    el.autoplay = true;
-    el.dataset.sfuPeer = sessionId;
-    el.style.display = "none";
-    el.srcObject = stream;
-    document.body.appendChild(el);
-    this.audioEls.set(sessionId, el);
   }
 
   private send(event: string, payload: unknown): void {

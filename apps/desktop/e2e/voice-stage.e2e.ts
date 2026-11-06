@@ -33,6 +33,7 @@ test.beforeEach(async ({ page }) => {
       isActive: () => s.voiceSnapshot?.state === "active",
       getLocalStream: () => null,
       getRemoteStream: () => remote,
+      getRemoteAudioTracks: () => ({ voice: remote.getAudioTracks()[0] ?? null, screen: null }),
       toggleMute: () => update({ muted: !s.voiceSnapshot.muted }),
       setMute: (muted: boolean) => update({ muted }),
       setPttGate: () => {},
@@ -109,10 +110,19 @@ test("stage and self-strip audio controls stay synchronized and preserve remote 
   await page.locator('.user-strip [data-voice-action="deafen"]').click();
   await expect(page.locator('[data-voice-action="deafen"][aria-pressed="true"]')).toHaveCount(2);
   await expect(page.locator('[data-voice-action="mute"][aria-pressed="true"]')).toHaveCount(2);
-  expect(await page.locator('video[data-voice-peer="peer-0"]').evaluate((el: HTMLVideoElement) => el.muted)).toBe(true);
+  // Звук участников идёт через remoteAudioRouter, поэтому <video> всегда без звука,
+  // а «наушники» глушат именно маршрутизатор.
+  const routerDeafened = () => page.evaluate(async () => {
+    const m = await import("/src/call/remoteAudio.ts");
+    return (m.remoteAudioRouter as any).deafened as boolean;
+  });
+  const videoMuted = () => page.locator('video[data-voice-peer="peer-0"]').evaluate((el: HTMLVideoElement) => el.muted);
+  expect(await routerDeafened()).toBe(true);
+  expect(await videoMuted()).toBe(true);
   await page.locator('.voice-room-actions [data-voice-action="deafen"]').click();
   await expect(page.locator('[data-voice-action="deafen"][aria-pressed="false"]')).toHaveCount(2);
-  expect(await page.locator('video[data-voice-peer="peer-0"]').evaluate((el: HTMLVideoElement) => el.muted)).toBe(false);
+  expect(await routerDeafened()).toBe(false);
+  expect(await videoMuted()).toBe(true);
   await page.evaluate(() => {
     (window as any).__CIRVO_QA__.event({ event: "presence.updated", payload: { userId: "qa-user-0", mode: "dnd", customStatus: "Занят" } });
   });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { applyPresenceEvent, applyPresenceSnapshot, presenceRevision, resetPresence, resolvePresence, resolveUserPresence } from "./presence";
+import { applyPresenceEvent, applyPresenceSnapshot, decideAutomaticStatus, presenceRevision, resetPresence, resolvePresence, resolveUserPresence } from "./presence";
 import { uiContext } from "./state";
 
 beforeEach(() => { resetPresence(); uiContext.state.me = null; uiContext.state.members = []; uiContext.state.dms = []; uiContext.state.friends = []; });
@@ -19,5 +19,36 @@ describe("presence consistency", () => {
     applyPresenceEvent("peer", { presenceMode: "idle", customStatus: "" });
     expect(applyPresenceSnapshot("peer", { presenceMode: "online", customStatus: "stale" }, started)).toEqual({ presenceMode: "idle", online: true, customStatus: "" });
     expect(applyPresenceSnapshot("peer", { presenceMode: "dnd", customStatus: "new" }, presenceRevision())).toEqual({ presenceMode: "dnd", online: true, customStatus: "new" });
+  });
+  it("event without timestamp does not erase ordering, so a stale event cannot revert status", () => {
+    applyPresenceEvent("peer", { presenceMode: "online" }, "2026-10-28T10:00:00.000Z");
+    applyPresenceEvent("peer", { presenceMode: "dnd" });
+    applyPresenceEvent("peer", { presenceMode: "idle" }, "2026-10-28T09:00:00.000Z");
+    expect(resolveUserPresence("peer").mode).toBe("dnd");
+  });
+});
+
+describe("automatic idle decision", () => {
+  it("goes idle only from online after inactivity", () => {
+    expect(decideAutomaticStatus({ presenceMode: "online", autoIdle: false, active: false })).toBe("idle");
+    expect(decideAutomaticStatus({ presenceMode: "online", autoIdle: false, active: true })).toBe("none");
+  });
+  it("never overrides manual dnd, invisible or idle", () => {
+    for (const presenceMode of ["dnd", "invisible", "idle", "offline"] as const) {
+      expect(decideAutomaticStatus({ presenceMode, autoIdle: false, active: false })).toBe("none");
+    }
+  });
+  it("returns to online on activity when idle was automatic", () => {
+    expect(decideAutomaticStatus({ presenceMode: "idle", autoIdle: true, active: true })).toBe("online");
+  });
+  it("keeps automatic idle while the user is still away", () => {
+    expect(decideAutomaticStatus({ presenceMode: "idle", autoIdle: true, active: false })).toBe("none");
+  });
+  it("retries a failed return to online on the next check while the user is active", () => {
+    // Флаг после ошибки сети остаётся true, сервер всё ещё в idle.
+    expect(decideAutomaticStatus({ presenceMode: "idle", autoIdle: true, active: true })).toBe("online");
+  });
+  it("does not touch manual idle even when the user is active", () => {
+    expect(decideAutomaticStatus({ presenceMode: "idle", autoIdle: false, active: true })).toBe("none");
   });
 });

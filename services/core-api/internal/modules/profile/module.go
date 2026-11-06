@@ -122,6 +122,9 @@ type meView struct {
 	profileView
 	Email     string    `json:"email"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// AutoIdle: режим idle выставлен автоматически по неактивности (а не вручную).
+	// Клиент по этому флагу возвращает «В сети» при первом вводе.
+	AutoIdle bool `json:"autoIdle"`
 }
 
 type statusRequest struct {
@@ -129,6 +132,14 @@ type statusRequest struct {
 	CustomStatus      *string    `json:"customStatus"`
 	ExpectedMode      *string    `json:"expectedMode"`
 	ExpectedUpdatedAt *time.Time `json:"expectedUpdatedAt"`
+	// Automatic: запись сделана клиентским таймером неактивности, а не пользователем.
+	Automatic bool `json:"automatic"`
+}
+
+// autoIdleFor возвращает значение users.presence_auto_idle после записи режима.
+// Только автоматический idle помечается; любой ручной режим сбрасывает флаг.
+func autoIdleFor(mode string, automatic bool) bool {
+	return automatic && mode == "idle"
 }
 
 // handleUpdateStatus — H.8: смена presence_mode и/или custom_status.
@@ -160,6 +171,9 @@ func (m *Module) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		setParts = append(setParts, "presence_mode = $"+strconv.Itoa(idx))
 		args = append(args, mode)
+		idx++
+		setParts = append(setParts, "presence_auto_idle = $"+strconv.Itoa(idx))
+		args = append(args, autoIdleFor(mode, req.Automatic))
 		idx++
 	}
 	if req.CustomStatus != nil {
@@ -215,7 +229,7 @@ func (m *Module) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sessionID, _ := authctx.SessionID(r.Context())
-	m.publishPresenceUpdated(r.Context(), userID, view.PresenceMode, view.CustomStatus, sessionID, view.UpdatedAt)
+	m.publishPresenceUpdated(r.Context(), userID, view.PresenceMode, view.CustomStatus, view.AutoIdle, sessionID, view.UpdatedAt)
 
 	sharedhttp.WriteJSON(w, http.StatusOK, view)
 }
@@ -227,11 +241,11 @@ func (m *Module) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 // Если режим invisible — публикуем effective='offline' (другие видят
 // как офлайн), customStatus затирается. Сам юзер локально знает свой
 // реальный режим из ответа PUT /users/me/status.
-func (m *Module) publishPresenceUpdated(ctx context.Context, userID uuid.UUID, mode, customStatus string, sessionID uuid.UUID, updatedAt time.Time) {
+func (m *Module) publishPresenceUpdated(ctx context.Context, userID uuid.UUID, mode, customStatus string, autoIdle bool, sessionID uuid.UUID, updatedAt time.Time) {
 	if m.publisher == nil {
 		return
 	}
-	privatePayload, _ := json.Marshal(map[string]any{"userId": userID.String(), "mode": mode, "customStatus": customStatus, "sessionId": sessionID.String(), "updatedAt": updatedAt})
+	privatePayload, _ := json.Marshal(map[string]any{"userId": userID.String(), "mode": mode, "customStatus": customStatus, "autoIdle": autoIdle, "sessionId": sessionID.String(), "updatedAt": updatedAt})
 	_ = m.publisher.Publish(ctx, realtimebus.Event{Event: "presence.self.updated", UserID: userID.String(), Payload: privatePayload})
 	effectiveMode := mode
 	effectiveStatus := customStatus
@@ -767,6 +781,7 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, _ time.Time) 
 		display      *string
 		avatarID     *uuid.UUID
 		presenceMode string
+		autoIdle     bool
 		customStatus *string
 		bio          *string
 		bannerColor  *string
@@ -779,13 +794,13 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, _ time.Time) 
 		profEffect   *string
 	)
 	if err := m.db.QueryRow(ctx,
-		`select email, username, display_name, avatar_media_id, presence_mode, custom_status,
+		`select email, username, display_name, avatar_media_id, presence_mode, presence_auto_idle, custom_status,
 		        bio, banner_color, banner_media_id,
 		        profile_theme, name_gradient, badge_emoji, badge_label,
 		        avatar_decoration, profile_effect, updated_at
 		 from users where id = $1`,
 		userID,
-	).Scan(&email, &username, &display, &avatarID, &presenceMode, &customStatus,
+	).Scan(&email, &username, &display, &avatarID, &presenceMode, &autoIdle, &customStatus,
 		&bio, &bannerColor, &bannerID,
 		&profileTheme, &nameGradient, &badgeEmoji, &badgeLabel,
 		&avatarDeco, &profEffect, &updatedAt); err != nil {
@@ -795,6 +810,7 @@ func (m *Module) loadMeView(ctx context.Context, userID uuid.UUID, _ time.Time) 
 		profileView: profileView{ID: userID.String(), Username: username, PresenceMode: presenceMode},
 		Email:       email,
 		UpdatedAt:   updatedAt,
+		AutoIdle:    autoIdle,
 	}
 	applyOptionalStyle(&view.profileView, profileTheme, nameGradient, badgeEmoji, badgeLabel)
 	applyOptionalDeco(&view.profileView, avatarDeco, profEffect)

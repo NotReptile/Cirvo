@@ -1,4 +1,5 @@
 import type { ApiError } from "../../network/httpClient";
+import { CIRVO_MARK, CIRVO_TAGLINE } from "../brand";
 import { confirmDialog } from "../dialogs";
 import { bindEvent } from "../dom";
 import { describeError } from "../errors";
@@ -209,7 +210,13 @@ export function renderAuth(): void {
   uiContext.rootEl.innerHTML = `
     <div class="auth-screen">
       <div class="auth-card">
-        <h1>Cirvo</h1>
+        <div class="brand-lockup">
+          ${CIRVO_MARK}
+          <div class="brand-text">
+            <div class="brand-name">Cirvo</div>
+            <div class="brand-tagline">${CIRVO_TAGLINE}</div>
+          </div>
+        </div>
         ${
           uiContext.state.registrationOpen === false
             ? `
